@@ -1,4 +1,4 @@
-# AutoPwn - Automated Binary Exploitation Framework
+# SupwnGo - Automated Binary Exploitation Framework
 # Core exploitation framework
 pwntools>=4.11.0
 

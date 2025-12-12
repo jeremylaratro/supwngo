@@ -3,14 +3,14 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "autopwn"
-version = "0.1.0"
-description = "Automated binary exploitation framework"
+name = "supwngo"
+version = "1.0.0"
+description = "SupwnGo - Automated binary exploitation framework"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.8"
 authors = [
-    {name = "AutoPwn Contributors", email = "autopwn@example.com"}
+    {name = "SupwnGo Contributors", email = "supwngo@example.com"}
 ]
 keywords = [
     "pwn",
@@ -74,7 +74,7 @@ docs = [
 ]
 
 [project.scripts]
-autopwn = "autopwn.cli:main"
+supwngo = "supwngo.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/jeremylaratro/supwngo"
@@ -83,10 +83,10 @@ Repository = "https://github.com/jeremylaratro/supwngo"
 Issues = "https://github.com/jeremylaratro/supwngo/issues"
 
 [tool.setuptools.packages.find]
-exclude = ["tests*"]
+exclude = ["tests*", "build*"]
 
 [tool.setuptools.package-data]
-autopwn = ["payloads/templates/*.py", "data/*.json"]
+supwngo = ["payloads/templates/*.py", "data/*.json"]
 
 [tool.black]
 line-length = 88
@@ -133,7 +133,7 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["autopwn"]
+source = ["supwngo"]
 branch = true
 omit = ["tests/*", "*/test_*.py"]
 

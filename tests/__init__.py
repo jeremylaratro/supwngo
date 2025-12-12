@@ -1,1 +1,1 @@
-"""AutoPwn test suite."""
+"""SupwnGo test suite."""

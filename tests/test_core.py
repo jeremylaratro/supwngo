@@ -9,7 +9,7 @@ class TestExploitContext:
 
     def test_context_creation(self):
         """Test creating an exploit context."""
-        from autopwn.core.context import ExploitContext
+        from supwngo.core.context import ExploitContext
 
         ctx = ExploitContext()
         assert ctx.arch == "amd64"
@@ -18,7 +18,7 @@ class TestExploitContext:
 
     def test_context_32bit(self):
         """Test 32-bit context."""
-        from autopwn.core.context import ExploitContext
+        from supwngo.core.context import ExploitContext
 
         ctx = ExploitContext(arch="i386", bits=32)
         assert ctx.arch == "i386"
@@ -26,7 +26,7 @@ class TestExploitContext:
 
     def test_add_leak(self):
         """Test adding leaks."""
-        from autopwn.core.context import ExploitContext
+        from supwngo.core.context import ExploitContext
 
         ctx = ExploitContext()
         ctx.add_leak("libc_puts", 0x7ffff7a62000)
@@ -39,7 +39,7 @@ class TestProtections:
 
     def test_protections_dataclass(self):
         """Test Protections dataclass."""
-        from autopwn.core.context import Protections
+        from supwngo.core.context import Protections
 
         prots = Protections(
             canary=True,
@@ -59,33 +59,33 @@ class TestHelpers:
 
     def test_p64(self):
         """Test p64 packing."""
-        from autopwn.utils.helpers import p64
+        from supwngo.utils.helpers import p64
 
         assert p64(0x41414141) == b"AAAA\x00\x00\x00\x00"
         assert len(p64(0)) == 8
 
     def test_u64(self):
         """Test u64 unpacking."""
-        from autopwn.utils.helpers import u64
+        from supwngo.utils.helpers import u64
 
         assert u64(b"AAAAAAAA") == 0x4141414141414141
 
     def test_p32(self):
         """Test p32 packing."""
-        from autopwn.utils.helpers import p32
+        from supwngo.utils.helpers import p32
 
         assert p32(0x41414141) == b"AAAA"
         assert len(p32(0)) == 4
 
     def test_u32(self):
         """Test u32 unpacking."""
-        from autopwn.utils.helpers import u32
+        from supwngo.utils.helpers import u32
 
         assert u32(b"AAAA") == 0x41414141
 
     def test_cyclic(self):
         """Test cyclic pattern generation."""
-        from autopwn.utils.helpers import cyclic, cyclic_find
+        from supwngo.utils.helpers import cyclic, cyclic_find
 
         pattern = cyclic(100)
         assert len(pattern) == 100
@@ -94,7 +94,7 @@ class TestHelpers:
 
     def test_cyclic_find(self):
         """Test finding offset in cyclic pattern."""
-        from autopwn.utils.helpers import cyclic, cyclic_find
+        from supwngo.utils.helpers import cyclic, cyclic_find
 
         pattern = cyclic(200)
         # Find a known subsequence
@@ -107,7 +107,7 @@ class TestDatabase:
 
     def test_database_creation(self, tmp_path):
         """Test creating a database."""
-        from autopwn.core.database import Database
+        from supwngo.core.database import Database
 
         db_path = tmp_path / "test.db"
         db = Database(str(db_path))
@@ -115,7 +115,7 @@ class TestDatabase:
 
     def test_store_and_get_binary(self, tmp_path):
         """Test storing and retrieving binary info."""
-        from autopwn.core.database import Database
+        from supwngo.core.database import Database
 
         db_path = tmp_path / "test.db"
         db = Database(str(db_path))

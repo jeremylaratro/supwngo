@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Setup script for AutoPwn framework."""
+"""Setup script for SupwnGo framework."""
 
 from setuptools import setup, find_packages
 from pathlib import Path
@@ -20,15 +20,15 @@ else:
     requirements = []
 
 setup(
-    name="autopwn",
-    version="0.1.0",
-    author="AutoPwn Contributors",
-    author_email="autopwn@example.com",
-    description="Automated binary exploitation framework",
+    name="supwngo",
+    version="1.0.0",
+    author="SupwnGo Contributors",
+    author_email="supwngo@example.com",
+    description="SupwnGo - Automated binary exploitation framework",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/jeremylaratro/supwngo",
-    packages=find_packages(exclude=["tests", "tests.*"]),
+    packages=find_packages(exclude=["tests", "tests.*", "build*"]),
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Environment :: Console",
@@ -67,12 +67,12 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "autopwn=autopwn.cli:main",
+            "supwngo=supwngo.cli:main",
         ],
     },
     include_package_data=True,
     package_data={
-        "autopwn": [
+        "supwngo": [
             "payloads/templates/*.py",
             "data/*.json",
         ],
