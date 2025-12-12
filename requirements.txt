@@ -1,0 +1,39 @@
+# AutoPwn - Automated Binary Exploitation Framework
+# Core exploitation framework
+pwntools>=4.11.0
+
+# Symbolic execution
+angr>=9.2.0
+angrop>=9.2.0
+claripy>=9.2.0
+
+# Binary parsing and analysis
+pyelftools>=0.29
+capstone>=5.0.0
+keystone-engine>=0.9.2
+unicorn>=2.0.0
+lief>=0.13.0
+
+# ROP gadget finding
+ropper>=1.13.0
+
+# Radare2 integration (optional)
+r2pipe>=1.8.0
+
+# CLI and UI
+click>=8.1.0
+rich>=13.0.0
+
+# Database
+sqlalchemy>=2.0.0
+
+# Network requests (for libc database)
+requests>=2.28.0
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Development
+black>=23.0.0
+mypy>=1.0.0

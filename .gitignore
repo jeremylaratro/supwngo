@@ -205,3 +205,29 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# AutoPwn specific
+*.db
+autopwn.db
+crashes/
+fuzz_output/
+exploits/
+*.core
+core.*
+
+# Fuzzing artifacts
+afl_out/
+honggfuzz_out/
+
+# Test binaries
+test_bins/
+
+# Exploit output
+generated_exploits/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
