@@ -90,38 +90,23 @@ class HeapVulnerabilityDetector(VulnerabilityDetector):
 
     def _detect_static(self) -> List[Vulnerability]:
         """
-        Static heap vulnerability detection.
+        Static heap vulnerability detection with reduced false positives.
+
+        Heap vulnerabilities (UAF, double-free, overflow) cannot be reliably
+        detected by just checking for malloc/free presence - nearly every
+        program uses the heap safely.
+
+        Only report vulnerabilities if there's strong evidence:
+        1. Dynamic testing confirms (crash analysis)
+        2. Very specific patterns detected
 
         Returns:
-            Potential vulnerabilities
+            Potential vulnerabilities (usually empty for static-only)
         """
-        vulns = []
-
-        # Check for heap-related functions
-        has_alloc = any(f in self.binary.plt for f in self.ALLOC_FUNCS)
-        has_free = any(f in self.binary.plt for f in self.FREE_FUNCS)
-
-        if not (has_alloc and has_free):
-            return vulns
-
-        # Check for potential double-free patterns
-        # This would require CFG analysis
-        # For now, just note that heap ops exist
-
-        vuln = Vulnerability(
-            vuln_type=VulnType.HEAP_BUFFER_OVERFLOW,
-            severity=VulnSeverity.MEDIUM,
-            detection_method="static",
-            confidence=0.3,
-            description="Binary uses heap operations - potential heap vulnerabilities",
-            details={
-                "alloc_funcs": [f for f in self.ALLOC_FUNCS if f in self.binary.plt],
-                "free_funcs": [f for f in self.FREE_FUNCS if f in self.binary.plt],
-            },
-        )
-        vulns.append(vuln)
-
-        return vulns
+        # Static detection alone causes too many false positives
+        # Just having malloc/free doesn't mean there's a vulnerability
+        # Rely on dynamic testing (crash analysis) for heap vulns
+        return []
 
     def _detect_from_crash(
         self,

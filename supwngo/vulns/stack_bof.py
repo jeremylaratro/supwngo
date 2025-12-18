@@ -35,16 +35,25 @@ class StackBufferOverflowDetector(VulnerabilityDetector):
     name = "stack_bof_detector"
     vuln_type = VulnType.STACK_BUFFER_OVERFLOW
 
-    # Functions that commonly cause stack overflows
-    DANGEROUS_FUNCS = {
-        "gets": {"severity": VulnSeverity.CRITICAL, "reason": "No bounds checking"},
+    # Functions that ALWAYS indicate vulnerability (no false positives)
+    CRITICAL_FUNCS = {
+        "gets": {"severity": VulnSeverity.CRITICAL, "reason": "Always vulnerable - no bounds checking"},
+    }
+
+    # Functions that MAY indicate vulnerability (needs additional evidence)
+    # These are NOT reported unless combined with other indicators
+    SUSPECT_FUNCS = {
         "strcpy": {"severity": VulnSeverity.HIGH, "reason": "No bounds checking"},
         "strcat": {"severity": VulnSeverity.HIGH, "reason": "No bounds checking"},
         "sprintf": {"severity": VulnSeverity.HIGH, "reason": "No length limit"},
         "vsprintf": {"severity": VulnSeverity.HIGH, "reason": "No length limit"},
         "scanf": {"severity": VulnSeverity.HIGH, "reason": "No width specifier"},
-        "read": {"severity": VulnSeverity.MEDIUM, "reason": "Size may be unchecked"},
-        "recv": {"severity": VulnSeverity.MEDIUM, "reason": "Size may be unchecked"},
+    }
+
+    # Functions that are only dangerous in specific contexts (low confidence)
+    CONTEXT_FUNCS = {
+        "read": {"severity": VulnSeverity.LOW, "reason": "Size may be unchecked"},
+        "recv": {"severity": VulnSeverity.LOW, "reason": "Size may be unchecked"},
     }
 
     def detect(
@@ -77,25 +86,93 @@ class StackBufferOverflowDetector(VulnerabilityDetector):
 
     def _detect_static(self) -> List[Vulnerability]:
         """
-        Detect potential overflows statically.
+        Detect potential stack buffer overflows statically.
+
+        Detection approach:
+        1. CRITICAL functions (gets) - always vulnerable, high confidence
+        2. SUSPECT functions (strcpy, etc.) - report with medium confidence
+        3. CONTEXT functions (read, recv) - report with low confidence
+
+        Protections affect severity/confidence, NOT whether we report.
+        A vulnerability exists regardless of mitigations - they just affect exploitation.
 
         Returns:
             List of potential vulnerabilities
         """
         vulns = []
 
-        for func_name, info in self.DANGEROUS_FUNCS.items():
+        # Calculate confidence modifier based on protections
+        # More protections = harder to exploit = lower confidence in practical impact
+        protection_penalty = 0.0
+        mitigations = []
+        if self.binary.protections.canary:
+            protection_penalty += 0.15
+            mitigations.append("canary")
+        if self.binary.protections.pie:
+            protection_penalty += 0.1
+            mitigations.append("PIE")
+        if self.binary.protections.nx:
+            protection_penalty += 0.05
+            mitigations.append("NX")
+
+        # Check for CRITICAL functions (always report - definitively vulnerable)
+        for func_name, info in self.CRITICAL_FUNCS.items():
             if func_name in self.binary.plt:
+                confidence = max(0.5, 0.95 - protection_penalty)
                 vuln = Vulnerability(
                     vuln_type=VulnType.STACK_BUFFER_OVERFLOW,
                     severity=info["severity"],
                     address=self.binary.plt[func_name],
                     function=func_name,
                     detection_method="static",
-                    confidence=0.6,  # Lower confidence for static detection
+                    confidence=confidence,
                     description=f"Call to {func_name}(): {info['reason']}",
+                    details={"mitigations": mitigations} if mitigations else {},
                 )
                 vulns.append(vuln)
+
+        # Check for SUSPECT functions (likely vulnerable if used with user input)
+        for func_name, info in self.SUSPECT_FUNCS.items():
+            if func_name in self.binary.plt:
+                confidence = max(0.3, 0.6 - protection_penalty)
+                vuln = Vulnerability(
+                    vuln_type=VulnType.STACK_BUFFER_OVERFLOW,
+                    severity=info["severity"] if not mitigations else VulnSeverity.MEDIUM,
+                    address=self.binary.plt[func_name],
+                    function=func_name,
+                    detection_method="static",
+                    confidence=confidence,
+                    description=f"Potential overflow: {func_name}() - {info['reason']}",
+                    details={"mitigations": mitigations} if mitigations else {},
+                )
+                vulns.append(vuln)
+                break  # Only report once to reduce noise
+
+        # Check for CONTEXT functions (possible overflow, needs dynamic confirmation)
+        # Unlike gets/strcpy, read/recv aren't inherently dangerous - depends on size parameter
+        # Only flag if binary lacks major protections (likely CTF/test binary)
+        # With full protections + no other evidence = too many false positives
+        has_major_protection = self.binary.protections.canary and self.binary.protections.pie
+
+        if not has_major_protection:
+            for func_name, info in self.CONTEXT_FUNCS.items():
+                if func_name in self.binary.plt:
+                    confidence = max(0.2, 0.4 - protection_penalty)
+                    vuln = Vulnerability(
+                        vuln_type=VulnType.STACK_BUFFER_OVERFLOW,
+                        severity=VulnSeverity.LOW,
+                        address=self.binary.plt[func_name],
+                        function=func_name,
+                        detection_method="static",
+                        confidence=confidence,
+                        description=f"Potential overflow via {func_name}() - {info['reason']}",
+                        details={
+                            "mitigations": mitigations,
+                            "note": "Needs dynamic testing to confirm",
+                        } if mitigations else {"note": "Needs dynamic testing to confirm"},
+                    )
+                    vulns.append(vuln)
+                    break  # Only report once
 
         return vulns
 
@@ -344,6 +421,7 @@ quit
 
     def summary(self) -> str:
         """Get detection summary."""
+        all_dangerous = {**self.CRITICAL_FUNCS, **self.SUSPECT_FUNCS, **self.CONTEXT_FUNCS}
         return f"""
 Stack Buffer Overflow Detection
 ===============================
@@ -351,6 +429,6 @@ Binary: {self.binary.path.name}
 Canary: {'Yes' if self.binary.protections.canary else 'No'}
 NX: {'Yes' if self.binary.protections.nx else 'No'}
 
-Dangerous functions found: {sum(1 for f in self.DANGEROUS_FUNCS if f in self.binary.plt)}
+Dangerous functions found: {sum(1 for f in all_dangerous if f in self.binary.plt)}
 Vulnerabilities detected: {len(self._vulnerabilities)}
 """
