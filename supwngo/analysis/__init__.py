@@ -12,6 +12,21 @@ from supwngo.analysis.diff import BinaryDiffer, FunctionMatch, PatchInfo
 from supwngo.analysis.decompile import Decompiler, DecompiledFunction
 from supwngo.analysis.imports import ImportAnalyzer, ImportedSymbol, ExportedSymbol
 
+# Cutting-edge: Patch diffing for 1-day development
+from supwngo.analysis.patch_diff import (
+    PatchDiffer,
+    PatchDiffResult,
+    FunctionDiff,
+    BasicBlockChange,
+    ChangeType,
+    SecurityRelevance,
+    BinDiffIntegration,
+    Diaphora,
+    CVECorrelator,
+    diff_binaries,
+    generate_1day_template,
+)
+
 __all__ = [
     # Original
     "StaticAnalyzer",
@@ -41,4 +56,16 @@ __all__ = [
     "ImportAnalyzer",
     "ImportedSymbol",
     "ExportedSymbol",
+    # Patch Diffing (1-day development)
+    "PatchDiffer",
+    "PatchDiffResult",
+    "FunctionDiff",
+    "BasicBlockChange",
+    "ChangeType",
+    "SecurityRelevance",
+    "BinDiffIntegration",
+    "Diaphora",
+    "CVECorrelator",
+    "diff_binaries",
+    "generate_1day_template",
 ]

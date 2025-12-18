@@ -43,6 +43,26 @@ from supwngo.kernel.cross_cache import (
     SlubCache,
 )
 
+# io_uring exploitation
+from supwngo.kernel.io_uring import (
+    IoUringExploit,
+    IoUringSQE,
+    IoUringCQE,
+    IoUringParams,
+    IoUringOp,
+    IoUringSQEFlags,
+    IoUringSetupFlags,
+    IoUringRegisterOp,
+    FixedBufferExploit,
+    TimeoutExploit,
+    FilesUpdateExploit,
+    IoUringSpray,
+    IoUringVuln,
+    IOURING_VULNS,
+    check_vulnerable_kernel,
+    generate_exploit_template as generate_iouring_exploit_template,
+)
+
 __all__ = [
     # Module analysis
     "KernelModule",
@@ -82,4 +102,21 @@ __all__ = [
     "CrossCacheSpray",
     "CommonVictimObjects",
     "SlubCache",
+    # io_uring exploitation
+    "IoUringExploit",
+    "IoUringSQE",
+    "IoUringCQE",
+    "IoUringParams",
+    "IoUringOp",
+    "IoUringSQEFlags",
+    "IoUringSetupFlags",
+    "IoUringRegisterOp",
+    "FixedBufferExploit",
+    "TimeoutExploit",
+    "FilesUpdateExploit",
+    "IoUringSpray",
+    "IoUringVuln",
+    "IOURING_VULNS",
+    "check_vulnerable_kernel",
+    "generate_iouring_exploit_template",
 ]
