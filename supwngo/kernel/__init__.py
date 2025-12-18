@@ -9,6 +9,7 @@ Provides tools for:
 - Exploit template generation
 - ret2usr (return to userspace) exploitation
 - modprobe_path / core_pattern overwrite
+- Modern kernel exploitation (msg_msg, pipe_buffer, cross-cache)
 """
 
 from supwngo.kernel.module import KernelModule
@@ -18,6 +19,29 @@ from supwngo.kernel.krop import KernelROPBuilder, KernelROPChain, KernelGadget
 from supwngo.kernel.templates import KernelExploitTemplate
 from supwngo.kernel.ret2usr import Ret2usr, Ret2usrPayload
 from supwngo.kernel.modprobe import ModprobeExploit, ModprobePayload, CorePatternExploit
+
+# Modern kernel exploitation techniques
+from supwngo.kernel.msg_msg import (
+    MsgMsgExploit,
+    MsgMsgSpray,
+    MsgMsgLeak,
+    MsgMsgWrite,
+    MsgMsgHeader,
+)
+from supwngo.kernel.pipe_buffer import (
+    PipeBufferExploit,
+    DirtyPipeExploit,
+    DirtyPipeCheck,
+    PipeSpray,
+    PipeBuffer,
+)
+from supwngo.kernel.cross_cache import (
+    CrossCacheExploit,
+    CrossCacheAnalyzer,
+    CrossCacheSpray,
+    CommonVictimObjects,
+    SlubCache,
+)
 
 __all__ = [
     # Module analysis
@@ -40,4 +64,22 @@ __all__ = [
     "ModprobeExploit",
     "ModprobePayload",
     "CorePatternExploit",
+    # msg_msg exploitation
+    "MsgMsgExploit",
+    "MsgMsgSpray",
+    "MsgMsgLeak",
+    "MsgMsgWrite",
+    "MsgMsgHeader",
+    # pipe_buffer exploitation
+    "PipeBufferExploit",
+    "DirtyPipeExploit",
+    "DirtyPipeCheck",
+    "PipeSpray",
+    "PipeBuffer",
+    # Cross-cache attacks
+    "CrossCacheExploit",
+    "CrossCacheAnalyzer",
+    "CrossCacheSpray",
+    "CommonVictimObjects",
+    "SlubCache",
 ]
