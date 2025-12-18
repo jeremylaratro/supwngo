@@ -120,15 +120,16 @@ class TestDatabase:
         db_path = tmp_path / "test.db"
         db = Database(str(db_path))
 
-        binary_id = db.store_binary(
+        binary_id = db.save_binary_analysis(
             path="/test/binary",
             sha256="abc123",
             arch="amd64",
             bits=64,
             protections={"nx": True, "canary": True},
+            analysis_data={"test": "data"},
         )
 
-        info = db.get_binary(binary_id)
+        info = db.get_binary_analysis("abc123")
         assert info is not None
         assert info["path"] == "/test/binary"
         assert info["arch"] == "amd64"

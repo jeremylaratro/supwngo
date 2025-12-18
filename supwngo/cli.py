@@ -296,13 +296,29 @@ def exploit(ctx, binary, crash, remote, libc, output, auto):
     else:
         # Try to detect vulnerability automatically
         console.print("[cyan]Detecting vulnerabilities...[/cyan]")
-        detector = StackBufferOverflowDetector(bin_obj)
-        vulns = detector.detect()
 
-        if vulns:
-            vuln = vulns[0]
-            console.print(f"  Found: {vuln.vuln_type.name}")
-            console.print(f"  Function: {vuln.function}")
+        # Check for canary bypass first (needed for protected binaries)
+        from supwngo.vulns.canary_bypass import CanaryBypassDetector
+
+        if bin_obj.protections.canary:
+            canary_detector = CanaryBypassDetector(bin_obj)
+            canary_vulns = canary_detector.detect()
+            if canary_vulns:
+                vuln = canary_vulns[0]
+                console.print(f"  Found: [green]{vuln.description}[/green]")
+                console.print(f"  Bypass type: {vuln.details.get('bypass_type', 'unknown')}")
+                console.print(f"  Skip character: '{vuln.details.get('skip_character', '.')}'")
+                console.print(f"  Canary index: {vuln.details.get('canary_index', 33)}")
+
+        # Also check for stack buffer overflows
+        if not vuln:
+            detector = StackBufferOverflowDetector(bin_obj)
+            vulns = detector.detect()
+
+            if vulns:
+                vuln = vulns[0]
+                console.print(f"  Found: {vuln.vuln_type.name}")
+                console.print(f"  Function: {vuln.function}")
 
     if not vuln:
         console.print("[red]No exploitable vulnerability found[/red]")
@@ -310,6 +326,32 @@ def exploit(ctx, binary, crash, remote, libc, output, auto):
 
     # Generate exploit
     console.print("\n[cyan]Generating exploit...[/cyan]")
+
+    # For canary bypass vulnerabilities, use AutoExploiter
+    if vuln.details.get('bypass_type') == 'SCANF_SKIP':
+        from supwngo.exploit.auto import AutoExploiter
+
+        exploiter = AutoExploiter(bin_obj, libc_path=libc)
+        report = exploiter.run(techniques=["scanf_canary_bypass"])
+
+        if report.exploit_script:
+            console.print(f"  Technique: scanf canary bypass")
+            console.print(f"  Script generated: {len(report.exploit_script)} bytes")
+
+            # Save exploit script
+            with open(output, "w") as f:
+                f.write(report.exploit_script)
+
+            Path(output).chmod(0o755)
+            console.print(f"\n[green]Exploit saved to {output}[/green]")
+
+            if report.successful:
+                console.print("[green bold]Exploit verified working![/green bold]")
+            return
+        else:
+            console.print("[yellow]Canary bypass detected but exploit generation failed[/yellow]")
+            console.print("[yellow]Falling back to standard exploit generator[/yellow]")
+
     generator = ExploitGenerator(context)
     exploit_obj = generator.generate(vuln, auto_pwn=auto)
 
@@ -901,6 +943,7 @@ def autopwn(ctx, binary, technique, offset, timeout, libc, output, run):
 
     Tries various exploitation techniques automatically:
     - ret2win: Return to win function
+    - uaf: Use-After-Free with function pointer overwrite
     - shellcode: Direct shellcode (if NX disabled)
     - ret2system: ret2libc system() call
     - srop: Sigreturn-oriented programming
@@ -933,7 +976,7 @@ def autopwn(ctx, binary, technique, offset, timeout, libc, output, run):
 
     # Determine techniques to try
     if technique == "all":
-        techniques = ["ret2win", "shellcode", "ret2system", "srop"]
+        techniques = ["ret2win", "formatstring", "intoverflow", "uaf", "doublefree", "shellcode", "ret2system", "srop"]
     else:
         techniques = [technique]
 
@@ -1283,6 +1326,119 @@ Tools Used: {', '.join(report.tools_used)}
 
 
 @cli.command()
+@click.argument("module", type=click.Path(exists=True))
+@click.option("-k", "--kallsyms", type=click.Path(exists=True), help="kallsyms file for symbol resolution")
+@click.option("-v", "--vmlinux", type=click.Path(exists=True), help="vmlinux for gadget finding")
+@click.option("--leak-func", help="Function name for KASLR leak (e.g., timerfd_tmrproc)")
+@click.option("--leak-offset", type=str, help="Offset of leak function from kernel base (hex)")
+@click.option("-o", "--output", type=click.Path(), help="Output exploit C code")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.pass_context
+def kernel(ctx, module, kallsyms, vmlinux, leak_func, leak_offset, output, json_output):
+    """
+    Analyze kernel module (.ko) for vulnerabilities.
+
+    Designed for kernel exploitation challenges like:
+    - Heap OOB read/write
+    - UAF via slab manipulation
+    - Race conditions
+
+    Generates exploit templates using:
+    - timerfd/msg_msg/pipe_buffer spray
+    - Kernel ROP chains
+    - KASLR bypass techniques
+
+    Examples:
+        supwngo kernel ./vuln.ko
+        supwngo kernel ./ttp.ko --leak-func timerfd_tmrproc --leak-offset 0x3370e0
+        supwngo kernel ./vuln.ko -o exploit.c
+    """
+    from supwngo.kernel.module import KernelModule
+    from supwngo.kernel.symbols import KernelSymbols
+    from supwngo.kernel.slab import SlabAllocator
+    from supwngo.kernel.templates import KernelExploitTemplate
+
+    console.print(f"\n[bold cyan]{'=' * 60}[/bold cyan]")
+    console.print(f"[bold cyan]  Kernel Module Analysis: {Path(module).name}[/bold cyan]")
+    console.print(f"[bold cyan]{'=' * 60}[/bold cyan]\n")
+
+    # Load and analyze module
+    with console.status("Analyzing kernel module..."):
+        km = KernelModule.load(module)
+
+    # Print analysis results
+    console.print(Panel(km.summary(), title="Module Analysis"))
+
+    # Show slab targets
+    if km.kmalloc_calls:
+        for call in km.kmalloc_calls:
+            if call.size > 0:
+                targets = SlabAllocator.get_useful_structs(call.slab_name)
+                spray = SlabAllocator.get_spray_methods(call.slab_name)
+
+                console.print(f"\n[bold cyan]{call.slab_name}[/bold cyan]")
+                console.print(f"  Target structures: {', '.join(targets) or 'None'}")
+                console.print(f"  Spray methods: {', '.join(spray) or 'None'}")
+
+    # If we have leak info, calculate kernel base
+    symbols = None
+    if leak_func and leak_offset:
+        offset = int(leak_offset, 16) if leak_offset.startswith("0x") else int(leak_offset)
+        # This would be used with an actual leak
+        console.print(f"\n[cyan]KASLR leak configured:[/cyan]")
+        console.print(f"  Function: {leak_func}")
+        console.print(f"  Offset: 0x{offset:x}")
+
+    # Load symbols if provided
+    if kallsyms:
+        with console.status("Loading kernel symbols..."):
+            symbols = KernelSymbols.from_kallsyms(kallsyms)
+            console.print(symbols.summary())
+
+    # Generate exploit template
+    if output:
+        template = KernelExploitTemplate(module=km, symbols=symbols)
+
+        # Check if this looks like tictacpwn
+        is_ttp = "ttp" in module.lower() or any(
+            cmd.code in [0x40087401, 0x40087402, 0x40087403, 0x40087404]
+            for cmd in km.ioctl_handlers
+        )
+
+        if is_ttp:
+            console.print("\n[yellow]Detected tictacpwn-like challenge![/yellow]")
+            exploit_code = template.generate_tictacpwn_exploit()
+        else:
+            exploit_code = template.generate_full_exploit(
+                target_name=km.name,
+                vuln_type="heap_oob" if km.vulnerabilities else "unknown",
+            )
+
+        with open(output, "w") as f:
+            f.write(exploit_code)
+
+        console.print(f"\n[green]Exploit template saved to: {output}[/green]")
+
+    if json_output:
+        result = {
+            "module": km.name,
+            "ioctl_commands": [
+                {"code": hex(cmd.code), "type": cmd.type_char, "nr": cmd.nr, "size": cmd.size}
+                for cmd in km.ioctl_handlers
+            ],
+            "kmalloc_calls": [
+                {"size": call.size, "slab": call.slab_name}
+                for call in km.kmalloc_calls if call.size > 0
+            ],
+            "vulnerabilities": [
+                {"type": v.type, "description": v.description}
+                for v in km.vulnerabilities
+            ],
+        }
+        console.print_json(json.dumps(result, indent=2))
+
+
+@cli.command()
 @click.pass_context
 def version(ctx):
     """Show version information."""
@@ -1307,6 +1463,978 @@ def version(ctx):
             console.print(f"  [green]✓[/green] {name}")
         except ImportError:
             console.print(f"  [red]✗[/red] {name}")
+
+
+# ============================================================================
+# Phase 1: New Analysis Commands
+# ============================================================================
+
+@cli.command()
+@click.argument("binary", type=click.Path(exists=True))
+@click.option("-f", "--function", help="Specific function to analyze")
+@click.option("--loops", is_flag=True, help="Find and analyze loops")
+@click.option("--complexity", is_flag=True, help="Show complexity metrics")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.pass_context
+def cfg(ctx, binary, function, loops, complexity, json_output):
+    """
+    Build and analyze Control Flow Graph.
+
+    Identifies basic blocks, loops, function relationships,
+    and potentially dangerous patterns in the control flow.
+    """
+    from supwngo.core.binary import Binary
+    from supwngo.analysis.cfg import CFGAnalyzer
+
+    console.print(f"\n[bold]CFG Analysis:[/bold] {binary}\n")
+
+    bin_obj = Binary.load(binary)
+    analyzer = CFGAnalyzer(bin_obj)
+
+    with console.status("Building control flow graph..."):
+        blocks = analyzer.build_cfg()
+
+    console.print(f"[cyan]Built CFG: {len(blocks)} basic blocks, {len(analyzer.functions)} functions[/cyan]")
+
+    if loops:
+        with console.status("Finding loops..."):
+            found_loops = analyzer.find_loops()
+
+        if found_loops:
+            console.print(f"\n[bold]Loops Found: {len(found_loops)}[/bold]")
+            table = Table()
+            table.add_column("Header", style="cyan")
+            table.add_column("Blocks", style="green")
+            table.add_column("Nesting", style="yellow")
+
+            for loop in found_loops[:20]:
+                table.add_row(
+                    hex(loop.header),
+                    str(len(loop.blocks)),
+                    str(loop.nesting_level),
+                )
+
+            console.print(table)
+
+    if complexity:
+        console.print("\n[bold]Function Complexity:[/bold]")
+        table = Table()
+        table.add_column("Function", style="cyan")
+        table.add_column("Blocks", style="green")
+        table.add_column("Complexity", style="yellow")
+        table.add_column("Recursive", style="red")
+
+        for name, func in sorted(analyzer.functions.items(),
+                                  key=lambda x: x[1].cyclomatic_complexity,
+                                  reverse=True)[:20]:
+            metrics = analyzer.get_function_complexity(name)
+            table.add_row(
+                name[:30],
+                str(metrics.get("blocks", 0)),
+                str(metrics.get("cyclomatic_complexity", 0)),
+                "Yes" if metrics.get("is_recursive") else "No",
+            )
+
+        console.print(table)
+
+    if function:
+        metrics = analyzer.get_function_complexity(function)
+        if metrics:
+            console.print(f"\n[bold]Function: {function}[/bold]")
+            for key, val in metrics.items():
+                console.print(f"  {key}: {val}")
+
+    # Find dangerous patterns
+    patterns = analyzer.find_dangerous_patterns()
+    if patterns:
+        console.print("\n[bold red]Dangerous Patterns:[/bold red]")
+        for p in patterns[:10]:
+            console.print(f"  [{p['type']}] {p.get('function', p.get('address', ''))} - {p['risk']}")
+
+    if json_output:
+        result = {
+            "blocks": len(blocks),
+            "functions": len(analyzer.functions),
+            "loops": len(analyzer.loops) if loops else 0,
+            "patterns": patterns[:20],
+        }
+        console.print_json(json.dumps(result, indent=2))
+
+
+@cli.command()
+@click.argument("binary", type=click.Path(exists=True))
+@click.option("-f", "--function", help="Function to analyze (address in hex or name)")
+@click.option("--taint", is_flag=True, help="Perform taint analysis")
+@click.option("--integer", is_flag=True, help="Find integer vulnerabilities")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.pass_context
+def dataflow(ctx, binary, function, taint, integer, json_output):
+    """
+    Perform data flow analysis on binary.
+
+    Tracks how user input flows through the program to identify:
+    - Tainted data reaching dangerous functions
+    - Integer overflow opportunities
+    - Potential information leaks
+    """
+    from supwngo.core.binary import Binary
+    from supwngo.analysis.dataflow import DataFlowAnalyzer
+
+    console.print(f"\n[bold]Data Flow Analysis:[/bold] {binary}\n")
+
+    bin_obj = Binary.load(binary)
+    analyzer = DataFlowAnalyzer(bin_obj)
+
+    # Determine function address
+    func_addr = None
+    if function:
+        if function.startswith("0x"):
+            func_addr = int(function, 16)
+        else:
+            # Look up symbol
+            for name, sym in bin_obj.symbols.items():
+                if name == function:
+                    func_addr = sym.address
+                    break
+            if not func_addr:
+                # Try main
+                func_addr = bin_obj.symbols.get("main", {})
+                if hasattr(func_addr, 'address'):
+                    func_addr = func_addr.address
+                else:
+                    func_addr = None
+
+    if not func_addr:
+        # Use entry point or main
+        func_addr = bin_obj.symbols.get("main")
+        if func_addr and hasattr(func_addr, 'address'):
+            func_addr = func_addr.address
+        else:
+            func_addr = bin_obj.elf.entry
+
+    console.print(f"[cyan]Analyzing function at 0x{func_addr:x}[/cyan]")
+
+    with console.status("Analyzing data flow..."):
+        results = analyzer.analyze_function(func_addr)
+
+    if results.get("tainted_paths"):
+        console.print("\n[bold yellow]Taint Sources:[/bold yellow]")
+        for path in results["tainted_paths"]:
+            console.print(f"  {path['source']} ({path['type']}) at {path['address']}")
+
+    if results.get("dangerous_sinks"):
+        console.print("\n[bold red]Dangerous Sinks (tainted data reaches):[/bold red]")
+        for sink in results["dangerous_sinks"]:
+            console.print(f"  {sink['sink']} at {sink['address']}")
+            if sink.get("taint_source"):
+                console.print(f"    Tainted from: {sink['taint_source']}")
+
+    if integer:
+        with console.status("Analyzing integer operations..."):
+            int_ops = analyzer.analyze_integer_operations(func_addr)
+
+        if int_ops:
+            console.print("\n[bold yellow]Potentially Dangerous Integer Operations:[/bold yellow]")
+            for op in int_ops[:20]:
+                console.print(f"  [{op['type']}] {op['address']}: {op['instruction']}")
+                console.print(f"      Risk: {op['risk']}")
+
+    if json_output:
+        console.print_json(json.dumps(results, indent=2, default=str))
+
+
+@cli.command()
+@click.argument("binary", type=click.Path(exists=True))
+@click.option("--format-strings", is_flag=True, help="Focus on format strings")
+@click.option("--crypto", is_flag=True, help="Find crypto constants")
+@click.option("--encoded", is_flag=True, help="Find encoded data")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.pass_context
+def strings_analysis(ctx, binary, format_strings, crypto, encoded, json_output):
+    """
+    Advanced string analysis for exploitation.
+
+    Finds exploitable strings including:
+    - Format string specifiers (%n, %s, etc.)
+    - Shell commands and paths
+    - Encoded/encrypted data
+    - Cryptographic constants
+    """
+    from supwngo.core.binary import Binary
+    from supwngo.analysis.strings import StringAnalyzer, StringCategory
+
+    console.print(f"\n[bold]String Analysis:[/bold] {binary}\n")
+
+    bin_obj = Binary.load(binary)
+    analyzer = StringAnalyzer(bin_obj)
+
+    with console.status("Analyzing strings..."):
+        strings = analyzer.analyze()
+
+    console.print(f"[cyan]Analyzed {len(strings)} interesting strings[/cyan]")
+
+    # Summary
+    categories = {}
+    for s in strings:
+        cat = s.category.name
+        categories[cat] = categories.get(cat, 0) + 1
+
+    console.print("\n[bold]Categories:[/bold]")
+    for cat, count in sorted(categories.items(), key=lambda x: -x[1]):
+        console.print(f"  {cat}: {count}")
+
+    if format_strings:
+        vulns = analyzer.find_format_string_vulns()
+        if vulns:
+            console.print("\n[bold red]Format String Vulnerabilities:[/bold red]")
+            for v in vulns:
+                console.print(f"  [{v['severity']}] {v['address']}: {v['string'][:40]}")
+                console.print(f"      {v['details']}")
+
+    if crypto:
+        with console.status("Searching for crypto constants..."):
+            crypto_findings = analyzer.find_crypto_constants()
+
+        if crypto_findings:
+            console.print("\n[bold cyan]Cryptographic Constants:[/bold cyan]")
+            for f in crypto_findings[:20]:
+                console.print(f"  {f['name']}: {f['constant']} at {f['address']}")
+
+    if encoded:
+        enc_strings = [s for s in strings if s.category == StringCategory.ENCODED_DATA]
+        if enc_strings:
+            console.print("\n[bold yellow]Encoded Data:[/bold yellow]")
+            for s in enc_strings[:10]:
+                console.print(f"  {hex(s.address)}: {s.value[:50]}")
+                if s.details.get("encoding"):
+                    console.print(f"      Encoding: {s.details['encoding']}")
+                    if s.details.get("decoded_preview"):
+                        console.print(f"      Decoded: {s.details['decoded_preview'][:30]}")
+
+    # Exploitable strings
+    exploitable = [s for s in strings if s.exploitable]
+    if exploitable:
+        console.print(f"\n[bold red]Exploitable Strings ({len(exploitable)}):[/bold red]")
+        for s in exploitable[:10]:
+            console.print(f"  [{s.exploit_type}] {hex(s.address)}: {s.value[:40]}")
+
+    if json_output:
+        result = {
+            "total": len(strings),
+            "categories": categories,
+            "exploitable": [
+                {"address": hex(s.address), "value": s.value, "type": s.exploit_type}
+                for s in exploitable
+            ],
+        }
+        console.print_json(json.dumps(result, indent=2))
+
+
+@cli.command()
+@click.argument("binary1", type=click.Path(exists=True))
+@click.argument("binary2", type=click.Path(exists=True))
+@click.option("--security-only", is_flag=True, help="Show only security-relevant changes")
+@click.option("-o", "--output", type=click.Path(), help="Save diff to file")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.pass_context
+def diff(ctx, binary1, binary2, security_only, output, json_output):
+    """
+    Diff two binaries to find patches and changes.
+
+    Useful for:
+    - Finding security patches in updated binaries
+    - Recovering symbols from debug builds
+    - Understanding what changed between versions
+    """
+    from supwngo.core.binary import Binary
+    from supwngo.analysis.diff import BinaryDiffer
+
+    console.print(f"\n[bold]Binary Diff:[/bold]")
+    console.print(f"  Old: {binary1}")
+    console.print(f"  New: {binary2}\n")
+
+    bin1 = Binary.load(binary1)
+    bin2 = Binary.load(binary2)
+
+    differ = BinaryDiffer(bin1, bin2)
+
+    with console.status("Diffing binaries..."):
+        results = differ.diff()
+
+    console.print(f"[cyan]Functions in binary1: {results['functions1']}[/cyan]")
+    console.print(f"[cyan]Functions in binary2: {results['functions2']}[/cyan]")
+    console.print(f"[cyan]Matched: {results['matched']}[/cyan]")
+
+    if security_only:
+        patches = differ.get_security_patches()
+    else:
+        patches = differ.patches
+
+    if patches:
+        console.print(f"\n[bold]Changes ({len(patches)}):[/bold]")
+        table = Table()
+        table.add_column("Function", style="cyan")
+        table.add_column("Type", style="yellow")
+        table.add_column("Size Change")
+        table.add_column("Security", style="red")
+        table.add_column("Description")
+
+        for p in patches[:30]:
+            sec = "[red]Yes[/red]" if p.security_relevant else "No"
+            table.add_row(
+                p.function[:25],
+                p.patch_type,
+                str(p.size_change),
+                sec,
+                p.description[:40],
+            )
+
+        console.print(table)
+
+    # Symbol recovery
+    recovered = differ.recover_symbols()
+    if recovered:
+        console.print(f"\n[bold green]Recoverable Symbols: {len(recovered)}[/bold green]")
+        for addr, name in list(recovered.items())[:10]:
+            console.print(f"  0x{addr:x} -> {name}")
+
+    if output:
+        with open(output, "w") as f:
+            json.dump(results, f, indent=2, default=str)
+        console.print(f"\n[green]Diff saved to {output}[/green]")
+
+    if json_output:
+        console.print_json(json.dumps(results, indent=2, default=str))
+
+
+@cli.command()
+@click.argument("binary", type=click.Path(exists=True))
+@click.option("-f", "--function", help="Function to decompile")
+@click.option("--ghidra/--angr", default=True, help="Decompiler to use")
+@click.option("-o", "--output", type=click.Path(), help="Save decompiled code")
+@click.pass_context
+def decompile(ctx, binary, function, ghidra, output):
+    """
+    Decompile binary to pseudo-C code.
+
+    Integrates with Ghidra (if available) or falls back to angr.
+    Extracts variables, function calls, and control flow.
+    """
+    from supwngo.core.binary import Binary
+    from supwngo.analysis.decompile import Decompiler
+
+    console.print(f"\n[bold]Decompilation:[/bold] {binary}\n")
+
+    bin_obj = Binary.load(binary)
+    decomp = Decompiler(bin_obj)
+
+    # Show available decompilers
+    available = decomp.get_available_decompilers()
+    console.print(f"[cyan]Available decompilers: {', '.join(available) or 'None'}[/cyan]")
+
+    # Determine function to decompile
+    func_addr = None
+    func_name = function
+
+    if function:
+        if function.startswith("0x"):
+            func_addr = int(function, 16)
+            func_name = None
+        else:
+            for name, sym in bin_obj.symbols.items():
+                if name == function:
+                    func_addr = sym.address
+                    break
+
+    if not func_addr and not func_name:
+        func_name = "main"
+
+    console.print(f"[cyan]Decompiling: {func_name or hex(func_addr)}[/cyan]")
+
+    with console.status("Decompiling..."):
+        result = decomp.decompile(func_name=func_name, func_addr=func_addr, use_ghidra=ghidra)
+
+    if result:
+        console.print(f"\n[bold green]Decompiled: {result.name}[/bold green]")
+        console.print(f"Address: 0x{result.address:x}")
+        console.print(f"Return type: {result.return_type}")
+
+        if result.parameters:
+            console.print(f"Parameters: {len(result.parameters)}")
+            for p in result.parameters:
+                console.print(f"  {p.type_str} {p.name}")
+
+        if result.calls:
+            console.print(f"Calls: {', '.join(result.calls[:10])}")
+
+        console.print("\n[bold]Decompiled Code:[/bold]")
+        console.print(Panel(result.code[:3000], title=result.name, border_style="cyan"))
+
+        if output:
+            with open(output, "w") as f:
+                f.write(f"// Decompiled: {result.name}\n")
+                f.write(f"// Address: 0x{result.address:x}\n\n")
+                f.write(result.code)
+            console.print(f"\n[green]Saved to {output}[/green]")
+
+        # Check for vulnerabilities
+        decomp.decompiled_functions[result.name] = result
+        vulns = decomp.find_vulnerabilities_in_decompiled()
+        if vulns:
+            console.print("\n[bold red]Potential Vulnerabilities in Decompiled Code:[/bold red]")
+            for v in vulns:
+                console.print(f"  [{v['severity']}] {v['description']}")
+    else:
+        console.print("[red]Decompilation failed[/red]")
+
+
+@cli.command()
+@click.argument("binary", type=click.Path(exists=True))
+@click.option("--dangerous", is_flag=True, help="Show only dangerous imports")
+@click.option("--hooks", is_flag=True, help="Find hookable targets")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.pass_context
+def imports(ctx, binary, dangerous, hooks, json_output):
+    """
+    Analyze binary imports and dependencies.
+
+    Shows:
+    - Imported functions and libraries
+    - Weak symbols that can be overridden
+    - Lazy binding opportunities for GOT overwrite
+    - Glibc version requirements
+    """
+    from supwngo.core.binary import Binary
+    from supwngo.analysis.imports import ImportAnalyzer
+
+    console.print(f"\n[bold]Import Analysis:[/bold] {binary}\n")
+
+    bin_obj = Binary.load(binary)
+    analyzer = ImportAnalyzer(bin_obj)
+
+    with console.status("Analyzing imports..."):
+        results = analyzer.analyze()
+
+    console.print(f"[cyan]Imports: {len(results['imports'])}[/cyan]")
+    console.print(f"[cyan]Exports: {len(results['exports'])}[/cyan]")
+    console.print(f"[cyan]Dependencies: {len(results['dependencies'])}[/cyan]")
+
+    if results.get('glibc_version'):
+        console.print(f"[cyan]Min glibc: {results['glibc_version']}[/cyan]")
+
+    # Dependencies
+    if results['dependencies']:
+        console.print("\n[bold]Dependencies:[/bold]")
+        for name, dep in results['dependencies'].items():
+            versions = ", ".join(dep.get('versions', [])[:3]) if dep.get('versions') else "any"
+            console.print(f"  {name} ({versions})")
+
+    # Dangerous imports
+    if dangerous or results.get('dangerous_imports'):
+        di = results.get('dangerous_imports', {})
+        if di:
+            console.print("\n[bold red]Dangerous Imports:[/bold red]")
+            for category, funcs in di.items():
+                console.print(f"  {category}: {', '.join(funcs)}")
+
+    # Weak symbols
+    if results.get('weak_symbols'):
+        console.print(f"\n[bold yellow]Weak Symbols (overridable):[/bold yellow]")
+        for sym in results['weak_symbols'][:10]:
+            console.print(f"  {sym}")
+
+    # Lazy bindings
+    if results.get('lazy_bindings'):
+        console.print(f"\n[bold cyan]Lazy Bound Functions ({len(results['lazy_bindings'])}):[/bold cyan]")
+        console.print(f"  (GOT entries can be overwritten)")
+
+    if hooks:
+        targets = analyzer.find_hook_targets()
+        if targets:
+            console.print("\n[bold green]Hookable Targets:[/bold green]")
+            for t in targets:
+                console.print(f"  [{t['type']}] {t['name']}")
+                if t.get('note'):
+                    console.print(f"      {t['note']}")
+
+    # Exploitation info summary
+    exploit_info = analyzer.get_exploitation_info()
+    console.print("\n[bold]Exploitation Summary:[/bold]")
+    console.print(f"  RELRO: {exploit_info['relro_status']}")
+    console.print(f"  Has system(): {'Yes' if exploit_info['has_system'] else 'No'}")
+    console.print(f"  Has execve(): {'Yes' if exploit_info['has_execve'] else 'No'}")
+    console.print(f"  Has mprotect(): {'Yes' if exploit_info['has_mprotect'] else 'No'}")
+    console.print(f"  Hookable targets: {len(exploit_info['hookable_targets'])}")
+
+    if json_output:
+        console.print_json(json.dumps(results, indent=2, default=str))
+
+
+# ============================================================================
+# Phase 2: Detection Accuracy Improvements
+# ============================================================================
+
+@cli.command()
+@click.argument("binary", type=click.Path(exists=True))
+@click.option("--fingerprint", is_flag=True, help="Attempt libc fingerprinting from leaks")
+@click.option("--chain", is_flag=True, help="Build leak chain for multi-step disclosure")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.pass_context
+def leaks(ctx, binary, fingerprint, chain, json_output):
+    """
+    Find information leak vulnerabilities.
+
+    Detects:
+    - Format string leaks (%p chains)
+    - GOT/PLT leak primitives
+    - Stack address disclosure
+    - Heap address disclosure
+    - Libc pointer leaks
+    """
+    from supwngo.core.binary import Binary
+    from supwngo.vulns.leak_finder import LeakFinder
+
+    console.print(f"\n[bold]Leak Detection:[/bold] {binary}\n")
+
+    bin_obj = Binary.load(binary)
+    finder = LeakFinder(bin_obj)
+
+    with console.status("Searching for leak primitives..."):
+        leaks_found = finder.analyze()
+
+    console.print(f"[cyan]Found {len(leaks_found)} potential leak primitives[/cyan]")
+
+    if leaks_found:
+        # Group by type
+        by_type = {}
+        for leak in leaks_found:
+            t = leak.leak_type.name
+            if t not in by_type:
+                by_type[t] = []
+            by_type[t].append(leak)
+
+        console.print("\n[bold]Leak Types:[/bold]")
+        for leak_type, items in sorted(by_type.items(), key=lambda x: -len(x[1])):
+            console.print(f"  {leak_type}: {len(items)}")
+
+        # Show top leaks
+        table = Table(title="Top Leak Primitives")
+        table.add_column("Type", style="cyan")
+        table.add_column("Address", style="green")
+        table.add_column("Function", style="yellow")
+        table.add_column("Description")
+        table.add_column("Confidence")
+
+        for leak in sorted(leaks_found, key=lambda x: -x.confidence)[:15]:
+            table.add_row(
+                leak.leak_type.name,
+                hex(leak.address),
+                leak.function,
+                leak.description[:40],
+                f"{leak.confidence:.1%}",
+            )
+
+        console.print(table)
+
+        # Format string specific info
+        fs_leaks = [l for l in leaks_found if "FORMAT" in l.leak_type.name]
+        if fs_leaks:
+            console.print("\n[bold yellow]Format String Leak Details:[/bold yellow]")
+            for leak in fs_leaks[:5]:
+                console.print(f"  [{hex(leak.address)}] {leak.description}")
+                if leak.exploit_template:
+                    console.print(f"    Template available: Yes")
+
+    if fingerprint:
+        console.print("\n[bold]Libc Fingerprinting Info:[/bold]")
+        fp_info = finder.get_fingerprint_strategy()
+        if fp_info:
+            console.print(f"  Best leak targets: {', '.join(fp_info.get('targets', []))}")
+            console.print(f"  Recommended chain length: {fp_info.get('chain_length', 0)}")
+        else:
+            console.print("  [yellow]No viable fingerprinting strategy found[/yellow]")
+
+    if chain:
+        leak_chain = finder.build_leak_chain()
+        if leak_chain:
+            console.print("\n[bold green]Leak Chain Strategy:[/bold green]")
+            for i, step in enumerate(leak_chain, 1):
+                console.print(f"  {i}. {step['action']}")
+                console.print(f"     Target: {step['target']}")
+                console.print(f"     Discloses: {step['discloses']}")
+        else:
+            console.print("\n[yellow]Could not build multi-step leak chain[/yellow]")
+
+    # Summary
+    console.print("\n" + finder.summary())
+
+    if json_output:
+        result = {
+            "total": len(leaks_found),
+            "by_type": {k: len(v) for k, v in by_type.items()} if leaks_found else {},
+            "leaks": [
+                {
+                    "type": l.leak_type.name,
+                    "address": hex(l.address),
+                    "function": l.function,
+                    "confidence": l.confidence,
+                }
+                for l in leaks_found[:30]
+            ],
+        }
+        console.print_json(json.dumps(result, indent=2))
+
+
+@cli.command()
+@click.argument("binary", type=click.Path(exists=True))
+@click.option("--tcache", is_flag=True, help="Focus on tcache analysis")
+@click.option("--uaf", is_flag=True, help="Focus on UAF detection")
+@click.option("--templates", is_flag=True, help="Generate exploit templates")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.pass_context
+def heap_analysis(ctx, binary, tcache, uaf, templates, json_output):
+    """
+    Advanced heap vulnerability analysis.
+
+    Detects:
+    - Use-After-Free (UAF)
+    - Double-free vulnerabilities
+    - Heap overflow / OOB write
+    - Tcache poisoning opportunities
+    - Fastbin dup conditions
+    """
+    from supwngo.core.binary import Binary
+    from supwngo.vulns.heap_advanced import AdvancedHeapAnalyzer, HeapVulnType
+
+    console.print(f"\n[bold]Advanced Heap Analysis:[/bold] {binary}\n")
+
+    bin_obj = Binary.load(binary)
+    analyzer = AdvancedHeapAnalyzer(bin_obj)
+
+    with console.status("Analyzing heap operations..."):
+        vulns = analyzer.analyze()
+
+    console.print(f"[cyan]Allocation sites: {len(analyzer.alloc_sites)}[/cyan]")
+    console.print(f"[cyan]Free sites: {len(analyzer.free_sites)}[/cyan]")
+    console.print(f"[cyan]Vulnerabilities: {len(vulns)}[/cyan]")
+
+    if vulns:
+        # Group by type
+        by_type = {}
+        for v in vulns:
+            t = v.vuln_type.name
+            if t not in by_type:
+                by_type[t] = []
+            by_type[t].append(v)
+
+        console.print("\n[bold]Vulnerability Types:[/bold]")
+        for vtype, items in sorted(by_type.items(), key=lambda x: -len(x[1])):
+            console.print(f"  {vtype}: {len(items)}")
+
+        # Show critical vulns
+        critical = [v for v in vulns if v.severity in ("CRITICAL", "HIGH")]
+        if critical:
+            console.print("\n[bold red]Critical/High Severity:[/bold red]")
+            table = Table()
+            table.add_column("Type", style="red")
+            table.add_column("Address", style="green")
+            table.add_column("Function", style="cyan")
+            table.add_column("Description")
+
+            for v in critical[:10]:
+                table.add_row(
+                    v.vuln_type.name,
+                    hex(v.address),
+                    v.function,
+                    v.description[:50],
+                )
+
+            console.print(table)
+
+        if tcache:
+            tcache_vulns = [v for v in vulns if v.vuln_type == HeapVulnType.TCACHE_POISONING]
+            if tcache_vulns:
+                console.print("\n[bold yellow]Tcache Analysis:[/bold yellow]")
+                for v in tcache_vulns[:5]:
+                    console.print(f"  [{hex(v.address)}] {v.description}")
+                    if v.chunk_sizes:
+                        console.print(f"    Chunk sizes: {v.chunk_sizes}")
+
+        if uaf:
+            uaf_vulns = [v for v in vulns if v.vuln_type == HeapVulnType.USE_AFTER_FREE]
+            if uaf_vulns:
+                console.print("\n[bold red]Use-After-Free Analysis:[/bold red]")
+                for v in uaf_vulns[:5]:
+                    console.print(f"  [{hex(v.address)}] {v.description}")
+                    if v.alloc_site:
+                        console.print(f"    Allocated at: {hex(v.alloc_site.address)}")
+                    if v.free_site:
+                        console.print(f"    Freed at: {hex(v.free_site.address)}")
+
+        if templates:
+            console.print("\n[bold green]Exploit Templates:[/bold green]")
+            for v in vulns[:3]:
+                if v.exploit_template:
+                    console.print(f"\n[{v.vuln_type.name}] Template:")
+                    console.print(Panel(v.exploit_template[:800], border_style="green"))
+
+    # Summary
+    console.print("\n" + analyzer.summary())
+
+    if json_output:
+        result = {
+            "alloc_sites": len(analyzer.alloc_sites),
+            "free_sites": len(analyzer.free_sites),
+            "vulnerabilities": len(vulns),
+            "by_type": {k: len(v) for k, v in by_type.items()} if vulns else {},
+            "vulns": [
+                {
+                    "type": v.vuln_type.name,
+                    "severity": v.severity,
+                    "address": hex(v.address),
+                    "function": v.function,
+                }
+                for v in vulns[:20]
+            ],
+        }
+        console.print_json(json.dumps(result, indent=2))
+
+
+@cli.command()
+@click.argument("binary", type=click.Path(exists=True))
+@click.option("--allocation", is_flag=True, help="Focus on allocation size issues")
+@click.option("--chains", is_flag=True, help="Show arithmetic chains")
+@click.option("--templates", is_flag=True, help="Generate exploit templates")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.pass_context
+def integer_analysis(ctx, binary, allocation, chains, templates, json_output):
+    """
+    Advanced integer vulnerability analysis.
+
+    Detects:
+    - Integer overflow in calculations
+    - Truncation issues (64-bit to 32-bit)
+    - Signedness confusion
+    - Size calculation before malloc
+    - Arithmetic operation chains
+    """
+    from supwngo.core.binary import Binary
+    from supwngo.vulns.integer_advanced import AdvancedIntegerAnalyzer, IntVulnType, IntContext
+
+    console.print(f"\n[bold]Advanced Integer Analysis:[/bold] {binary}\n")
+
+    bin_obj = Binary.load(binary)
+    analyzer = AdvancedIntegerAnalyzer(bin_obj)
+
+    with console.status("Analyzing integer operations..."):
+        vulns = analyzer.analyze()
+
+    console.print(f"[cyan]Arithmetic operations: {len(analyzer.operations)}[/cyan]")
+    console.print(f"[cyan]Arithmetic chains: {len(analyzer.chains)}[/cyan]")
+    console.print(f"[cyan]Vulnerabilities: {len(vulns)}[/cyan]")
+
+    if vulns:
+        # Group by type
+        by_type = {}
+        for v in vulns:
+            t = v.vuln_type.name
+            if t not in by_type:
+                by_type[t] = []
+            by_type[t].append(v)
+
+        console.print("\n[bold]Vulnerability Types:[/bold]")
+        for vtype, items in sorted(by_type.items(), key=lambda x: -len(x[1])):
+            console.print(f"  {vtype}: {len(items)}")
+
+        # Show high-confidence vulns
+        high_conf = sorted(vulns, key=lambda x: -x.confidence)[:10]
+        if high_conf:
+            console.print("\n[bold yellow]High Confidence Issues:[/bold yellow]")
+            table = Table()
+            table.add_column("Type", style="yellow")
+            table.add_column("Address", style="green")
+            table.add_column("Context", style="cyan")
+            table.add_column("Confidence")
+            table.add_column("Description")
+
+            for v in high_conf:
+                table.add_row(
+                    v.vuln_type.name,
+                    hex(v.address),
+                    v.context.name,
+                    f"{v.confidence:.0%}",
+                    v.description[:40],
+                )
+
+            console.print(table)
+
+        if allocation:
+            alloc_vulns = [v for v in vulns if v.context == IntContext.ALLOCATION_SIZE]
+            if alloc_vulns:
+                console.print("\n[bold red]Allocation Size Issues:[/bold red]")
+                for v in alloc_vulns[:5]:
+                    console.print(f"  [{hex(v.address)}] {v.description}")
+                    console.print(f"    Leads to memory corruption: {v.leads_to_memory_corruption}")
+
+        if chains:
+            console.print("\n[bold cyan]Arithmetic Chains:[/bold cyan]")
+            for chain in analyzer.chains[:5]:
+                console.print(f"  Source: {chain.source}")
+                console.print(f"  Operations: {len(chain.operations)}")
+                console.print(f"  Can overflow: {chain.can_overflow}")
+                console.print(f"  Can underflow: {chain.can_underflow}")
+                console.print()
+
+        if templates:
+            console.print("\n[bold green]Exploit Templates:[/bold green]")
+            for v in vulns[:2]:
+                if v.exploit_template:
+                    console.print(f"\n[{v.vuln_type.name}] Template:")
+                    console.print(Panel(v.exploit_template[:800], border_style="green"))
+
+    # Critical vulns that lead to memory corruption
+    critical = analyzer.get_critical_vulns()
+    if critical:
+        console.print(f"\n[bold red]Critical (leads to memory corruption): {len(critical)}[/bold red]")
+
+    # Summary
+    console.print("\n" + analyzer.summary())
+
+    if json_output:
+        result = {
+            "operations": len(analyzer.operations),
+            "chains": len(analyzer.chains),
+            "vulnerabilities": len(vulns),
+            "by_type": {k: len(v) for k, v in by_type.items()} if vulns else {},
+            "critical": len(critical) if critical else 0,
+        }
+        console.print_json(json.dumps(result, indent=2))
+
+
+@cli.command()
+@click.argument("binary", type=click.Path(exists=True))
+@click.option("--toctou", is_flag=True, help="Focus on TOCTOU vulnerabilities")
+@click.option("--signals", is_flag=True, help="Analyze signal handlers")
+@click.option("--thread-unsafe", is_flag=True, help="Find thread-unsafe calls")
+@click.option("--templates", is_flag=True, help="Generate exploit templates")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.pass_context
+def race_analysis(ctx, binary, toctou, signals, thread_unsafe, templates, json_output):
+    """
+    Advanced race condition analysis.
+
+    Detects:
+    - TOCTOU file operation races
+    - Signal handler re-entrancy issues
+    - Thread-unsafe function usage
+    - Double-fetch vulnerabilities
+    - Missing atomic operations
+    """
+    from supwngo.core.binary import Binary
+    from supwngo.vulns.race_advanced import AdvancedRaceAnalyzer, AdvancedRaceType
+
+    console.print(f"\n[bold]Advanced Race Condition Analysis:[/bold] {binary}\n")
+
+    bin_obj = Binary.load(binary)
+    analyzer = AdvancedRaceAnalyzer(bin_obj)
+
+    with console.status("Analyzing for race conditions..."):
+        vulns = analyzer.analyze()
+
+    console.print(f"[cyan]Signal handlers: {len(analyzer.signal_handlers)}[/cyan]")
+    console.print(f"[cyan]Thread-unsafe calls: {len(analyzer.thread_unsafe_calls)}[/cyan]")
+    console.print(f"[cyan]Race vulnerabilities: {len(vulns)}[/cyan]")
+
+    if vulns:
+        # Group by type
+        by_type = {}
+        for v in vulns:
+            t = v.race_type.name
+            if t not in by_type:
+                by_type[t] = []
+            by_type[t].append(v)
+
+        console.print("\n[bold]Race Condition Types:[/bold]")
+        for rtype, items in sorted(by_type.items(), key=lambda x: -len(x[1])):
+            console.print(f"  {rtype}: {len(items)}")
+
+        # Show high severity
+        high_sev = analyzer.get_high_severity()
+        if high_sev:
+            console.print("\n[bold red]High Severity Race Conditions:[/bold red]")
+            table = Table()
+            table.add_column("Type", style="red")
+            table.add_column("Address", style="green")
+            table.add_column("Function", style="cyan")
+            table.add_column("Description")
+
+            for v in high_sev[:10]:
+                table.add_row(
+                    v.race_type.name,
+                    hex(v.address),
+                    v.function,
+                    v.description[:45],
+                )
+
+            console.print(table)
+
+        if toctou:
+            toctou_vulns = [v for v in vulns if v.race_type == AdvancedRaceType.FILE_TOCTOU]
+            if toctou_vulns:
+                console.print("\n[bold yellow]TOCTOU Vulnerabilities:[/bold yellow]")
+                for v in toctou_vulns[:5]:
+                    console.print(f"  [{hex(v.address)}] {v.description}")
+                    if v.window:
+                        console.print(f"    Window: {v.window.start_op} -> {v.window.end_op}")
+                        console.print(f"    Instructions in window: {v.window.window_size}")
+
+        if signals:
+            if analyzer.signal_handlers:
+                console.print("\n[bold cyan]Signal Handlers:[/bold cyan]")
+                for sh in analyzer.signal_handlers[:5]:
+                    console.print(f"  Handler at {hex(sh.handler_addr)}")
+                    console.print(f"    Reentrant: {sh.is_reentrant}")
+                    if sh.async_unsafe_calls:
+                        console.print(f"    Async-unsafe calls: {', '.join(sh.async_unsafe_calls[:5])}")
+
+        if thread_unsafe:
+            if analyzer.thread_unsafe_calls:
+                console.print("\n[bold yellow]Thread-Unsafe Function Calls:[/bold yellow]")
+                table = Table()
+                table.add_column("Function", style="red")
+                table.add_column("Caller", style="cyan")
+                table.add_column("Reason")
+                table.add_column("Safe Alternative", style="green")
+
+                for call in analyzer.thread_unsafe_calls[:15]:
+                    table.add_row(
+                        call.function,
+                        call.caller,
+                        call.reason[:30],
+                        call.safe_alternative or "-",
+                    )
+
+                console.print(table)
+
+        if templates:
+            console.print("\n[bold green]Exploit Templates:[/bold green]")
+            for v in vulns[:2]:
+                if v.exploit_template:
+                    console.print(f"\n[{v.race_type.name}] Template:")
+                    console.print(Panel(v.exploit_template[:800], border_style="green"))
+
+    # Summary
+    console.print("\n" + analyzer.summary())
+
+    if json_output:
+        result = {
+            "signal_handlers": len(analyzer.signal_handlers),
+            "thread_unsafe_calls": len(analyzer.thread_unsafe_calls),
+            "vulnerabilities": len(vulns),
+            "by_type": {k: len(v) for k, v in by_type.items()} if vulns else {},
+            "high_severity": len(analyzer.get_high_severity()),
+        }
+        console.print_json(json.dumps(result, indent=2))
 
 
 def main():

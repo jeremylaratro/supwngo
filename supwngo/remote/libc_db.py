@@ -403,6 +403,227 @@ class LibcDatabase:
         offset = libc_match.symbols.get(leaked_symbol, 0)
         return leaked_addr - offset
 
+    def get_one_gadgets(
+        self,
+        libc_path: Optional[str] = None,
+        libc_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Find one_gadget RCE addresses in libc.
+
+        Args:
+            libc_path: Path to libc file
+            libc_id: Or libc ID to download/use from cache
+
+        Returns:
+            List of one_gadget dicts with offset and constraints
+        """
+        import subprocess
+
+        # Get libc path
+        if not libc_path and libc_id:
+            cached = self.cache_dir / f"{libc_id}.so"
+            if cached.exists():
+                libc_path = str(cached)
+            else:
+                downloaded = self.download_libc(libc_id)
+                if downloaded:
+                    libc_path = str(downloaded)
+
+        if not libc_path:
+            return []
+
+        gadgets = []
+
+        try:
+            result = subprocess.run(
+                ["one_gadget", libc_path, "-r"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+
+            if result.returncode == 0:
+                # Parse one_gadget output
+                # Format: offset constraints
+                current_gadget = {}
+
+                for line in result.stdout.split("\n"):
+                    line = line.strip()
+                    if not line:
+                        if current_gadget:
+                            gadgets.append(current_gadget)
+                            current_gadget = {}
+                        continue
+
+                    if line.startswith("0x"):
+                        # New gadget
+                        if current_gadget:
+                            gadgets.append(current_gadget)
+                        parts = line.split()
+                        current_gadget = {
+                            "offset": int(parts[0], 16),
+                            "constraints": [],
+                        }
+                    elif current_gadget and "==" in line or "NULL" in line:
+                        current_gadget["constraints"].append(line)
+
+                if current_gadget:
+                    gadgets.append(current_gadget)
+
+        except FileNotFoundError:
+            logger.warning("one_gadget tool not found, install with: gem install one_gadget")
+        except subprocess.TimeoutExpired:
+            logger.warning("one_gadget timed out")
+        except Exception as e:
+            logger.debug(f"one_gadget failed: {e}")
+
+        return gadgets
+
+    def get_useful_offsets(
+        self,
+        libc_id: str,
+    ) -> Dict[str, int]:
+        """
+        Get commonly useful offsets for exploitation.
+
+        Args:
+            libc_id: Libc identifier
+
+        Returns:
+            Dict of useful symbol offsets
+        """
+        useful_symbols = [
+            # Execution
+            "system",
+            "execve",
+            "execvp",
+            "popen",
+
+            # Memory
+            "mprotect",
+            "mmap",
+
+            # Hooks (glibc < 2.34)
+            "__malloc_hook",
+            "__free_hook",
+            "__realloc_hook",
+
+            # Leak targets
+            "puts",
+            "printf",
+            "write",
+            "__libc_start_main",
+
+            # Strings
+            "str_bin_sh",
+
+            # FILE structures
+            "_IO_2_1_stdin_",
+            "_IO_2_1_stdout_",
+            "_IO_2_1_stderr_",
+            "_IO_list_all",
+
+            # Vtables
+            "_IO_file_jumps",
+
+            # Stack
+            "environ",
+            "__environ",
+        ]
+
+        all_syms = self.get_all_symbols(libc_id)
+
+        result = {}
+        for sym in useful_symbols:
+            if sym in all_syms:
+                result[sym] = all_syms[sym]
+
+        # Try to find /bin/sh string
+        libc_path = self.cache_dir / f"{libc_id}.so"
+        if libc_path.exists():
+            try:
+                from pwn import ELF
+                libc = ELF(str(libc_path), checksec=False)
+                binsh = list(libc.search(b"/bin/sh\x00"))
+                if binsh:
+                    result["str_bin_sh"] = binsh[0]
+            except Exception:
+                pass
+
+        return result
+
+    def detect_version(
+        self,
+        libc_path: str,
+    ) -> Optional[str]:
+        """
+        Detect glibc version from binary.
+
+        Args:
+            libc_path: Path to libc
+
+        Returns:
+            Version string like "2.31"
+        """
+        import subprocess
+
+        try:
+            # Method 1: strings | grep GLIBC
+            result = subprocess.run(
+                ["strings", libc_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            for line in result.stdout.split("\n"):
+                # Match patterns like "GLIBC_2.31" or "GNU C Library (Ubuntu GLIBC 2.31-0ubuntu9.2)"
+                import re
+                match = re.search(r'GLIBC[_ ](\d+\.\d+)', line)
+                if match:
+                    return match.group(1)
+
+                match = re.search(r'release version (\d+\.\d+)', line)
+                if match:
+                    return match.group(1)
+
+        except Exception as e:
+            logger.debug(f"Version detection failed: {e}")
+
+        return None
+
+    def find_libc_in_process(
+        self,
+        pid: int,
+    ) -> Optional[Tuple[str, int]]:
+        """
+        Find libc path and base address from running process.
+
+        Args:
+            pid: Process ID
+
+        Returns:
+            Tuple of (libc_path, base_address) or None
+        """
+        try:
+            maps_path = f"/proc/{pid}/maps"
+
+            with open(maps_path) as f:
+                for line in f:
+                    if "libc" in line and ".so" in line:
+                        parts = line.split()
+                        addr_range = parts[0]
+                        path = parts[-1]
+
+                        base = int(addr_range.split("-")[0], 16)
+                        return (path, base)
+
+        except Exception as e:
+            logger.debug(f"Failed to find libc in process: {e}")
+
+        return None
+
     def summary(self) -> str:
         """Get database summary."""
         return f"""
@@ -411,4 +632,14 @@ Libc Database
 Cache dir: {self.cache_dir}
 Local entries: {len(self._local_db)}
 Cached libcs: {len(list(self.cache_dir.glob('*.so')))}
+
+APIs:
+- libc.rip: {self.LIBC_RIP_API}
+- libc.blukat: {self.LIBC_BLUKAT_API}
+
+Usage:
+  db = LibcDatabase()
+  matches = db.identify({{"puts": 0x123, "printf": 0x456}})
+  offsets = db.get_useful_offsets(matches[0].id)
+  gadgets = db.get_one_gadgets(libc_id=matches[0].id)
 """
