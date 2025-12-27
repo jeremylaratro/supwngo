@@ -120,7 +120,7 @@ pip install -e ".[dev]"
 
 ## License
 
-MIT
+[PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) - Free for personal, educational, and research use. Commercial use requires a separate license.
 
 ## Disclaimer
 
