@@ -321,7 +321,45 @@ def exploit(ctx, binary, crash, remote, libc, output, auto):
                 console.print(f"  Function: {vuln.function}")
 
     if not vuln:
-        console.print("[red]No exploitable vulnerability found[/red]")
+        console.print("[yellow]No vulnerability detected by static analysis[/yellow]")
+        console.print("[cyan]Trying enhanced auto-exploit with dynamic analysis...[/cyan]")
+
+        # Try enhanced auto-exploiter which includes dynamic profiling
+        from supwngo.exploit.enhanced_auto import EnhancedAutoExploiter
+
+        exploiter = EnhancedAutoExploiter(bin_obj, libc_path=libc)
+        exploiter.run()
+
+        if exploiter.successful:
+            console.print(f"\n[bold green]SUCCESS![/bold green] Technique: {exploiter.technique_used}")
+            console.print(f"Payload length: {len(exploiter.final_payload)} bytes")
+
+            # Show flag if captured
+            if exploiter._captured_flag:
+                console.print(f"\n[bold magenta]FLAG: {exploiter._captured_flag}[/bold magenta]")
+
+            # Show verification status
+            if exploiter.verification_level:
+                from supwngo.exploit.verification import VerificationLevel
+                if exploiter.verification_level == VerificationLevel.FLAG_CAPTURED:
+                    console.print("[bold green]Exploitation verified by flag capture[/bold green]")
+                elif exploiter.verification_level.value >= VerificationLevel.SHELL_ACCESS.value:
+                    console.print("[bold green]Shell access verified[/bold green]")
+
+            # Save exploit script
+            with open(output, "w") as f:
+                f.write(exploiter.exploit_script if exploiter.exploit_script else exploiter.exploit_template)
+
+            Path(output).chmod(0o755)
+            console.print(f"\n[green]Exploit saved to {output}[/green]")
+        else:
+            console.print("[red]No exploitable vulnerability found[/red]")
+            console.print("[yellow]Saving template for manual analysis...[/yellow]")
+
+            # Save template anyway
+            with open(output, "w") as f:
+                f.write(exploiter.exploit_template)
+            console.print(f"[yellow]Template saved to {output}[/yellow]")
         return
 
     # Generate exploit
@@ -372,7 +410,44 @@ def exploit(ctx, binary, crash, remote, libc, output, auto):
         payload_file.write_bytes(exploit_obj.payload)
         console.print(f"[green]Payload saved to {payload_file}[/green]")
     else:
-        console.print("[red]Exploit generation failed[/red]")
+        console.print("[yellow]Standard exploit generation failed, trying enhanced auto-exploit...[/yellow]")
+
+        # Fall back to enhanced auto-exploiter
+        from supwngo.exploit.enhanced_auto import EnhancedAutoExploiter
+
+        exploiter = EnhancedAutoExploiter(bin_obj, libc_path=libc)
+        exploiter.run()
+
+        if exploiter.successful:
+            console.print(f"\n[bold green]SUCCESS![/bold green] Technique: {exploiter.technique_used}")
+            console.print(f"Payload length: {len(exploiter.final_payload)} bytes")
+
+            # Show flag if captured
+            if exploiter._captured_flag:
+                console.print(f"\n[bold magenta]FLAG: {exploiter._captured_flag}[/bold magenta]")
+
+            # Show verification status
+            if exploiter.verification_level:
+                from supwngo.exploit.verification import VerificationLevel
+                if exploiter.verification_level == VerificationLevel.FLAG_CAPTURED:
+                    console.print("[bold green]Exploitation verified by flag capture[/bold green]")
+                elif exploiter.verification_level.value >= VerificationLevel.SHELL_ACCESS.value:
+                    console.print("[bold green]Shell access verified[/bold green]")
+
+            # Save exploit script
+            with open(output, "w") as f:
+                f.write(exploiter.exploit_script if exploiter.exploit_script else exploiter.exploit_template)
+
+            Path(output).chmod(0o755)
+            console.print(f"\n[green]Exploit saved to {output}[/green]")
+        else:
+            console.print("[red]All exploit generation methods failed[/red]")
+            console.print("[yellow]Saving template for manual completion...[/yellow]")
+
+            # Save template anyway
+            with open(output, "w") as f:
+                f.write(exploiter.exploit_template)
+            console.print(f"[yellow]Template saved to {output}[/yellow]")
 
 
 @cli.command()
@@ -2435,6 +2510,102 @@ def race_analysis(ctx, binary, toctou, signals, thread_unsafe, templates, json_o
             "high_severity": len(analyzer.get_high_severity()),
         }
         console.print_json(json.dumps(result, indent=2))
+
+
+@cli.command()
+@click.argument("binary", type=click.Path(exists=True))
+@click.option("-o", "--output", type=click.Path(), help="Output exploit script to file")
+@click.option("--timeout", default=5.0, help="Timeout for each attempt (seconds)")
+@click.option("--libc", type=click.Path(exists=True), help="Path to libc for ret2libc")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.pass_context
+def autopwn(ctx, binary, output, timeout, libc, json_output):
+    """
+    Enhanced auto-exploitation - try multiple techniques automatically.
+
+    Techniques tried (in order):
+    1. Variable overwrite (magic value comparison bypass)
+    2. ret2win (if win function found)
+    3. Direct shellcode (if NX disabled)
+    4. Negative size bypass (signed/unsigned comparison)
+    5. Stack shellcode (if stack leak available)
+    6. Format string exploitation
+    7. ret2libc
+
+    Always generates a template even if full exploit fails.
+    """
+    from supwngo.core.binary import Binary
+    from supwngo.exploit.enhanced_auto import EnhancedAutoExploiter
+
+    console.print(f"\n[bold]Enhanced Auto-Exploit:[/bold] {binary}\n")
+
+    with console.status("Loading binary..."):
+        bin_obj = Binary.load(binary)
+
+    with console.status("Running auto-exploitation..."):
+        exploiter = EnhancedAutoExploiter(
+            bin_obj,
+            timeout=timeout,
+            libc_path=libc,
+        )
+        exploiter.run()
+
+    if json_output:
+        result = {
+            "binary": str(binary),
+            "success": exploiter.successful,
+            "verified": exploiter.verification_level.name if exploiter.verification_level else "NONE",
+            "flag": exploiter._captured_flag,
+            "technique": exploiter.technique_used,
+            "payload_length": len(exploiter.final_payload),
+            "attempts": exploiter.attempts,
+            "profile": {
+                "has_menu": exploiter.profile.has_menu,
+                "has_alarm": exploiter.profile.has_alarm,
+                "leaked_addresses": {k: hex(v) for k, v in exploiter.profile.leaked_addresses.items()},
+            },
+        }
+        console.print_json(json.dumps(result, indent=2))
+    else:
+        console.print(exploiter.summary())
+
+        if exploiter.successful:
+            console.print(f"\n[bold green]SUCCESS![/bold green] Technique: {exploiter.technique_used}")
+            console.print(f"Payload length: {len(exploiter.final_payload)} bytes")
+
+            # Show flag prominently if captured
+            if exploiter._captured_flag:
+                console.print(f"\n[bold magenta]FLAG: {exploiter._captured_flag}[/bold magenta]")
+
+            # Show verification status
+            if exploiter.verification_level:
+                from supwngo.exploit.verification import VerificationLevel
+                if exploiter.verification_level == VerificationLevel.SHELL_ACCESS:
+                    console.print("[bold green]Shell access verified via file creation[/bold green]")
+                elif exploiter.verification_level == VerificationLevel.FULL_CONTROL:
+                    console.print("[bold green]Full shell control verified[/bold green]")
+                elif exploiter.verification_level == VerificationLevel.FLAG_CAPTURED:
+                    console.print("[bold green]Exploitation verified by flag capture[/bold green]")
+
+            if output:
+                with open(output, 'w') as f:
+                    f.write(exploiter.exploit_script)
+                console.print(f"[green]Exploit script saved to: {output}[/green]")
+            else:
+                console.print("\n[bold]Generated Exploit Script:[/bold]")
+                console.print(exploiter.exploit_script)
+        else:
+            console.print("\n[yellow]Full exploitation failed. Generated template:[/yellow]")
+            if output:
+                with open(output, 'w') as f:
+                    f.write(exploiter.exploit_template)
+                console.print(f"[yellow]Template saved to: {output}[/yellow]")
+            else:
+                # Show first part of template
+                lines = exploiter.exploit_template.split('\n')[:50]
+                console.print('\n'.join(lines))
+                if len(exploiter.exploit_template.split('\n')) > 50:
+                    console.print("... (truncated)")
 
 
 def main():
