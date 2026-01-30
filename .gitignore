@@ -219,20 +219,37 @@ exploits/
 core.*
 output/
 exploit_*.py
+logs/
 
 # Fuzzing artifacts
 afl_out/
 honggfuzz_out/
 
-# Test binaries
+# Test binaries and directories
 test_bins/
+test_binaries/
+test_noprotect/
+test_secure/
+test_vulns/
+
+# Binary test files in root (ELF executables)
+test
+optimistic
+exploit.py
+
+# Test artifacts
+test_all_binaries.py
 
 # Exploit output
 generated_exploits/
 
-# IDE
+# IDE and editor
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
+docs/.obsidian/
+
+# Internal state files
+.implementation_state
