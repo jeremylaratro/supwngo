@@ -239,3 +239,68 @@ Packaging
 
     setup.py and pyproject.toml for installation
     Tests in tests/test_core.py
+
+---
+
+## Operating contract (shared aradex-io governance)
+
+> Imported from the shared `RepoTemplate` operating contract. These rules are
+> mandatory for humans and AI agents working in this repo. If a rule here
+> conflicts with a request, surface the conflict and stop — don't silently
+> override it. (The layout/commands tables from the template are intentionally
+> omitted; this repo keeps its own structure.)
+
+### Prime directives
+
+1. **Think before coding.** State assumptions, name the files you'll touch, and
+   ask when the request is ambiguous — don't guess.
+2. **Simplicity first.** The minimum code that satisfies the requirement and its
+   tests. No speculative features or single-use abstractions.
+3. **Surgical changes.** Touch only what the task requires; match the surrounding
+   style. No drive-by refactors, reformatting, or unrelated dependency bumps.
+4. **Be honest about state.** If tests fail, say so with output. Never report
+   "done" for work you didn't verify.
+5. **Right model for each phase.** Plan and review plans on the strongest model
+   (**Opus**); execute approved, reviewed plans — implementation, changelog,
+   mechanical edits — on **Sonnet**. Don't plan on Sonnet or implement on Opus.
+
+### Version control (strict)
+
+- **`main`/`master` is protected — all work happens on a branch:** `feat/<slug>`,
+  `fix/<slug>`, `chore/<slug>`, or `docs/<slug>`. Create the branch before the
+  first edit; never commit to the default branch directly.
+- **Conventional Commits, always:** `type(scope): subject`, imperative mood, ≤72
+  chars. Types: `feat fix docs style refactor perf test build ci chore revert`.
+  Breaking changes use `type(scope)!:` plus a `BREAKING CHANGE:` footer.
+- **Atomic, green commits.** One logical change per commit; don't commit code
+  that fails build/lint/tests unless explicitly checkpointing (mark it `wip:`).
+- **No secrets, ever** — no credentials, tokens, `.env`, or keys in history. If
+  you find one, stop and report it.
+- **Pull requests are opt-in** — don't open one unless a human asks.
+
+### Changelog
+
+Follows [Keep a Changelog](https://keepachangelog.com) + [SemVer](https://semver.org).
+Every user-visible change updates `CHANGELOG.md` under `## [Unreleased]` in the
+right group (`Added/Changed/Deprecated/Removed/Fixed/Security`), **in the same
+commit as the change**. Internal-only changes may use a `changelog: none` footer,
+used honestly. Releases move Unreleased into a dated, SemVer-bumped section
+(feat → minor, fix → patch, breaking → major).
+
+### Plan review (non-trivial work)
+
+Anything non-trivial (new feature, schema/API change, migration, > ~50 lines, or
+multiple modules) gets a **written plan reviewed before implementation.** Write
+it to `docs/plans/<YYYY-MM-DD>-<slug>.md` — goal, approach, files touched, test
+strategy, risks — and have it reviewed (via `scripts/codex-review.sh` where
+present, or the `plan-reviewer` agent), with the review recorded alongside the
+plan. Address blocking issues before building.
+
+### Definition of done
+
+- [ ] Builds and lint passes; tests written/updated and **passing**.
+- [ ] `CHANGELOG.md` updated (or an honest `changelog: none`).
+- [ ] Conventional, atomic commits on the correct branch.
+- [ ] Non-trivial work has a reviewed plan; blocking issues resolved.
+- [ ] Planning/review ran on **Opus**; execution ran on **Sonnet**.
+- [ ] Docs updated if behavior or architecture changed; no secrets, no stray files.
