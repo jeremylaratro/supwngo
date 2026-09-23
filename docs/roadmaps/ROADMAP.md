@@ -622,9 +622,17 @@ jobs:
 ## Success Metrics
 
 ### Technical KPIs
+
+> **⚠️ Unsupported baseline.** The "~60%" current auto-exploit success rate below has no stated
+> methodology, corpus, or reproducible harness behind it — treat it as an unverified placeholder,
+> not a measured result. `docs/plans/2026-09-23-effectiveness-and-usability.md` Phase 1
+> (reproducible benchmark corpus + measurement harness) is the process that will replace it with an
+> honest, reproducible number; see that plan's Phase 7 for the broader governance/documentation
+> follow-up (including this note).
+
 | Metric | Current | Target (Year 1) | Target (Year 2) |
 |--------|---------|-----------------|-----------------|
-| Auto-exploit success rate | ~60% | 85% | 95% |
+| Auto-exploit success rate | ~60% (unverified — see caveat above) | 85% | 95% |
 | Analysis speed (avg binary) | 30s | 10s | 3s |
 | Supported architectures | 4 | 8 | 12 |
 | Protection bypass coverage | 70% | 90% | 98% |

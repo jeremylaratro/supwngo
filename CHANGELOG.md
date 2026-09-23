@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Added methodology caveats to `docs/roadmaps/ROADMAP.md` (the unsupported "~60%" auto-exploit
+  success-rate KPI), `docs/reference/WRITEUP_CAPABILITY_ASSESSMENT.md` (the "45/46 (98%)"/"13/13
+  (100%)" figures, which measure hand-fed technique execution, not autonomous exploitation), and
+  `docs/reference/TEST_RESULTS.md` (precision/recall/accuracy figures, which measure detection on a
+  small local corpus, not exploitation). None of the historical numbers were changed or removed;
+  each caveat points to `docs/plans/2026-09-23-effectiveness-and-usability.md` Phase 1 as the
+  process that will supersede them with honest, reproducible numbers.
 - Flagged the three-way license conflict (`LICENSE`=CC BY-NC-SA 4.0, `README.md`=PolyForm
   Noncommercial 1.0.0, `pyproject.toml`/`setup.py`=MIT) with a prominent note in README.md's
   License section. This is a maintainer/legal decision and is intentionally **not** resolved
