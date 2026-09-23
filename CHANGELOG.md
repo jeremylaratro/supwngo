@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `supwngo/exploit/pipeline/` — a new canonical auto-exploitation pipeline
+  (`CanonicalAutopwnEngine`) that consolidates the two previously
+  overlapping, never-reconciled auto-exploit engines (`AutoExploiter` and
+  `EnhancedAutoExploiter`) behind a single, pluggable technique-executor
+  architecture: typed `AttemptRecord`/`VerificationReceipt` contracts, an
+  `ExecutorRegistry` of 11 technique executors (7 ported from
+  `EnhancedAutoExploiter`, plus SROP/scanf-canary-bypass/UAF/double-free
+  ported from `AutoExploiter`), and a `PipelineVerifier` that confirms
+  success via a unique per-attempt verification-receipt token rather than
+  shared-string stdout matching. See
+  `docs/architecture/2026-09-23-autopwn-pipeline.md` for the full design,
+  the engine-shape decision and justification, and a list of explicit
+  follow-up items left for later phases. Phase 2 of
+  `docs/plans/2026-09-23-effectiveness-and-usability.md`.
+
 ### Changed
 - `supwngo/core/context.py`'s `ExploitContext` gained new fields
   (`gadgets`, `win_function`, `binsh_addr`, `offset`, `captured_flag`,
