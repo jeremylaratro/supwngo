@@ -1004,123 +1004,6 @@ def batch(ctx, directory, output):
 
 @cli.command()
 @click.argument("binary", type=click.Path(exists=True))
-@click.option("-t", "--technique", type=click.Choice(["ret2win", "shellcode", "ret2system", "srop", "all"]),
-              default="all", help="Specific technique to try")
-@click.option("--offset", type=int, help="Known buffer offset")
-@click.option("--timeout", default=5.0, type=float, help="Timeout per attempt")
-@click.option("-l", "--libc", type=click.Path(exists=True), help="Custom libc file for ret2libc")
-@click.option("-o", "--output", type=click.Path(), help="Save exploit script to file")
-@click.option("--run", is_flag=True, help="Try to run the exploit automatically")
-@click.pass_context
-def autopwn(ctx, binary, technique, offset, timeout, libc, output, run):
-    """
-    Attempt automatic exploitation of binary.
-
-    Tries various exploitation techniques automatically:
-    - ret2win: Return to win function
-    - uaf: Use-After-Free with function pointer overwrite
-    - shellcode: Direct shellcode (if NX disabled)
-    - ret2system: ret2libc system() call
-    - srop: Sigreturn-oriented programming
-
-    Examples:
-        supwngo autopwn ./vuln_binary
-        supwngo autopwn ./vuln_binary -t ret2win --offset 40
-        supwngo autopwn ./vuln_binary -o exploit.py
-    """
-    from supwngo.core.binary import Binary
-    from supwngo.exploit.auto import AutoExploiter, auto_exploit
-
-    console.print(f"\n[bold cyan]{'=' * 60}[/bold cyan]")
-    console.print(f"[bold cyan]  AutoPwn: {Path(binary).name}[/bold cyan]")
-    console.print(f"[bold cyan]{'=' * 60}[/bold cyan]\n")
-
-    # Load binary
-    with console.status("Loading binary..."):
-        bin_obj = Binary.load(binary)
-
-    # Create exploiter
-    exploiter = AutoExploiter(bin_obj, timeout=timeout, libc_path=libc)
-
-    if offset:
-        exploiter._offset = offset
-        console.print(f"[cyan]Using provided offset: {offset}[/cyan]")
-
-    if libc:
-        console.print(f"[cyan]Using custom libc: {libc}[/cyan]")
-
-    # Determine techniques to try
-    if technique == "all":
-        techniques = ["ret2win", "formatstring", "intoverflow", "uaf", "doublefree", "shellcode", "ret2system", "srop"]
-    else:
-        techniques = [technique]
-
-    console.print(f"[cyan]Techniques to try: {', '.join(techniques)}[/cyan]\n")
-
-    # Run exploitation
-    with console.status("Attempting automatic exploitation..."):
-        report = exploiter.run(techniques)
-
-    # Display results
-    if report.successful:
-        console.print(Panel(f"""
-[bold green]✓ Exploitation Successful![/bold green]
-
-Technique: [bold cyan]{report.technique_used}[/bold cyan]
-Payload Length: {len(report.final_payload)} bytes
-""", title="AutoPwn Result", border_style="green"))
-
-        if report.final_payload:
-            console.print(f"\n[bold]Payload (hex):[/bold]")
-            console.print(f"  {report.final_payload[:64].hex()}...")
-
-    else:
-        console.print(Panel(f"""
-[bold yellow]⚠ Automatic exploitation did not succeed[/bold yellow]
-
-Attempts: {len(report.attempts)}
-""", title="AutoPwn Result", border_style="yellow"))
-
-    # Show all attempts
-    console.print("\n[bold]Exploitation Attempts:[/bold]")
-    table = Table()
-    table.add_column("Technique", style="cyan")
-    table.add_column("Result")
-    table.add_column("Notes")
-
-    for attempt in report.attempts:
-        result_style = {
-            "SUCCESS": "green",
-            "PARTIAL": "yellow",
-            "FAILED": "red",
-            "ERROR": "red",
-        }.get(attempt.result.name, "white")
-
-        table.add_row(
-            attempt.technique,
-            f"[{result_style}]{attempt.result.name}[/{result_style}]",
-            "; ".join(attempt.notes[:2]) if attempt.notes else "-"
-        )
-
-    console.print(table)
-
-    # Show/save exploit script
-    if report.exploit_script:
-        if output:
-            with open(output, "w") as f:
-                f.write(report.exploit_script)
-            console.print(f"\n[green]Exploit script saved to: {output}[/green]")
-        else:
-            console.print("\n[bold]Generated Exploit Script:[/bold]")
-            console.print(Panel(
-                report.exploit_script[:2000] + "..." if len(report.exploit_script) > 2000 else report.exploit_script,
-                title="exploit.py",
-                border_style="cyan"
-            ))
-
-
-@cli.command()
-@click.argument("binary", type=click.Path(exists=True))
 @click.option("-t", "--technique", type=click.Choice([
     "ret2win", "shellcode", "ret2system", "ret2libc", "srop", "leak", "auto"
 ]), default="auto", help="Exploit technique template")
@@ -2516,95 +2399,103 @@ def race_analysis(ctx, binary, toctou, signals, thread_unsafe, templates, json_o
 @click.argument("binary", type=click.Path(exists=True))
 @click.option("-o", "--output", type=click.Path(), help="Output exploit script to file")
 @click.option("--timeout", default=5.0, help="Timeout for each attempt (seconds)")
+@click.option("--offset", type=int, help="Known buffer offset (skips offset discovery)")
 @click.option("--libc", type=click.Path(exists=True), help="Path to libc for ret2libc")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def autopwn(ctx, binary, output, timeout, libc, json_output):
+def autopwn(ctx, binary, output, timeout, offset, libc, json_output):
     """
-    Enhanced auto-exploitation - try multiple techniques automatically.
+    Automatic exploitation - try multiple techniques automatically.
 
-    Techniques tried (in order):
-    1. Variable overwrite (magic value comparison bypass)
-    2. ret2win (if win function found)
-    3. Direct shellcode (if NX disabled)
-    4. Negative size bypass (signed/unsigned comparison)
-    5. Stack shellcode (if stack leak available)
-    6. Format string exploitation
-    7. ret2libc
+    Drives supwngo's canonical auto-exploitation pipeline
+    (CanonicalAutopwnEngine): static analysis, dynamic profiling, strategy
+    ranking (StrategySuggester), then a strategy-ordered walk of pluggable
+    technique executors (variable overwrite, ret2win, direct shellcode,
+    negative-size bypass, stack shellcode, format string, ret2libc, SROP,
+    scanf-canary bypass, UAF, double-free). Every attempt is recorded with
+    a typed AttemptRecord, and a successful attempt is confirmed with a
+    unique per-run verification receipt rather than raw stdout matching.
 
-    Always generates a template even if full exploit fails.
+    Always generates a fallback exploit template even if no technique is
+    fully verified, so this command never returns silence.
+
+    See docs/architecture/2026-09-23-autopwn-pipeline.md for the design.
     """
     from supwngo.core.binary import Binary
-    from supwngo.exploit.enhanced_auto import EnhancedAutoExploiter
+    from supwngo.exploit.pipeline import CanonicalAutopwnEngine
 
-    console.print(f"\n[bold]Enhanced Auto-Exploit:[/bold] {binary}\n")
+    console.print(f"\n[bold]Auto-Exploit:[/bold] {binary}\n")
 
     with console.status("Loading binary..."):
         bin_obj = Binary.load(binary)
 
     with console.status("Running auto-exploitation..."):
-        exploiter = EnhancedAutoExploiter(
+        engine = CanonicalAutopwnEngine(
             bin_obj,
             timeout=timeout,
             libc_path=libc,
         )
-        exploiter.run()
+        if offset:
+            engine.context.offset = offset
+            console.print(f"[cyan]Using provided offset: {offset}[/cyan]")
+        engine.run()
 
     if json_output:
         result = {
             "binary": str(binary),
-            "success": exploiter.successful,
-            "verified": exploiter.verification_level.name if exploiter.verification_level else "NONE",
-            "flag": exploiter._captured_flag,
-            "technique": exploiter.technique_used,
-            "payload_length": len(exploiter.final_payload),
-            "attempts": exploiter.attempts,
+            "success": engine.successful,
+            "verified": engine.context.verification_level.name if engine.context.verification_level else "NONE",
+            "flag": engine.context.captured_flag,
+            "technique": engine.technique_used,
+            "payload_length": len(engine.final_payload),
+            "attempts": [a.to_dict() for a in engine.context.attempts],
             "profile": {
-                "has_menu": exploiter.profile.has_menu,
-                "has_alarm": exploiter.profile.has_alarm,
-                "leaked_addresses": {k: hex(v) for k, v in exploiter.profile.leaked_addresses.items()},
+                "has_menu": engine.context.profile_has_menu,
+                "has_alarm": engine.context.profile_has_alarm,
+                "leaked_addresses": {k: hex(v) for k, v in engine.context.leaks.items()},
             },
         }
-        console.print_json(json.dumps(result, indent=2))
+        console.print_json(json.dumps(result, indent=2, default=str))
     else:
-        console.print(exploiter.summary())
+        console.print(engine.summary())
 
-        if exploiter.successful:
-            console.print(f"\n[bold green]SUCCESS![/bold green] Technique: {exploiter.technique_used}")
-            console.print(f"Payload length: {len(exploiter.final_payload)} bytes")
+        if engine.successful:
+            console.print(f"\n[bold green]SUCCESS![/bold green] Technique: {engine.technique_used}")
+            console.print(f"Payload length: {len(engine.final_payload)} bytes")
 
             # Show flag prominently if captured
-            if exploiter._captured_flag:
-                console.print(f"\n[bold magenta]FLAG: {exploiter._captured_flag}[/bold magenta]")
+            if engine.context.captured_flag:
+                console.print(f"\n[bold magenta]FLAG: {engine.context.captured_flag}[/bold magenta]")
 
             # Show verification status
-            if exploiter.verification_level:
+            if engine.context.verification_level:
                 from supwngo.exploit.verification import VerificationLevel
-                if exploiter.verification_level == VerificationLevel.SHELL_ACCESS:
+                level = engine.context.verification_level
+                if level == VerificationLevel.SHELL_ACCESS:
                     console.print("[bold green]Shell access verified via file creation[/bold green]")
-                elif exploiter.verification_level == VerificationLevel.FULL_CONTROL:
+                elif level == VerificationLevel.FULL_CONTROL:
                     console.print("[bold green]Full shell control verified[/bold green]")
-                elif exploiter.verification_level == VerificationLevel.FLAG_CAPTURED:
+                elif level == VerificationLevel.FLAG_CAPTURED:
                     console.print("[bold green]Exploitation verified by flag capture[/bold green]")
 
             if output:
                 with open(output, 'w') as f:
-                    f.write(exploiter.exploit_script)
+                    f.write(engine.exploit_script)
                 console.print(f"[green]Exploit script saved to: {output}[/green]")
             else:
                 console.print("\n[bold]Generated Exploit Script:[/bold]")
-                console.print(exploiter.exploit_script)
+                console.print(engine.exploit_script)
         else:
             console.print("\n[yellow]Full exploitation failed. Generated template:[/yellow]")
             if output:
                 with open(output, 'w') as f:
-                    f.write(exploiter.exploit_template)
+                    f.write(engine.exploit_template)
                 console.print(f"[yellow]Template saved to: {output}[/yellow]")
             else:
                 # Show first part of template
-                lines = exploiter.exploit_template.split('\n')[:50]
+                lines = engine.exploit_template.split('\n')[:50]
                 console.print('\n'.join(lines))
-                if len(exploiter.exploit_template.split('\n')) > 50:
+                if len(engine.exploit_template.split('\n')) > 50:
                     console.print("... (truncated)")
 
 

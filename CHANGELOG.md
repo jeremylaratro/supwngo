@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `supwngo autopwn` (the CLI command) is now driven by
+  `CanonicalAutopwnEngine` instead of `EnhancedAutoExploiter`. Previously
+  `cli.py` defined **two** `def autopwn` Click commands (one wired to
+  `AutoExploiter`, one to `EnhancedAutoExploiter`); Click silently kept
+  only the later one, making the first permanently unreachable. There is
+  now exactly one `autopwn` command; it gained an `--offset` option
+  (previously only on the unreachable command) to skip offset discovery
+  when already known. Part of Phase 2 of
+  `docs/plans/2026-09-23-effectiveness-and-usability.md`.
+
 ### Added
 - `supwngo/exploit/pipeline/` — a new canonical auto-exploitation pipeline
   (`CanonicalAutopwnEngine`) that consolidates the two previously
