@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `supwngo/exploit/verification.py`'s `ExploitVerifier.__init__` now
+  accepts optional `marker`/`marker_file` overrides (previously a fixed,
+  shared `PWNED_MARKER`/`PWNED_FILE` constant for every caller), so callers
+  needing a verification receipt tied to a specific attempt can pass a
+  freshly generated unique token per attempt instead of a shared,
+  guessable string. Existing callers are unaffected (defaults preserved).
+  Part of Phase 2 of `docs/plans/2026-09-23-effectiveness-and-usability.md`.
 - `supwngo/exploit/strategy.py`'s `StrategySuggester` gained two new
   `ExploitApproach` strategies — `VARIABLE_OVERWRITE` and
   `NEGATIVE_SIZE_BYPASS` — reconciled in from `EnhancedAutoExploiter`'s
