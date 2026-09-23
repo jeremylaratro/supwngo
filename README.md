@@ -115,8 +115,8 @@ pip install -e ".[dev]"
 
 ## Documentation
 
-- [Development Guide](docs/DEVELOPMENT.md)
-- [Manual Exploitation Guide](docs/MANUAL_EXPLOITATION_GUIDE.md)
+- [Development Guide](docs/internal/DEVELOPMENT.md)
+- [Manual Exploitation Guide](docs/internal/MANUAL_EXPLOITATION_GUIDE.md)
 
 ## License
 

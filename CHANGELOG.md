@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   here — see `docs/plans/2026-09-23-effectiveness-and-usability.md` Phase 7.
 
 ### Fixed
+- README.md's Documentation section linked to `docs/DEVELOPMENT.md` and
+  `docs/MANUAL_EXPLOITATION_GUIDE.md`, neither of which exists at those paths after a prior docs
+  reorg moved both files to `docs/internal/`. Links now point to `docs/internal/DEVELOPMENT.md`
+  and `docs/internal/MANUAL_EXPLOITATION_GUIDE.md`.
 - Package failed to `import` at all on Python 3.11 (the advertised `>=3.8` range) due to
   syntax errors in four files. `supwngo/exploit/seccomp.py` and one code path in
   `supwngo/exploit/auto.py` used an f-string containing a backslash inside the expression
