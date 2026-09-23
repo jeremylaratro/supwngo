@@ -715,7 +715,7 @@ class DistributedCoverageTracker:
             return 0.0
 
         global_cov = self.get_global_coverage()
-        hit = sum(1 for edge in self._target_edges if global_cov[edge] if edge < len(global_cov) else False)
+        hit = sum(1 for edge in self._target_edges if edge < len(global_cov) and global_cov[edge])
 
         return (hit / len(self._target_edges)) * 100
 

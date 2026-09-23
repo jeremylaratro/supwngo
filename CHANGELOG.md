@@ -1,0 +1,34 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Fixed
+- Package failed to `import` at all on Python 3.11 (the advertised `>=3.8` range) due to
+  syntax errors in four files. `supwngo/exploit/seccomp.py` and one code path in
+  `supwngo/exploit/auto.py` used an f-string containing a backslash inside the expression
+  part — legal only under Python 3.12's relaxed f-string grammar (PEP 701) — fixed by
+  computing the value in a variable before interpolating. `supwngo/exploit/templates.py`
+  and the same `auto.py` code path nested a triple-quoted string inside an f-string using
+  the same quote character, which is invalid pre-3.12 — fixed by extracting the nested
+  string to a variable defined before the f-string. `supwngo/distributed/coverage_merge.py`
+  had a generator expression with two `if` clauses (`... if X if Y else Z`), which is not
+  valid Python on any version — fixed by combining into a single boolean condition. All 158
+  files under `supwngo/` now parse cleanly on Python 3.11, and `import supwngo.cli`
+  succeeds. This was the first prerequisite (Phase 0) of the effectiveness/usability plan;
+  see `docs/plans/2026-09-23-effectiveness-and-usability.md`.
+
+### Changed
+- Declared the previously-undeclared runtime dependencies used by lazily-imported,
+  already-guarded optional modules: `anthropic`/`openai` (`supwngo/ai/*`) and `z3-solver`
+  (`supwngo/exploit/rop/z3_solver.py`), as new `ai` and `z3` optional-dependency extras in
+  `pyproject.toml`. Also added `r2pipe` as an `r2` extra (previously only in
+  `requirements.txt`, uncommented as if required).
+- Reconciled `pyproject.toml` and `requirements.txt`, which previously listed different,
+  non-overlapping dependency sets (`claripy`/`unicorn`/`lief` were only in
+  `requirements.txt`; `networkx`/`pyyaml` were only in `pyproject.toml`). `pyproject.toml`'s
+  `[project.dependencies]` is now the canonical list; `requirements.txt` mirrors it.
