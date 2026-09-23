@@ -8,10 +8,27 @@ for exploit generation.
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 from supwngo.core.binary import Binary, Protections
 from supwngo.utils.logging import get_logger
+
+# `core/` is the shared substrate everything else (including `exploit/`)
+# builds on, and must stay importable on its own. Several `exploit/`
+# submodules import `core.context` at their own module level (e.g.
+# `exploit/generator.py`, `exploit/primitives.py`, `exploit/bypass.py`),
+# and those are in turn imported eagerly by `supwngo/exploit/__init__.py`.
+# If `core/context.py` did a real (non-TYPE_CHECKING) import of anything
+# under `supwngo.exploit`, instantiating that chain would try to import
+# `supwngo.exploit` while `core.context` is still mid-import, which fails
+# with an ImportError on the not-yet-defined name (the class of bug Phase 0
+# fixed elsewhere). So: TYPE_CHECKING-only imports for documentation/typing,
+# and no dataclass field default may require importing `supwngo.exploit.*`
+# at class-definition time. See docs/architecture/2026-09-23-autopwn-pipeline.md
+# ("Layering / import direction").
+if TYPE_CHECKING:
+    from supwngo.exploit.pipeline.contracts import AttemptRecord
+    from supwngo.exploit.verification import VerificationLevel
 
 logger = get_logger(__name__)
 
@@ -204,6 +221,63 @@ class ExploitContext:
 
     # Generated payload
     payload: bytes = b""
+
+    # === Canonical autopwn pipeline state ===
+    # Added for the Phase 2 pipeline consolidation (see
+    # docs/architecture/2026-09-23-autopwn-pipeline.md). Previously this
+    # state was tracked informally and separately inside AutoExploiter and
+    # EnhancedAutoExploiter (each had its own `_gadgets`, `_win_func`,
+    # `_binsh_addr`, `_offset`, `.attempts`, `.verification_level`,
+    # `._captured_flag`, and an ad-hoc `BinaryProfile`/profile dict).
+    # Formalizing it here (rather than re-inventing it a third time in the
+    # new orchestrator) is the "extend ExploitContext" half of Phase 2 step 0.
+
+    # ROP/other useful gadget addresses discovered for this target, e.g.
+    # {"ret": 0x401234, "pop_rdi": 0x401256, "syscall": 0x401301}.
+    gadgets: Dict[str, int] = field(default_factory=dict)
+
+    # (name, address) of a detected "win"/flag function, if any.
+    win_function: Optional[Tuple[str, int]] = None
+
+    # Address of a "/bin/sh" string found in the binary, if any.
+    binsh_addr: Optional[int] = None
+
+    # Buffer-to-return-address offset, once determined (by cyclic pattern,
+    # GDB, or a common-offset probe). Distinct from `stack.return_address_offset`,
+    # which is for consumers that already have a `StackInfo` populated from
+    # static/dynamic analysis; this field is what the executors read/write
+    # during a live attempt.
+    offset: Optional[int] = None
+
+    # Flag string captured by a verifier, if any (mirrors
+    # VerificationReceipt.flag for convenience once a run has finished).
+    captured_flag: Optional[str] = None
+
+    # Highest `supwngo.exploit.verification.VerificationLevel` reached by
+    # any attempt so far. Left untyped (`Any`) here rather than importing
+    # the enum - see the module-level layering note above. Callers that
+    # need the real enum should `from supwngo.exploit.verification import
+    # VerificationLevel` themselves; `None` means "nothing verified yet".
+    verification_level: Optional[Any] = None
+
+    # Ordered history of every technique attempt made against this target
+    # in the current run. Each entry is a
+    # `supwngo.exploit.pipeline.contracts.AttemptRecord` at runtime (typed
+    # as `Any` here for the same import-layering reason).
+    attempts: List[Any] = field(default_factory=list)
+
+    # --- Runtime profile: behavior discovered by running/probing the
+    # target before or while attempting techniques. Formalizes what used to
+    # be `EnhancedAutoExploiter`'s private `BinaryProfile` dataclass.
+    profile_prompts: List[bytes] = field(default_factory=list)
+    profile_input_count: int = 0
+    profile_has_menu: bool = False
+    profile_has_alarm: bool = False
+    profile_is_shellcode_runner: bool = False
+    profile_buffer_size: Optional[int] = None
+    profile_comparison_value: Optional[int] = None
+    profile_comparison_offset: Optional[int] = None
+    profile_bad_bytes: Set[int] = field(default_factory=set)
 
     @classmethod
     def from_binary(cls, binary: Binary) -> "ExploitContext":

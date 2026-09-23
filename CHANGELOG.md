@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `supwngo/core/context.py`'s `ExploitContext` gained new fields
+  (`gadgets`, `win_function`, `binsh_addr`, `offset`, `captured_flag`,
+  `verification_level`, `attempts`, and several `profile_*` fields) to hold
+  the state produced by the new canonical autopwn pipeline's static
+  analysis and dynamic profiling stages. Pipeline-facing types are imported
+  under `TYPE_CHECKING` only, preserving `core/context.py`'s existing
+  import-layering rule (no real import of `supwngo.exploit.*` at module
+  load time). Part of Phase 2 of
+  `docs/plans/2026-09-23-effectiveness-and-usability.md`; see
+  `docs/architecture/2026-09-23-autopwn-pipeline.md` for the full rationale.
 - `supwngo/exploit/verification.py`'s `ExploitVerifier.__init__` now
   accepts optional `marker`/`marker_file` overrides (previously a fixed,
   shared `PWNED_MARKER`/`PWNED_FILE` constant for every caller), so callers
