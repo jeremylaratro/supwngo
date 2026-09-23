@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `supwngo/exploit/strategy.py`'s `StrategySuggester` gained two new
+  `ExploitApproach` strategies — `VARIABLE_OVERWRITE` and
+  `NEGATIVE_SIZE_BYPASS` — reconciled in from `EnhancedAutoExploiter`'s
+  previously-private, unreconciled `_rank_strategies` inline strategy list.
+  Part of Phase 2 of `docs/plans/2026-09-23-effectiveness-and-usability.md`
+  (auto-exploit engine consolidation).
+
 ### Fixed
 - Package failed to `import` at all on Python 3.11 (the advertised `>=3.8` range) due to
   syntax errors in four files. `supwngo/exploit/seccomp.py` and one code path in
