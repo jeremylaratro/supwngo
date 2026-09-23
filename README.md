@@ -120,6 +120,16 @@ pip install -e ".[dev]"
 
 ## License
 
+> **⚠️ Unresolved license conflict.** This repository currently states three different, legally
+> distinct licenses in three places: the [`LICENSE`](LICENSE) file says **CC BY-NC-SA 4.0**
+> (noncommercial, share-alike/copyleft), this section says **PolyForm Noncommercial 1.0.0**
+> (noncommercial, not share-alike), and the package metadata in `pyproject.toml`/`setup.py` says
+> **MIT** (permissive, commercial use allowed). These terms are not interchangeable and do not all
+> apply at once. **Do not treat any one of them as authoritative until the maintainer picks one and
+> corrects the other two** — this is a licensing/legal decision for the maintainer, not something
+> to resolve unilaterally. Tracked in `docs/plans/2026-09-23-effectiveness-and-usability.md` (Phase
+> 7 — Governance & documentation hygiene).
+
 [PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) - Free for personal, educational, and research use. Commercial use requires a separate license.
 
 ## Disclaimer

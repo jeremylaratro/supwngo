@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Flagged the three-way license conflict (`LICENSE`=CC BY-NC-SA 4.0, `README.md`=PolyForm
+  Noncommercial 1.0.0, `pyproject.toml`/`setup.py`=MIT) with a prominent note in README.md's
+  License section. This is a maintainer/legal decision and is intentionally **not** resolved
+  here — see `docs/plans/2026-09-23-effectiveness-and-usability.md` Phase 7.
+
 ### Fixed
 - Package failed to `import` at all on Python 3.11 (the advertised `>=3.8` range) due to
   syntax errors in four files. `supwngo/exploit/seccomp.py` and one code path in
