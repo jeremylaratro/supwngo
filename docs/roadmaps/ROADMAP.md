@@ -1,5 +1,15 @@
 # supwngo Framework - Next Generation Roadmap
 
+> **Scope note (2026-09-23).** Most of what this document describes — AI/LLM integration,
+> CFI/CET/MTE/PAC bypass, distributed/cloud fuzzing, Windows/macOS/embedded/containers expansion,
+> and the enterprise API — is speculative-breadth work that is explicitly **parked** under the
+> current effectiveness/usability effort. See [`docs/roadmaps/PARKED.md`](PARKED.md) for the
+> authoritative parked list (with corrections: `kernel/` is live and NOT parked; `reporting/` is a
+> future wire-in candidate, not frozen) and
+> [`docs/plans/2026-09-23-effectiveness-and-usability.md`](../plans/2026-09-23-effectiveness-and-usability.md)
+> for what's actually in scope right now (a reliable, honestly-measured, single-command autopwn
+> pipeline for Linux ELF userspace binaries).
+
 ## Vision
 
 Transform supwngo from a CTF-focused tool into an **industry-leading automated vulnerability research and exploitation framework** that leverages cutting-edge AI, advanced program analysis, and modern exploit techniques to achieve autonomous binary exploitation at scale.

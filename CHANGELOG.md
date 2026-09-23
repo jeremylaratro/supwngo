@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Added `docs/roadmaps/PARKED.md`, listing speculative-breadth work explicitly out of scope for
+  the current effectiveness/usability effort (CFI/CET/MTE/PAC/shadow-stack/COOP bypass, exotic
+  heap techniques beyond common UAF/tcache, Windows/macOS/embedded/containers expansion,
+  distributed/cloud fuzzing, the enterprise REST/GraphQL API, LLM/RL-based exploit generation),
+  corrected per the module-triage audit: `kernel/` is called out as live and NOT parked (wired
+  into the CLI via `supwngo kernel <module.ko>`), and `reporting/` is flagged as a future wire-in
+  candidate rather than frozen indefinitely. Added a scope-note banner to the top of
+  `docs/roadmaps/ROADMAP.md` pointing to it, since most of that document's phases are exactly the
+  parked work.
 - Added methodology caveats to `docs/roadmaps/ROADMAP.md` (the unsupported "~60%" auto-exploit
   success-rate KPI), `docs/reference/WRITEUP_CAPABILITY_ASSESSMENT.md` (the "45/46 (98%)"/"13/13
   (100%)" figures, which measure hand-fed technique execution, not autonomous exploitation), and
