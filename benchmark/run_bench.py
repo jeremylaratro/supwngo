@@ -1146,7 +1146,7 @@ def write_summary(results: list[dict], out_path: Path, timeout: float, corpus: C
         lines.append("  VOID is detected per run from the negative controls, the script")
         lines.append("  audit and the provisioning checks -- there is NO hardcoded")
         lines.append("  exclusion list, so a target that becomes benign-input-solvable in")
-        lines.append("  any future corpus is caught automatically. The four causes mean")
+        lines.append("  any future corpus is caught automatically. The causes mean")
         lines.append("  different things and need different responses:")
         for cause, meaning in VOID_CAUSES.items():
             lines.append(f"    {cause:<30} {meaning}")
@@ -1299,6 +1299,12 @@ def main():
         "timeout": args.timeout,
         "corpus_root": str(corpus.root),
         "manifest": str(corpus.manifest),
+        # Provenance: both of these change what a verdict MEANS, so a report
+        # that omits them cannot be compared against another report.
+        # strict_attribution decides whether an unwitnessed success scores at
+        # all, and jobs is the scheduling shape the run actually used.
+        "jobs": jobs,
+        "strict_attribution": bool(args.strict_attribution),
         "targets_run": [t["slug"] for t in targets],
         "results": results,
     }

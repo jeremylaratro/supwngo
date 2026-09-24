@@ -153,7 +153,7 @@ build_one() {
                 echo "FAIL: $(basename "$dir") is not a known target and has no" >&2
                 echo "      $dir/cflags declaring its protection flags." >&2
                 echo "      Protections are part of the measurement, so this" >&2
-                echo "      builder will not guess them. See benchmark/README.md R8." >&2
+                echo "      builder will not guess them. See benchmark/README.md R9." >&2
                 return 1
             fi
             ;;
