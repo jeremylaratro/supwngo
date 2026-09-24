@@ -2644,6 +2644,165 @@ def _write_solve_artifact(content: str, output_path: Path) -> None:
         pass
 
 
+DEFAULT_WALKTHROUGH_OUTPUT_DIR = "./walkthrough_output"
+
+
+def _walkthrough_output_path(binary: str, output: Optional[str], markdown: bool) -> Path:
+    if output:
+        return Path(output)
+    suffix = ".md" if markdown else ".py"
+    stem = f"{Path(binary).name}_walkthrough{suffix}"
+    return Path(DEFAULT_WALKTHROUGH_OUTPUT_DIR) / stem
+
+
+def _emit_walkthrough(
+    binary: str,
+    *,
+    output: Optional[str],
+    family: Optional[str],
+    offset: Optional[int],
+    probe: bool,
+    libc: Optional[str],
+    markdown: bool,
+    remote_host: Optional[str],
+    remote_port: Optional[int],
+    handoff=None,
+) -> Optional[Path]:
+    """Generate, render and write a walkthrough. Returns the path written.
+
+    Errors are reported rather than swallowed. The one thing this must never do
+    is fall back to writing a placeholder stub: `offset = 0  # TODO` is the
+    artifact this whole feature exists to replace, so if generation genuinely
+    fails the user gets the reason and a non-zero exit, not a fake walkthrough.
+    """
+    from supwngo.exploit.walkthrough import explain_binary
+
+    with console.status("Building walkthrough..."):
+        walkthrough, text = explain_binary(
+            binary,
+            offset=offset,
+            probe=probe,
+            libc_path=libc,
+            handoff=handoff,
+            family=family,
+            markdown=markdown,
+        )
+
+    if not markdown:
+        text = _fill_remote_placeholders(text, remote_host, remote_port)
+
+    output_path = _walkthrough_output_path(binary, output, markdown)
+    _write_solve_artifact(text, output_path)
+
+    route = walkthrough.primary_route
+    console.print(f"\n[bold green]Walkthrough written to: {output_path}[/bold green]")
+    console.print(f"  Family     : {walkthrough.family}")
+    if route:
+        console.print(f"  Route      : {route.name}  (score {route.score:g})")
+    console.print(f"  Steps      : {len(walkthrough.steps)}")
+
+    # Say plainly what is not known. This is the honest-degradation contract:
+    # an unresolved value is named, with the step that resolves it, never
+    # silently defaulted.
+    if walkthrough.unknowns:
+        console.print("\n[yellow]Values this walkthrough could NOT determine:[/yellow]")
+        for fact in walkthrough.unknowns:
+            step = walkthrough.step(fact.resolved_by)
+            number = walkthrough.number_of(fact.resolved_by)
+            console.print(f"  [yellow]{fact.name}[/yellow]: {fact.unknown_reason}")
+            console.print(f"    plausible range: {fact.plausible}")
+            console.print(f"    resolve by running: step {number} ({step.title})")
+    else:
+        console.print("\n[dim]Every value in it was measured or derived.[/dim]")
+
+    # A Markdown render is not runnable, so telling the reader to `python3` it
+    # would be the first instruction in the artifact that does not work.
+    if markdown:
+        console.print("\n[dim]Read it, then regenerate without --markdown to run it.[/dim]")
+    else:
+        console.print(f"\n[dim]Start with:  python3 {output_path} steps[/dim]")
+    return output_path
+
+
+@cli.command()
+@click.argument("binary", type=click.Path(exists=True))
+@click.option(
+    "-o", "--output", type=click.Path(),
+    help=f"Output path (default: {DEFAULT_WALKTHROUGH_OUTPUT_DIR}/<binary-name>_walkthrough.py)",
+)
+@click.option(
+    "--family",
+    help="Force a technique family (rop_chain, syscall, stack_bof, triage) "
+         "instead of taking the best-scoring route",
+)
+@click.option(
+    "--offset", type=int,
+    help="Supply the buffer-to-return-address offset instead of measuring it",
+)
+@click.option(
+    "--no-probe", is_flag=True,
+    help="Do not execute the binary while gathering facts. The offset is then "
+         "reported as UNKNOWN with the step that measures it, never guessed.",
+)
+@click.option("--libc", type=click.Path(exists=True), help="Target libc, for ret2libc routes")
+@click.option(
+    "--remote",
+    help="Remote target HOST:PORT, templated into the walkthrough's "
+         "REMOTE_HOST/REMOTE_PORT",
+)
+@click.option("--markdown", is_flag=True, help="Render as Markdown instead of a runnable script")
+@click.option("--json", "json_output", is_flag=True, help="Output the walkthrough structure as JSON")
+@click.pass_context
+def explain(ctx, binary, output, family, offset, no_probe, libc, remote, markdown, json_output):
+    """
+    Teach the exploit: emit a step-by-step, runnable walkthrough.
+
+    Unlike `exploit` or `solve`, which aim to produce a working script, this
+    aims to produce an artifact a human can *follow* -- every step runnable on
+    its own, with what to expect, how to tell it worked, what to do when it
+    does not, and the reasoning that ties the technique to the binary's
+    measured protections.
+
+    A route is always produced. When analysis finds little, the guided-triage
+    route teaches the discovery workflow itself (confirm protections, enumerate
+    symbols and gadgets, drive the input to a crash, measure the offset, then
+    re-evaluate) rather than emitting a placeholder.
+
+    \b
+      supwngo explain ./vuln
+      supwngo explain ./vuln --family syscall
+      supwngo explain ./vuln --no-probe --markdown
+    """
+    remote_host: Optional[str] = None
+    remote_port: Optional[int] = None
+    if remote:
+        remote_host, remote_port = _parse_remote_target(remote)
+
+    if json_output:
+        from supwngo.exploit.walkthrough import explain_binary
+
+        walkthrough, _text = explain_binary(
+            binary, offset=offset, probe=not no_probe, libc_path=libc, family=family
+        )
+        console.print_json(json.dumps(walkthrough.to_dict(), indent=2, default=str))
+        return
+
+    print_banner()
+    console.print(Panel(f"[bold]Explaining:[/bold] {binary}", style="cyan"))
+
+    _emit_walkthrough(
+        binary,
+        output=output,
+        family=family,
+        offset=offset,
+        probe=not no_probe,
+        libc=libc,
+        markdown=markdown,
+        remote_host=remote_host,
+        remote_port=remote_port,
+    )
+
+
 def _guided_fallback(engine, binary: str, libc: Optional[str], timeout: float):
     """Phase 6 guided fallback mode: present the failed/partial run's
     `blocking_unknowns`, let the user supply ONE of them, and retry.
@@ -2730,8 +2889,14 @@ def _guided_fallback(engine, binary: str, libc: Optional[str], timeout: float):
     "--interactive", is_flag=True,
     help="On a partial/failed result, offer a guided fallback: supply ONE missing fact and retry",
 )
+@click.option(
+    "--walkthrough", "walkthrough", is_flag=True,
+    help="Also emit a step-by-step teaching walkthrough (see `supwngo explain`), "
+         "informed by what this run already tried. Most useful when the run "
+         "FAILS: it replaces the placeholder template with a followable strategy.",
+)
 @click.pass_context
-def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive):
+def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, walkthrough):
     """
     One command: binary in, working exploit (or a clear explanation why
     not) out.
@@ -2789,6 +2954,18 @@ def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive):
         }
         artifact = engine.exploit_script if engine.successful else (engine.exploit_script or engine.exploit_template)
         _write_solve_artifact(_fill_remote_placeholders(artifact, remote_host, remote_port), output_path)
+        if walkthrough:
+            from supwngo.exploit.walkthrough import explain_binary
+
+            wt, text = explain_binary(
+                binary, libc_path=libc, handoff=engine.handoff_report
+            )
+            wt_path = _walkthrough_output_path(binary, None, False)
+            _write_solve_artifact(
+                _fill_remote_placeholders(text, remote_host, remote_port), wt_path
+            )
+            result["walkthrough"] = wt.to_dict()
+            result["walkthrough_path"] = str(wt_path)
         console.print_json(json.dumps(result, indent=2, default=str))
         return
 
@@ -2815,6 +2992,27 @@ def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive):
         _write_solve_artifact(artifact, output_path)
         kind = "Partial exploit script" if engine.exploit_script else "Fallback template"
         console.print(f"\n[yellow]{kind} saved to: {output_path}[/yellow]")
+        if not walkthrough:
+            console.print(
+                "[dim]That template is a starting point, not a strategy. Re-run "
+                "with --walkthrough for a step-by-step route to a shell.[/dim]"
+            )
+
+    if walkthrough:
+        # Pass the hand-off report through: the walkthrough's header tells the
+        # reader what this run already tried, so they do not repeat dead ends.
+        _emit_walkthrough(
+            binary,
+            output=None,
+            family=None,
+            offset=None,
+            probe=True,
+            libc=libc,
+            markdown=False,
+            remote_host=remote_host,
+            remote_port=remote_port,
+            handoff=engine.handoff_report,
+        )
 
 
 def main():
