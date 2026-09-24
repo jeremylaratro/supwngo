@@ -1,7 +1,7 @@
 # Standardized context schema (`supwngo.context/v1`)
 
 **Date:** 2026-09-24
-**Status:** v2 DRAFT — v1 was REJECTED by two independent reviews; rewritten, not patched
+**Status:** v3 DRAFT — v1 and v2 both REJECTED; v3 replaces key→value facts with candidate sets
 **Author:** coordinator (Opus 5)
 
 ## Revision history
@@ -20,8 +20,22 @@
     precedent for refuse-by-default. That preflight **warns and then
     verifies instructions at claimed addresses** — the opposite of what
     v1 proposed. The precedent argues against v1.
-- **v2 — this document.** `facts` is the only normative store; data flows
-  one way; `ExploitContext` becomes a projection.
+- **v2 — REJECTED.** Two of six blockers fixed (two-authorities,
+  round-trip); the merge layer was still wrong, and for one root cause:
+  `facts` was an object with **one value per key**, yet the rules said
+  "different scope → both retained." The structure could not represent
+  what the rules required. Consequently the prose was self-contradictory
+  ("higher rank wins" *and* "rank alone never resolves a contradiction"
+  *and* "asserted vs measured aborts" *and* "CLI asserted wins"), and
+  `--resolve=<key>:<provenance>` could not even name one of two
+  conflicting `measured` candidates. Also: demoting provenance to express
+  applicability "rewrites what happened"; the verification gate was
+  undefined for the majority of facts that are not address claims;
+  `derived_from` used `@` as a separator when fact keys already contain
+  `@`; libc had no identity of its own; `process`/`attempt` scopes had no
+  IDs to be checked against.
+- **v3 — this document.** Facts become **candidate sets** with stable IDs.
+  One normative resolution function replaces all merge prose.
 
 ## Goal
 
@@ -150,23 +164,42 @@ This is forced by the code, not preference:
   deliberately distinct (`:244-249`). Resolve to one field with a stated
   meaning before mapping either to a fact key.
 
-### Facts: provenance, scope, and dependencies
+### Facts are candidate sets, not values
+
+A fact key maps to a **list of candidates**, each with a stable ID. This is
+the structural change v2 lacked: two facts may be simultaneously true of
+different scopes or identities, and the document must be able to hold both
+without either silently winning.
 
 ```json
 "facts": {
-  "stack.return_offset@stdin": {
-    "value": 72,
-    "provenance": "measured",
-    "scope": "build",
-    "depends_on": "binary_bytes",
-    "derived_from": [],
-    "method": "gdb cyclic-pattern probe",
-    "evidence": {"rsp": 6748010543161397363, "cyclic_find": 72},
-    "conditions": {"input_method": "stdin"},
-    "by": "supwngo offset", "at": "<ISO-8601>", "stale": false
+  "stack.return_offset": {
+    "candidates": [
+      {
+        "id": "f_7c1a",                       // stable; referenced by derived_from
+        "value": 72,
+        "provenance": "measured",
+        "applies_to": {
+          "identity": "t_main@sha256:04aa1a…",
+          "scope": "build",
+          "conditions": {"input_method": "stdin"}
+        },
+        "verification": {"class": "static_offset", "state": "unverifiable",
+                         "reason": "not an instruction-address claim"},
+        "derived_from": [],
+        "method": "gdb cyclic-pattern probe",
+        "evidence": {"rsp": 6748010543161397363, "cyclic_find": 72},
+        "by": "supwngo offset", "at": "<ISO-8601>",
+        "state": "active"                     // active|superseded|retracted|unresolved
+      }
+    ],
+    "resolution": {"selected": "f_7c1a", "rule": "most_specific_applicable"}
   }
 }
 ```
+
+A consumer never reads `candidates` directly; it calls `resolve(key, ctx)`
+and gets exactly one candidate or an error.
 
 **`provenance`** ∈ `measured | derived | assumed | asserted | unknown`.
 `unknown` is load-bearing and carried over from
@@ -202,43 +235,95 @@ decision variable; where a numeric score genuinely exists
 (`Vulnerability.confidence`, `detector.py:75`) it lives in the evidence
 block, not in merge logic.
 
-### Merge: complete matrix, and fail closed on contradiction
+### Merge and resolution: two separate operations
 
-Rank `asserted > measured > derived > assumed > unknown`, **but rank alone
-never resolves a contradiction.**
+v2's merge prose was self-contradictory because it tried to be both at
+once. They are split:
 
-- Higher rank wins over lower rank; loser recorded in `superseded[]`.
-- Equal rank, equal value → deduplicate, refresh `at`, no history entry
-  (keeps repeated runs from growing the document without bound).
-- Equal rank, different value, **same scope** → the fact becomes
-  `unresolved`; the command **aborts** and requires
-  `--resolve=<key>:asserted|measured|…`. Safety-critical consumers refuse
-  an `unresolved` fact.
-- Different scope → both retained; they are not in conflict (this is the
-  distinction v1 missed: *"the remote differs from local" is an
-  applicability distinction, not provenance precedence*).
-- Type mismatch → validation error, never a merge.
-- `retracted: true` + `retracted_reason` suppresses a fact without
-  asserting a replacement — the verb v1 lacked entirely.
+**`merge(existing_candidates, incoming)` — never chooses a winner.**
+It only ever *adds* a candidate or recognises an exact duplicate:
 
-**`asserted` no longer beats `measured` unconditionally.** A contradiction
-between a human assertion and a measurement means "the number you are
-about to build a payload with is provably not the number this binary
-produced." That aborts. Additionally every `asserted` fact records
-`asserted_for` (the identity it was written against); if the current
-target's identity differs, the assertion is **demoted to `assumed`**
-automatically — preserving the legitimate "I know the remote differs" case
-while killing copy-paste-from-another-challenge.
+| condition | outcome |
+|---|---|
+| no candidate with same `applies_to` **and** same value | append new candidate |
+| candidate exists with same `applies_to` and same value | `last_seen` updated on the existing candidate; **no** new candidate, no history entry |
+| candidate exists with same `applies_to`, different value, incoming rank **higher** | incoming appended `active`; previous → `superseded`; dependents invalidated |
+| candidate exists with same `applies_to`, different value, incoming rank **lower** | incoming appended `state: superseded` immediately (kept as evidence, never selected) |
+| candidate exists with same `applies_to`, different value, **equal** rank | both `active`; the key is `unresolved` |
+| value fails the key's declared type | validation error; nothing merged |
 
-**CLI flags are facts.** `autopwn --offset` (`cli.py:2466`), `template
---offset` (`:1010`), `--libc` on several commands, `explain --offset/--libc`
-all collide with stored facts. Rule: a CLI flag is an `asserted` fact
-scoped to this invocation; it wins in-process, is written back as
-`asserted`, and a contradiction with a stored `asserted` fact aborts.
+Rank is `asserted > measured > derived > assumed > unknown`, and it applies
+**only within one `applies_to`**. Two candidates with different
+`applies_to` are never in conflict and never compared — that is the
+applicability-vs-precedence distinction, now enforced structurally rather
+than asserted in prose.
 
-`superseded[]` is capped at 3 entries per fact; older history moves to a
-sidecar, so the document stays reviewable and diffable — the property the
-design is justified by.
+**`resolve(key, ctx)` — chooses, or refuses.** Given the current
+invocation's identity, run/process IDs and conditions:
+
+1. Discard candidates whose `state` is not `active`.
+2. Discard candidates whose `applies_to.identity` does not match the
+   current target identity, or whose `scope` has expired (a `process`-scoped
+   candidate from a different `process_id`), or whose `conditions`
+   contradict the invocation.
+3. Of the survivors, select the **most specific**: identity-bound beats
+   identity-agnostic, then narrower scope beats broader, then more
+   `conditions` matched, then higher rank, then newest `at`.
+4. If step 2 leaves nothing → `FactUnavailable`. If step 3 cannot break a
+   tie, or the key is `unresolved` → `FactUnresolved`. **Both are errors.**
+   Neither is ever silently treated as absent, and no consumer may proceed
+   on a guess.
+
+`--resolve <candidate_id>` selects by **candidate ID**, not by provenance
+(v2's `--resolve=<key>:measured` could not distinguish two conflicting
+`measured` candidates). Doing so writes an auditable
+`resolutions[]` record — who resolved it, when, which candidate lost — and
+invalidates the dependent closure of the rejected candidate.
+
+**A candidate's provenance is never rewritten.** v2 demoted an
+identity-mismatched `asserted` fact to `assumed`, which falsifies the
+record of what happened. Instead the candidate simply fails step 2 —
+it remains `asserted`, and is *inapplicable* here. Using it against a new
+target requires an explicit re-assertion naming that target.
+
+**CLI flags go through the same table.** `autopwn --offset`
+(`cli.py:2466`), `template --offset` (`:1010`), `--libc`, `explain
+--offset/--libc` become `asserted` candidates bound to this invocation's
+identity, merged by the rules above — not a parallel override path.
+
+### Dependencies and staleness
+
+`derived_from` holds **structured** references, `[{"id": "f_7c1a",
+"digest": "<sha256 of the candidate's canonical form>"}]` — not strings
+(v2 used `@` as a separator when fact keys already contain `@`).
+
+Invalidation closure is recomputed on supersede, retract, transition to
+`unresolved`, **and** on any source-candidate digest change. Traversal uses
+a visited set, so it terminates. Cycles and dangling references are
+rejected **at validation time**, transactionally, so an invalid graph is
+never persisted. Consuming a `stale` candidate is a hard error.
+
+### Verification is a registry, and may return "unverifiable"
+
+v2 said "verify a sample of `binary_bytes` facts," which is undefined for
+the majority of facts that are not instruction-address claims. Instead
+every fact key declares a **verification class**, and each class has a
+verifier returning `verified | failed | unverifiable`:
+
+| class | verifier | example keys |
+|---|---|---|
+| `instruction_at` | disassemble and compare mnemonics | `gadget.pop_rdi`, `plt.system` |
+| `symbol_addr` | symbol table lookup | `sym.win` |
+| `static_offset` | none available | `stack.return_offset` |
+| `libc_offset` | resolve against the bound libc artifact | `libc.system_offset` |
+| `runtime` | never verifiable statically | `libc.base`, `leak.puts` |
+
+Rules: **missing tooling yields `unverifiable`, never `verified`.**
+`unverifiable` is not a pass — a safety-critical consumer refuses it unless
+an explicit, per-key, recorded override exists. `failed` refuses always.
+This is what makes the identity gate implementable; it also means the gate
+degrades honestly on a machine without a disassembler rather than
+pretending to have checked.
 
 ### Identity: verify, don't just hash
 
@@ -263,11 +348,46 @@ precedent does the opposite.
   libc, yet `libc.base`/`system_offset`/one-gadgets are the facts most
   likely wrong and most catastrophic.
 - `--target-identity=sha256|build-id|none` replaces the blanket
-  `--context-mismatch=allow`, which disabled all checking at once.
+  `--context-mismatch=allow`. `none` is defined narrowly: it permits
+  *selection* of candidates bound to a different identity, and records an
+  `identity_override` in `resolutions[]`; it does **not** disable
+  verification, and `runtime`-scoped candidates remain refused.
 - `Binary.__post_init__` hashes only `if self.path.exists()`
-  (`core/binary.py:137-142`), so a doc can carry `sha256: ""`. The doc's
-  digest is authoritative and is never overwritten by a locally computed
-  value; **refuse to write** a doc with an empty digest.
+  (`core/binary.py:137-142`), so a doc can carry `sha256: ""`.
+  **Refuse to write** a doc with an empty digest.
+
+### Identities are first-class, and there is more than one
+
+v2 had a single `target` and declared its digest authoritative even after a
+*different* binary was accepted through verification — so new measurements
+from binary B could be stored under binary A's identity. Instead:
+
+```json
+"identities": {
+  "t_main":  {"role": "target", "sha256": "…", "build_id": "…",
+              "format": "elf", "elf_type": "ET_DYN", "linkage": "dynamic",
+              "pie": true, "os_abi": "linux", "arch": "amd64", "bits": 64},
+  "l_glibc": {"role": "libc", "sha256": "…", "build_id": "…",
+              "version": "2.39"},
+  "r_prod":  {"role": "remote", "endpoint": "host:1337"}
+},
+"runs": [{"run_id": "r_01", "at": "…", "process_ids": ["p_01"]}]
+```
+
+- Every candidate's `applies_to.identity` names one of these. A fact
+  produced while operating on a binary is bound to **the identity actually
+  observed**, never to a stale envelope value.
+- **libc gets its own identity.** v2 had `libc_file` as a dependency class
+  but gave only the main binary a digest, while `libc.system_offset`,
+  one-gadgets and every derived base bind to the libc, not the target.
+- `process`/`attempt` scopes reference `run_id`/`process_id`/`attempt_id`,
+  which is what makes "refused on reuse in a new run" implementable. A new
+  `run_id` is minted per CLI invocation; a new `process_id` per spawned or
+  reconnected target process. Any candidate scoped to a `process_id` not in
+  the current run fails resolution step 2.
+- `diff` and `batch` become representable: multiple `target`-role
+  identities, with facts bound per identity, rather than being forced
+  through a single-target envelope.
 
 ### Target identity fields (v1 was incorrect)
 
@@ -308,9 +428,24 @@ Provenance commands are never executed.
 ### Persistence
 
 `--context-out` defaults to the `--context` path (in-place accumulate) as
-the primary mode. Writes are temp-file + `os.replace()` (atomic), guarded
-by `fcntl.flock`. Long-running commands (`fuzz -t 3600`, `cli.py:135`)
-checkpoint periodically so a killed campaign still contributes.
+the primary mode.
+
+Locking `ctx.json` itself does not serialize writers, because the file is
+then *replaced* — the lock is held on an inode that no longer backs the
+path. So the lock lives on a **stable sidecar**, `ctx.json.lock`, and is
+held across the whole read → merge → validate → temp-write → `fsync` →
+`os.replace()` → directory `fsync` sequence. That is what prevents lost
+read-modify-write updates, which atomic replacement alone does not.
+
+**History stays inside the document.** v2 moved capped `superseded[]`
+history to an unspecified sidecar, creating a second persistence authority
+with no schema, integrity link, or locking story. Candidates that are
+`superseded` or `retracted` simply remain in the candidate list with that
+state; a `--context-prune` subcommand compacts them on request, so growth
+is bounded by an explicit operator action rather than by a silent cap.
+
+Long-running commands (`fuzz -t 3600`, `cli.py:135`) checkpoint
+periodically so a killed campaign still contributes.
 
 ### Command tiers
 
@@ -356,37 +491,52 @@ replaced by three that are:
 1. **Fixpoint stability:** `dump(load(dump(load(d)))) == dump(load(d))`.
    Catches non-idempotent rehydration.
 2. **Semantic equality modulo a declared volatile set** (`updated`,
-   `history[-1].at`, `receipt.verified_at`), the exclusion list living in
-   the test so it shows up in diffs.
+   `last_seen`, `runs[].at`, `receipt.verified_at`), the exclusion list
+   living in the test so it shows up in diffs. `at` is an *observation*
+   time and is never refreshed, so it is not volatile — only `last_seen`
+   is, which is why repeated identical merges are idempotent.
 3. **No-silent-drop:** against a golden maximally-populated document,
-   every JSON pointer in the input is present in the output **or** named in
-   an explicit `KNOWN_LOSSY` allowlist the test prints on failure.
+   every JSON pointer in the input is present in the output. The
+   `KNOWN_LOSSY` allowlist is restricted to fields explicitly deprecated
+   with a migration rule; **unknown fields must round-trip unchanged**,
+   so the allowlist cannot be used to excuse ordinary loss (v2's version
+   contradicted its own forward-compatibility promise).
 
 Plus:
 
-4. **Full 5×5 merge matrix**, both operand directions, plus
-   same-value dedup, type mismatch, retraction, idempotence under repeated
-   merges, and staleness cascade through `derived_from`.
-5. **Contradiction aborts** and `--resolve` selects.
-6. **Identity:** digest mismatch warns; instruction-verification failure
-   refuses; `process`-scoped facts refused on reuse; `asserted_for`
-   mismatch demotes to `assumed`.
-7. **Static conformance** over `cli.commands`: every command is either in
+4. **Merge table exhaustively**, both operand directions: every row above,
+   plus same-value dedup, type mismatch, retraction, repeated-merge
+   idempotence, and that a lower-rank incoming candidate is retained as
+   evidence but never selected.
+5. **Resolution:** `FactUnavailable` and `FactUnresolved` are raised, not
+   swallowed; `--resolve <candidate_id>` selects, records a `resolutions[]`
+   entry, and invalidates the rejected candidate's dependent closure.
+6. **Dependency graph:** cycles and dangling references rejected at
+   validation; closure traversal terminates on a cyclic input that somehow
+   reaches it; digest change on a source invalidates dependents.
+7. **Verification registry:** each class returns the right state; missing
+   tooling yields `unverifiable` and a safety-critical consumer refuses it;
+   `failed` always refuses.
+8. **Identity:** digest mismatch warns; verification failure refuses;
+   `process`-scoped candidates refused in a new run; a candidate bound to
+   another identity is not selected; `--target-identity=none` permits
+   selection, records the override, and still refuses `runtime` candidates.
+9. **Static conformance** over `cli.commands`: every command is either in
    the exemption allowlist **or** accepts both flags. v1's test was
    vacuous — a new command omitting the decorator simply wasn't in the
    parametrization and passed. The allowlist is the artifact a reviewer
    diffs.
-8. **Executed conformance** on `tests/` fixtures, marked
+10. **Executed conformance** on `tests/` fixtures, marked
    `@pytest.mark.integration`, because a real sweep would need AFL++,
    angr, Ghidra (`cli.py:1771`), external SAST (`:1171-1173`) and
    **network access to libc.rip** (`remote/libc_db.py`).
-9. **Flag misplacement:** `supwngo exploit --crash ctx.json ./t` errors
+11. **Flag misplacement:** `supwngo exploit --crash ctx.json ./t` errors
    rather than treating the document as crash bytes.
-10. **Secret redaction:** flags absent unless opted in.
-11. **YAML/JSON parity** including `0x401234` vs `4198964`.
-12. **Atomicity:** interrupted write leaves the prior document intact;
+12. **Secret redaction:** flags absent unless opted in.
+13. **YAML/JSON parity** including `0x401234` vs `4198964`.
+14. **Atomicity:** interrupted write leaves the prior document intact;
     concurrent writers do not lose updates.
-13. **Packaging:** schema loads via `importlib.resources` from an
+15. **Packaging:** schema loads via `importlib.resources` from an
     installed wheel.
 
 ## Risks
