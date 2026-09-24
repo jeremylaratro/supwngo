@@ -44,7 +44,7 @@ __all__ = [
     "compare_specificity", "maximal",
     "applicable", "current_pins", "contradiction_guard", "agreeing",
     "resolve", "try_resolve", "conflicts", "agreements", "is_stale",
-    "canonical_document", "expected_active_dedup_keys", "classify_pair",
+    "canonical_document", "classify_pair",
     "FACT_KEYS", "spec_for", "emit_tables",
     "ID_DIGEST_FIELDS", "DEP_DIGEST_FIELDS", "DERIVED_FIELDS",
     "PROVENANCE_EDGES", "SCOPE_EDGES", "STATE_EVENTS",
@@ -725,18 +725,8 @@ class FactStore:
         self.conflicts = list(conflicts)
 
 
-def expected_active_dedup_keys(store: FactStore, key: str, incoming: Candidate) -> frozenset:
-    """Independent oracle for property P1.
-
-    Deliberately *not* implemented in terms of :func:`merge`: the expected set
-    of active candidates after a merge is a plain set union on dedup keys.  A
-    merge that supersedes on rank passes a codomain check but fails this.
-    """
-    return frozenset({dedup_key(c) for c in store.active(key)} | {dedup_key(incoming)})
-
-
 def validate_store(store: FactStore) -> None:
-    """Check I1-I6 transactionally.  An invalid graph is never persisted."""
+    """Check I1-I7 transactionally.  An invalid graph is never persisted."""
     seen_ids: Dict[str, Candidate] = {}
     for key in store.keys():
         active_keys: Dict[str, str] = {}

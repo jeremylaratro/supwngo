@@ -915,12 +915,17 @@ def prop_P16_current_pins_is_a_function() -> None:
     """The fold is on the store-assigned ``seq``, and the operator-supplied
     ``at`` is deliberately adversarial here: ``"t9"`` then ``"t10"`` is the case
     that an ``at``-ordered fold gets backwards (round-2 finding 9)."""
-    s = store_of(raw(value=72), raw(value=80, method="m2"))
-    first, second = sorted(s.active(KEY), key=lambda c: c.id)
-    R.pin(s, KEY, first.id, "t9", "first choice", "operator")
-    R.pin(s, KEY, second.id, "t10", "changed my mind", "operator")
+    s = store_of(*[raw(value=72 + 8 * i, method=f"m{i}") for i in range(MAX_PINS)])
+    ordered = sorted(s.active(KEY), key=lambda c: c.id)
+    assert len(ordered) == MAX_PINS, "the pin enumeration must reach MAX_PINS"
+    # Deliberately adversarial `at` labels: "t9" then "t10" then "t11"...
+    ats = ["t9"] + [f"t1{i}" for i in range(MAX_PINS - 1)]
+    for cand, at in zip(ordered, ats):
+        R.pin(s, KEY, cand.id, at, "operator judgement", "operator")
+    second = ordered[-1]
     recs = list(s.resolutions)
-    assert [r.seq for r in recs] == [1, 2], "seq must be assigned by the store"
+    assert [r.seq for r in recs] == list(range(1, MAX_PINS + 1)), \
+        "seq must be assigned by the store, densely and in write order"
 
     n = 0
     for perm in itertools.permutations(recs):
@@ -938,6 +943,7 @@ def prop_P16_current_pins_is_a_function() -> None:
     assert R.current_pins(s) == {}, "an unpin after a pin must leave no entry"
 
     # The public list is not a back door: an unvalidated record is refused.
+    first = ordered[0]
     for bad in (R.PinRecord("pin", KEY, first.id, "t1", 0, "operator"),
                 R.PinRecord("pin", KEY, first.id, "", 9, "operator"),
                 R.PinRecord("pin", KEY, first.id, "t1", 9, ""),
