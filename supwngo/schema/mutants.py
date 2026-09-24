@@ -357,6 +357,182 @@ R._conflicts_pristine = R.conflicts
 R._emit_tables_pristine = R.emit_tables
 
 
+# --- round-3 findings ------------------------------------------------------
+
+
+def _merge_generation_from_caller(store: R.FactStore, incoming: Any) -> R.MergeDecision:
+    """Round-3 finding 1: take ``generation`` from the caller whenever the store
+    has no terminal sibling to override it.
+
+    This is what shipped.  It looks harmless because the id is still derived from
+    the generation -- but the generation is now an *input*, so merging the same
+    assertion at generation 0 and at generation 5 leaves whichever arrived first
+    and reversing arrival order changes the document bytes.
+    """
+    candidate = R.validate_candidate(incoming)
+    appended_state = R.transition(None, "append")
+    if candidate.state is not appended_state:
+        raise R.SchemaError("merge accepts only active candidates")
+    R.validate_store(store)
+    key = candidate.key
+    dk = R.dedup_key(candidate)
+    matches = [c for c in store.active(key) if R.dedup_key(c) == dk]
+    terminal = [c for c in store.candidates(key)
+                if c.state is not appended_state and R.dedup_key(c) == dk]
+    if terminal:                       # only here was the store authoritative
+        generation = 1 + max(c.generation for c in terminal)
+        candidate = dataclasses.replace(candidate, generation=generation)
+        candidate = dataclasses.replace(candidate, id=R.derive_id(candidate))
+    snap = store._snapshot()
+    try:
+        if matches:
+            existing = matches[0]
+            store._replace(existing, dataclasses.replace(
+                existing,
+                observations=R._merge_observations(
+                    existing.observations, candidate.observations)))
+            store._sorted(key)
+            decision = R.MergeDecision.DEDUPED
+        else:
+            for dead in sorted(terminal, key=lambda c: c.id):
+                store._record_conflict(R.Conflict(
+                    key,
+                    R.ConflictClass.REOBSERVED_AFTER_RETRACTION
+                    if dead.state is R.State.RETRACTED
+                    else R.ConflictClass.REOBSERVED_AFTER_SUPERSESSION,
+                    tuple(sorted((dead.id, candidate.id)))))
+            store._bucket(key).append(candidate)
+            store._sorted(key)
+            decision = R.MergeDecision.APPENDED
+        store._record_conflicts(R.context_free_conflicts(store, key))
+        R.validate_store(store)
+    except Exception:
+        store._restore(snap)
+        raise
+    return decision
+
+
+def _jsonable_coerces_keys(obj: Any) -> Any:
+    """Round-3 finding 3: stringify mapping keys and prefix bytes.
+
+    ``str(k)`` maps the distinct names ``1`` and ``"1"`` onto one key whose sort
+    keys then tie, so one silently overwrites the other; and ``"b64:" + b64``
+    collides with a string that happens to start ``b64:``.  Both make
+    ``canonical`` non-injective, which matters because the observation union is
+    keyed by exactly this digest.
+    """
+    import base64 as _b64
+    if obj is None or isinstance(obj, (bool, int, str)):
+        return obj
+    if isinstance(obj, float):
+        raise R.SchemaError("floats are not canonicalisable")
+    if isinstance(obj, R.enum.Enum):
+        return obj.value
+    if isinstance(obj, bytes):
+        return "b64:" + _b64.b64encode(obj).decode("ascii")
+    if isinstance(obj, R.Mapping):
+        return {str(k): _jsonable_coerces_keys(v)
+                for k, v in sorted(obj.items(), key=lambda kv: str(kv[0]))}
+    if isinstance(obj, (frozenset, set)):
+        return sorted((_jsonable_coerces_keys(v) for v in obj),
+                      key=lambda v: R.json.dumps(v, sort_keys=True))
+    if isinstance(obj, (list, tuple)):
+        return [_jsonable_coerces_keys(v) for v in obj]
+    if dataclasses.is_dataclass(obj):
+        return {f.name: _jsonable_coerces_keys(getattr(obj, f.name))
+                for f in dataclasses.fields(obj)}
+    raise R.SchemaError(f"not canonicalisable: {type(obj).__name__}")
+
+
+def _validate_log_shape_only(store: R.FactStore, index) -> None:
+    """Round-3 finding 5: check the *shape* of a log record and nothing else.
+
+    A well-formed record naming a candidate that does not exist, or one filed
+    under another key, or a ``supersede`` with no replacement, all pass -- and
+    ``resolve`` then honours the pin.
+    """
+    seen_seq = set()
+    for rec in store.resolutions:
+        if not isinstance(rec, R.PinRecord):
+            raise R.SchemaError("log entry is not a PinRecord")
+        if rec.cls not in R._LOG_CLASSES:
+            raise R.SchemaError(f"log entry class {rec.cls!r}")
+        if isinstance(rec.seq, bool) or not isinstance(rec.seq, int) or rec.seq < 1:
+            raise R.SchemaError("log entry seq must be a positive int")
+        if rec.seq in seen_seq:
+            raise R.SchemaError("duplicate log seq")
+        seen_seq.add(rec.seq)
+        for field in ("at", "actor", "key"):
+            value = getattr(rec, field)
+            if not isinstance(value, str) or not value:
+                raise R.SchemaError(f"log entry needs a non-empty {field}")
+
+
+def _validate_conflicts_noop(store: R.FactStore, index) -> None:
+    """Round-3 finding 6: leave ``store.conflicts`` unvalidated, so a malformed
+    entry survives a merge and surfaces later out of ``canonical_document``."""
+    return None
+
+
+def _supersede_key_only(store: R.FactStore, candidate_id: str, by_candidate_id: str,
+                        at: str, reason: str, actor: str) -> None:
+    """Round-3 finding 7: require only that the keys match.
+
+    So a candidate about another identity, process, boot or mutually exclusive
+    condition set may supersede an unrelated fact -- silently destroying
+    something still true.
+    """
+    replacement = store.by_id(by_candidate_id)
+    if replacement is None:
+        raise R.StateTransitionError(f"no superseding candidate {by_candidate_id}")
+    if by_candidate_id == candidate_id:
+        raise R.StateTransitionError("a candidate cannot supersede itself")
+    target = store.by_id(candidate_id)
+    if target is None:
+        raise R.StateTransitionError(f"no candidate {candidate_id}")
+    if replacement.key != target.key:
+        raise R.StateTransitionError("a supersession is same-key by definition")
+    if replacement.state is not R.State.ACTIVE:
+        raise R.StateTransitionError("a dead candidate cannot supersede a live one")
+    R._transition_candidate(store, candidate_id, "supersede", at, reason, actor,
+                            by_candidate_id)
+
+
+def _classify_pair_value_only(a: R.Candidate, b: R.Candidate):
+    """Round-3 finding 8: classify on value difference alone.
+
+    Equal encodings from different identities return ``None``, so ``resolve``
+    refuses a pool that no conflict report mentions; and pairs no context can
+    make jointly applicable are reported as conflicts nobody can encounter.
+    """
+    if R.canonical(a.value) == R.canonical(b.value):
+        return None
+    if {a.provenance, b.provenance} == {R.Provenance.MEASURED, R.Provenance.ASSERTED}:
+        return R.ConflictClass.CONTRADICTION_MEASURED_ASSERTED
+    order = R.compare_specificity(a, b)
+    if order is R.Ordering.EQUAL:
+        return R.ConflictClass.EQUALLY_SPECIFIC
+    if order is R.Ordering.INCOMPARABLE:
+        return R.ConflictClass.INCOMPARABLE
+    return R.ConflictClass.DOMINATED
+
+
+def _validate_context_noop(ctx: Any) -> Any:
+    """Round-3 finding 9: do not validate the context, so ``resolve`` leaks
+    ``TypeError``/``ValueError`` and silently reads an unknown
+    ``identity_mode`` as strict."""
+    return ctx
+
+
+def _validate_store_noop(store: R.FactStore) -> None:
+    """The whole invariant boundary removed.
+
+    Every positive control in the suite must stop raising, which is what proves
+    the controls are controls rather than descriptions.
+    """
+    return None
+
+
 MUTANTS: Dict[str, Mutant] = {
     m.name: m for m in [
         Mutant("merge_supersedes_on_rank", "v3 defect 1", "P1",
@@ -442,5 +618,24 @@ MUTANTS: Dict[str, Mutant] = {
                note="the shipped defect itself: retract then re-merge and the "
                     "live and terminal siblings collide on one id, so the "
                     "re-observation cannot be stored at all"),
+        Mutant("generation_from_caller", "round-3 finding 1", "P20",
+               {"merge": _merge_generation_from_caller},
+               note="the shipped defect: generation was store-assigned only "
+                    "when a terminal sibling existed, so on a fresh store "
+                    "arrival order decided the surviving id"),
+        Mutant("canonical_coerces_keys", "round-3 finding 3", "P21",
+               {"_jsonable": _jsonable_coerces_keys}),
+        Mutant("log_shape_only", "round-3 finding 5", "P22",
+               {"_validate_log": _validate_log_shape_only}),
+        Mutant("conflicts_unvalidated", "round-3 finding 6", "P23",
+               {"_validate_conflicts": _validate_conflicts_noop}),
+        Mutant("supersede_key_only", "round-3 finding 7", "P24",
+               {"supersede": _supersede_key_only}),
+        Mutant("classify_value_only", "round-3 finding 8", "P25",
+               {"classify_pair": _classify_pair_value_only}),
+        Mutant("context_unvalidated", "round-3 finding 9", "P26",
+               {"validate_context": _validate_context_noop}),
+        Mutant("store_invariants_disabled", "the boundary itself removed", "P27",
+               {"validate_store": _validate_store_noop}),
     ]
 }

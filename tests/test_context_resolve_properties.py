@@ -24,6 +24,7 @@ import dataclasses
 import inspect
 import itertools
 import pathlib
+from collections.abc import Mapping
 from typing import Any, Dict, List, Sequence, Tuple
 
 import pytest
@@ -140,6 +141,24 @@ def order_universe() -> List[R.Candidate]:
     ]
 
 
+def all_scope_universe() -> List[R.Candidate]:
+    """The complement reduction: **every** scope, fewer of everything else.
+
+    Round-3 finding 11: ``ORDER_SCOPES`` names three of six scopes, so a
+    scope-specific defect in the *composition* -- as opposed to in
+    ``compare_scope``, whose own order is checked exhaustively over all six --
+    could pass.  Trading provenance and condition breadth for scope breadth
+    covers that direction at 48 members rather than 240, because the triple loop
+    is cubic and 240 members is 13.8M triples.
+    """
+    return [
+        bare(provenance=prov, identity=ident, scope=scope, conditions=conds)
+        for prov, ident, scope, conds in itertools.product(
+            (R.Provenance.MEASURED, R.Provenance.ASSUMED), ORDER_IDENTITIES,
+            SCOPES, (CONDITION_MAPS[0], CONDITION_MAPS[3]))
+    ]
+
+
 # ===========================================================================
 # Properties.  Each is a plain function that raises AssertionError, so the
 # mutation meta-test can call it directly.
@@ -245,6 +264,32 @@ def prop_P1_merge_totality_and_semantics() -> None:
     _count("P1 (store, incoming) pairs", n)
 
 
+class _HostileMapping(Mapping):
+    """A mapping that raises when read.
+
+    This is what keeps the validation funnel honest.  Every other malformed
+    input below is caught by an explicit check, and when round 3 pointed out
+    that the previous funnel-only case (evidence values of incomparable types
+    inside ``sorted()``) had since acquired an explicit check of its own, the
+    funnel went back to being a step that could not fail -- the mutant that
+    removes it passed.  No field-by-field check can catch this one: it fails
+    inside ``dict(raw)``, before there is a field to check.  A lazily populated
+    config object or a half-initialised adapter really does behave this way.
+    """
+
+    def keys(self):
+        raise RuntimeError("backing store unavailable")
+
+    def __iter__(self):
+        raise RuntimeError("backing store unavailable")
+
+    def __getitem__(self, k):
+        raise RuntimeError("backing store unavailable")
+
+    def __len__(self):
+        return 1
+
+
 def prop_P1b_validation_is_the_only_raiser() -> None:
     """Malformed input of any shape raises SchemaError and nothing else."""
     good_ref = {"key": "libc.base", "id": "f_" + "0" * 32, "digest": "a" * 64}
@@ -283,6 +328,33 @@ def prop_P1b_validation_is_the_only_raiser() -> None:
         # the funnel is a validation step that cannot fail.
         {**raw(), "observations": [{"at": "t1",
                                     "evidence": [("a", 1), ("a", "x")]}]},
+        # The genuinely unanticipatable shape -- see _HostileMapping.
+        _HostileMapping(),
+        # Round-3 finding 2: every one of these is *falsey*, and
+        # ``data.get(name) or ()`` treated falsey as absent, so all four
+        # validated clean and produced a candidate nobody wrote.
+        {**raw(), "id": 0},
+        {**raw(), "derived_from": 0},
+        {**raw(), "observations": [{"at": "t1", "evidence": 0}]},
+        {**raw(), "applies_to": {"scope": R.Scope.BUILD, "identity": "t",
+                                 "conditions": 0}},
+        # Round-3 finding 2, second half: unknown *nested* fields were silently
+        # discarded, so a typo asserted something other than what was written.
+        {**raw(), "applies_to": {"scope": R.Scope.BUILD, "identity": "t",
+                                 "scpoe": R.Scope.HOST}},
+        {**raw(), "observations": [{"at": "t1", "evidnece": {"a": "b"}}]},
+        {**raw(), "derived_from": [{**good_ref, "diegst": "x"}]},
+        {**raw(), "observations": ["not a mapping"]},
+        # Round-3 finding 3: evidence names must *be* strings.  ``str(k)``
+        # coercion mapped 1 and "1" onto one name and then tied on the sort.
+        {**raw(), "observations": [{"at": "t1", "evidence": {1: "a"}}]},
+        {**raw(), "observations": [{"at": "t1", "evidence": [("", "a")]}]},
+        {**raw(), "observations": [{"at": "t1",
+                                    "evidence": [("a", "x"), ("a", "y")]}]},
+        {**raw(), "observations": [{"at": "t1",
+                                    "evidence": {"k": {1: "nested"}}}]},
+        {**raw(), "observations": [{"at": "t1",
+                                    "evidence": {"k": {R._BYTES_TAG: "spoof"}}}]},
         {**raw(), "observations": [R.Observation("t1", "not pairs")]},
         {**raw(), "applies_to": R.AppliesTo("t", R.Scope.BUILD, ({"x": 1},))},
         {**raw(), "derived_from": [R.Ref("libc.base", "nope", "a" * 64)]},
@@ -458,6 +530,9 @@ def prop_P5_scope_and_specificity_partial_orders() -> None:
     missing = {s.value for s in R.Scope} - mentioned
     assert not missing, f"scope(s) absent from SCOPE_EDGES: {sorted(missing)}"
     n1 = _assert_strict_partial_order(SCOPES, R.compare_scope, "scope")
+    n_all = _assert_strict_partial_order(
+        all_scope_universe(), R.compare_specificity, "specificity (all scopes)")
+    _count("P5 all-scope specificity triples", n_all)
 
     assert R.compare_scope(R.Scope.LIBC_FILE, R.Scope.HOST) is R.Ordering.INCOMPARABLE, \
         "libc_file and host are independent axes, not a containment chain"
@@ -514,6 +589,26 @@ def prop_P5b_specificity_reads_only_ordered_components() -> None:
     _count("P5b invariance fields", len(variants))
 
 
+def _resolve_contexts() -> Tuple[R.ResolveContext, ...]:
+    """The well-formed contexts the resolution properties quantify over.
+
+    Round-3 finding 11: P6 exercised exactly one context, so every
+    context-dependent branch -- ``identity_mode``, a narrower identity set, an
+    unconstrained condition -- was untested.  ``identity_mode="none"`` is the
+    interesting one: it is the mode under which two identities' matching
+    ``0x401234`` become simultaneously applicable.
+    """
+    return (
+        CTX,
+        dataclasses.replace(CTX, identity_mode="none"),
+        dataclasses.replace(CTX, identities=frozenset({"t_main", "t_other"})),
+        dataclasses.replace(CTX, identities=frozenset()),
+        dataclasses.replace(CTX, conditions=(("input_method", "stdin"),)),
+        dataclasses.replace(CTX, conditions=()),
+        dataclasses.replace(CTX, process_id="p2"),
+    )
+
+
 def prop_P6_resolve_totality() -> None:
     allowed = (R.FactUnavailable, R.FactUnresolved, R.FactStale, R.PinInapplicable,
                R.SchemaError)
@@ -523,32 +618,42 @@ def prop_P6_resolve_totality() -> None:
             raw(conditions=CONDITION_MAPS[2])]
     n = 0
     succeeded = 0
+    per_context: Dict[str, int] = {}
     for size in range(0, MAX_STORE + 1):
         for batch in itertools.combinations(pool, size):
             s = store_of(*batch)
-            applicable = [c for c in s.active(KEY) if R.applicable(c, CTX)]
-            try:
-                out = R.resolve(s, KEY, CTX)
-            except allowed as exc:
-                # Both directions, and neither clause may be a tautology.
-                if not applicable:
-                    assert isinstance(exc, R.FactUnavailable), \
-                        f"empty applicable pool must raise FactUnavailable, got {exc!r}"
-                else:
-                    assert not isinstance(exc, R.FactUnavailable), \
-                        f"non-empty applicable pool raised FactUnavailable: {exc!r}"
-                    assert len(applicable) > 1, (
-                        f"a single applicable candidate ({applicable[0].id}) must "
-                        f"resolve, not raise {type(exc).__name__}"
-                    )
+            for ctx in _resolve_contexts():
+                applicable = [c for c in s.active(KEY) if R.applicable(c, ctx)]
+                label = repr(ctx)
+                try:
+                    out = R.resolve(s, KEY, ctx)
+                except allowed as exc:
+                    # Both directions, and neither clause may be a tautology.
+                    if not applicable:
+                        assert isinstance(exc, R.FactUnavailable), \
+                            f"empty applicable pool must raise FactUnavailable, got {exc!r}"
+                    else:
+                        assert not isinstance(exc, R.FactUnavailable), \
+                            f"non-empty applicable pool raised FactUnavailable: {exc!r}"
+                        assert len(applicable) > 1, (
+                            f"a single applicable candidate ({applicable[0].id}) must "
+                            f"resolve, not raise {type(exc).__name__}"
+                        )
+                    n += 1
+                    continue
+                except Exception as exc:  # noqa: BLE001 - that is the property
+                    raise AssertionError(
+                        f"undeclared exception escaped resolve in context {label}: {exc!r}")
+                assert applicable, "resolve returned a Selected from an empty applicable pool"
+                assert isinstance(out, R.Selected)
+                per_context[label] = per_context.get(label, 0) + 1
+                succeeded += 1
                 n += 1
-                continue
-            except Exception as exc:  # noqa: BLE001 - that is the property
-                raise AssertionError(f"undeclared exception escaped resolve: {exc!r}")
-            assert applicable, "resolve returned a Selected from an empty applicable pool"
-            assert isinstance(out, R.Selected)
-            succeeded += 1
-            n += 1
+    # Every context must actually resolve something, or a context is in the list
+    # for decoration and the breadth is an illusion.
+    assert len(per_context) == len(_resolve_contexts()), (
+        "some context never produced a Selected, so it contributes no coverage: "
+        f"{set(f for f in per_context)}")
     # Totality is only half the property: a resolver that refuses everything is
     # total.  Round-2 finding 12 -- "a resolver that always refuses passes P6
     # and P7" -- is closed by requiring the successes.
@@ -756,6 +861,37 @@ def prop_P12_absent_is_not_false() -> None:
     _count("P12 registry keys", len(R.FACT_KEYS))
 
 
+def _oracle_mutually_exclusive(a: R.Candidate, b: R.Candidate) -> bool:
+    """Independent re-derivation of "no context can make both applicable".
+
+    Written by hand rather than by calling ``jointly_satisfiable`` for the same
+    reason as ``_expected_class``: an oracle that delegates to the code under
+    test cannot disagree with it.
+    """
+    at_a, at_b = a.applies_to, b.applies_to
+    if at_a.scope is at_b.scope and at_a.scope in R._BOUND_SCOPES \
+            and at_a.binding != at_b.binding:
+        return True
+    a_map = dict(at_a.conditions)
+    return any(name in a_map and a_map[name] != value for name, value in at_b.conditions)
+
+
+def _oracle_class(a: R.Candidate, b: R.Candidate):
+    """Independent oracle for the conflict class of **any** pair, or ``None``.
+
+    Covers the two cases that used to be missing entirely: a pair no context can
+    pit against each other is not a conflict, and a pair with equal encodings but
+    different subjects *is* one.
+    """
+    if _oracle_mutually_exclusive(a, b):
+        return None
+    if R.canonical(a.value) == R.canonical(b.value):
+        if a.applies_to.identity == b.applies_to.identity:
+            return None
+        return R.ConflictClass.AMBIGUOUS_ACROSS_IDENTITIES
+    return _expected_class(a, b)
+
+
 def _expected_class(a: R.Candidate, b: R.Candidate) -> R.ConflictClass:
     """Independent oracle for the conflict class of a differing-value pair.
 
@@ -805,7 +941,7 @@ def prop_P13_conflicts_total_and_partitioned() -> None:
             expected = {
                 tuple(sorted((a.id, b.id)))
                 for i, a in enumerate(live) for b in live[i + 1:]
-                if R.canonical(a.value) != R.canonical(b.value)
+                if _oracle_class(a, b) is not None
             }
             records = R.conflicts(s, CTX)
             got = [c.candidate_ids for c in records]
@@ -824,7 +960,7 @@ def prop_P13_conflicts_total_and_partitioned() -> None:
                     pair = tuple(sorted((a.id, b.id)))
                     if pair not in by_pair:
                         continue
-                    want = _expected_class(a, b)
+                    want = _oracle_class(a, b)
                     assert by_pair[pair] is want, (
                         f"pair {pair} classified {by_pair[pair].value}, expected "
                         f"{want.value}"
@@ -885,6 +1021,12 @@ def _row_cells(line: str) -> List[str]:
     return [c.strip() for c in line.strip("|").split("|")][1:]
 
 
+def _probe_value(value_type: type):
+    """A value the registry accepts for this key, so a scope rejection is about
+    the *scope* and not about the value type."""
+    return {int: 1, bool: True, str: "x"}[value_type]
+
+
 def prop_P15_generated_tables_call_the_runtime() -> None:
     """**Every** generated table is re-derived from the runtime, not only the
     provenance matrix: parsing one table let a constant generator hide a
@@ -896,7 +1038,13 @@ def prop_P15_generated_tables_call_the_runtime() -> None:
     # (a) provenance matrix
     cursor = 0
     for a in PROVENANCES:
-        for cell, b in zip(_row_cells(rows[cursor]), PROVENANCES):
+        cells = _row_cells(rows[cursor])
+        # Round-3 finding 12: ``zip`` stops at the shorter sequence, so a row
+        # with a missing cell passed every comparison it was asked to make.
+        assert len(cells) == len(PROVENANCES), (
+            f"provenance row {a.value!r} has {len(cells)} cells, expected "
+            f"{len(PROVENANCES)}; a short row silently skips comparisons")
+        for cell, b in zip(cells, PROVENANCES):
             n += 1
             assert cell == R._SYM[R.compare_provenance(a, b)], (
                 f"generated cell ({a.value}, {b.value}) = {cell!r} disagrees with "
@@ -907,7 +1055,10 @@ def prop_P15_generated_tables_call_the_runtime() -> None:
 
     # (b) scope matrix -- where the "total order" mutant hides
     for a in SCOPES:
-        for cell, b in zip(_row_cells(rows[cursor]), SCOPES):
+        cells = _row_cells(rows[cursor])
+        assert len(cells) == len(SCOPES), (
+            f"scope row {a.value!r} has {len(cells)} cells, expected {len(SCOPES)}")
+        for cell, b in zip(cells, SCOPES):
             n += 1
             assert cell == R._SYM[R.compare_scope(a, b)], (
                 f"generated scope cell ({a.value}, {b.value}) = {cell!r} "
@@ -917,7 +1068,11 @@ def prop_P15_generated_tables_call_the_runtime() -> None:
 
     # (c) state transition table
     for st in [None] + list(STATES):
-        for cell, ev in zip(_row_cells(rows[cursor]), R.STATE_EVENTS):
+        cells = _row_cells(rows[cursor])
+        assert len(cells) == len(R.STATE_EVENTS), (
+            f"transition row {st} has {len(cells)} cells, expected "
+            f"{len(R.STATE_EVENTS)}")
+        for cell, ev in zip(cells, R.STATE_EVENTS):
             n += 1
             try:
                 want = R.transition(st, ev).value
@@ -931,23 +1086,64 @@ def prop_P15_generated_tables_call_the_runtime() -> None:
     assert cursor == len(rows), f"{len(rows) - cursor} matrix rows went unchecked"
 
     # (d) merge decisions: re-run the scenarios and compare the rendered rows
+    # Exactly three pipes: the registry table below has five, and a looser
+    # selector swept its rows into the merge comparison.
     merge_rows = [ln for ln in text.splitlines()
                   if ln.startswith("| ") and ln.rstrip().endswith("` |")
-                  and "`" in ln]
+                  and ln.count("|") == 3]
     rendered = {ln for ln in merge_rows}
-    for scenario, decision in R._merge_scenarios():
-        n += 1
-        assert f"| {scenario} | `{decision}` |" in rendered, (
-            f"merge scenario {scenario!r} renders as something other than "
-            f"{decision!r}"
-        )
+    expected_rows = {f"| {scenario} | `{decision}` |"
+                     for scenario, decision in R._merge_scenarios()}
+    n += len(expected_rows)
+    # Equality, not containment.  Presence-only checking let the table carry
+    # *extra* merge rows that no scenario produces -- a documented decision the
+    # resolver never makes, which is the direction that misleads an operator.
+    assert rendered == expected_rows, (
+        f"merge rows disagree with the scenarios: unrendered "
+        f"{expected_rows - rendered}, undeclared {rendered - expected_rows}")
 
-    # (e) per-key scopes come from the registry the validator uses
-    for key, spec in R.FACT_KEYS.items():
-        n += 1
-        want = ", ".join(sorted(s.value for s in spec.allowed_scopes))
-        assert f"| `{key}` | {want} " in text, \
-            f"allowed scopes for {key} disagree with FACT_KEYS"
+    # (e) the registry table: every row, every column.  The previous check
+    # covered exact keys only -- so the seven ``prefix.*`` families went
+    # unchecked -- and compared only the scope column, so ``depends_on`` and the
+    # declared verification class could say anything at all.
+    registry_rows = [ln for ln in text.splitlines()
+                     if ln.startswith("| `") and ln.count("|") == 5]
+    expected_registry = set()
+    for key, spec in sorted(R.FACT_KEYS.items()):
+        expected_registry.add(
+            f"| `{key}` | {', '.join(sorted(s.value for s in spec.allowed_scopes))} "
+            f"| `{spec.depends_on}` | `{spec.verification_class}` |")
+    for prefix, spec in sorted(R._FACT_PREFIXES.items()):
+        expected_registry.add(
+            f"| `{prefix}*` | {', '.join(sorted(s.value for s in spec.allowed_scopes))} "
+            f"| `{spec.depends_on}` | `{spec.verification_class}` |")
+    n += len(expected_registry)
+    assert set(registry_rows) == expected_registry, (
+        f"registry table disagrees with the registry the validator uses: "
+        f"missing {expected_registry - set(registry_rows)}, "
+        f"extra {set(registry_rows) - expected_registry}")
+    assert len(registry_rows) == len(R.FACT_KEYS) + len(R._FACT_PREFIXES), (
+        f"{len(registry_rows)} registry rows for "
+        f"{len(R.FACT_KEYS)} keys + {len(R._FACT_PREFIXES)} prefixes")
+
+    # And the *enforced* column is enforced: a declared scope validates and an
+    # undeclared one does not, so the column is not merely decorative text.
+    for key, spec in sorted(R.FACT_KEYS.items()):
+        for scope in R.Scope:
+            probe = raw(key=key, scope=scope,
+                        value=_probe_value(spec.value_type))
+            accepted = True
+            try:
+                R.validate_candidate(probe)
+            except R.SchemaError:
+                accepted = False
+            if accepted != (scope in spec.allowed_scopes):
+                raise AssertionError(
+                    f"{key}: the table says scopes "
+                    f"{sorted(s.value for s in spec.allowed_scopes)} but "
+                    f"validation {'accepts' if accepted else 'rejects'} "
+                    f"{scope.value}")
+            n += 1
 
     # (f) the committed file is byte-identical to fresh output
     assert TABLES.exists(), f"missing generated table: {TABLES}"
@@ -1097,11 +1293,22 @@ def prop_P17_staleness_computed_and_monotone() -> None:
         )
     assert not hasattr(R.Candidate, "stale"), "staleness must be computed, not stored"
 
-    # Cycles are not merely rejected -- they are **unconstructible** through the
-    # public writers, because a ref pins the source's digest and the source's id
-    # is a function of its content including its refs.  So a cycle would require
-    # a digest of a candidate that does not exist yet.  That is asserted here
-    # rather than asserted in prose.
+    # Cycles: round-3 finding 13 was right that the previous block proved
+    # nothing.  It built a self-reference while keeping the original id, so
+    # ``validate_store`` rejected it at I2 -- the id check -- and
+    # ``_assert_acyclic`` was never reached.  "One hash iteration did not return
+    # the starting id" is also not a proof that fixed points are impossible.
+    #
+    # So the claim is now split in two, honestly:
+    #
+    # 1. Unconstructibility is an **argument**, not a test: a ref pins the
+    #    source's digest and an id is a function of content including refs, so a
+    #    cycle needs a digest of a candidate that does not exist yet.  What is
+    #    *tested* is the one checkable consequence -- adding a self-reference
+    #    changes the id being referenced.
+    # 2. The detector is therefore fed a cycle **directly**, because no store can
+    #    hold one.  A detector that has never been shown to fire is exactly the
+    #    kind of absence-assertion this project keeps finding cannot fail.
     solo = R.validate_candidate(raw(key="libc.base", value=1,
                                     scope=R.Scope.PROCESS,
                                     provenance=R.Provenance.DERIVED,
@@ -1111,18 +1318,59 @@ def prop_P17_staleness_computed_and_monotone() -> None:
     self_ref = dataclasses.replace(
         solo, derived_from=(R.Ref(solo.key, solo.id, R.candidate_digest(solo)),))
     assert R.derive_id(self_ref) != solo.id, (
-        "a self-reference must change the id it references, which is why a cycle "
-        "cannot be constructed rather than merely being rejected"
+        "a self-reference must change the id it references, which is the one "
+        "checkable consequence of cycles being unconstructible"
     )
-    cyc = R.FactStore()
-    cyc._bucket(self_ref.key).append(self_ref)         # hand-built, not merged
-    with pytest.raises(R.SchemaError):
-        R.validate_store(cyc)                          # and it is rejected too
-    assert R.is_stale(cyc, self_ref) is True, (
-        "a hand-built cycle must terminate, and its digest cannot match, so it "
-        "is stale"
-    )
+    _assert_cycle_detector_fires()
     _count("P17 dependency depth", MAX_DEP_DEPTH)
+
+
+def _cyclic_index(kind: str) -> Dict[str, R.Candidate]:
+    """An id -> candidate index containing a genuine cycle.
+
+    Built by hand and **not** through a store, because content-derived ids make a
+    cycle unstorable: every route through the public writers is rejected before
+    the cycle exists.  Keyed by the id each candidate claims, which is what
+    ``_assert_acyclic`` and ``is_stale`` actually walk.
+    """
+    a = R.validate_candidate(raw(key="libc.base", value=1, scope=R.Scope.PROCESS))
+    b = R.validate_candidate(raw(key="libc.system_offset", value=2,
+                                 scope=R.Scope.LIBC_FILE, method="m2"))
+    if kind == "self":
+        a = dataclasses.replace(a, derived_from=(
+            R.Ref(a.key, a.id, R.candidate_digest(a)),))
+        return {a.id: a}
+    # A mutual cycle: each names the other, so no single-step check can see it.
+    a2 = dataclasses.replace(a, derived_from=(
+        R.Ref(b.key, b.id, R.candidate_digest(b)),))
+    b2 = dataclasses.replace(b, derived_from=(
+        R.Ref(a.key, a.id, R.candidate_digest(a2)),))
+    return {a.id: a2, b.id: b2}
+
+
+def _assert_cycle_detector_fires() -> None:
+    """The positive control for I5, and for ``is_stale``'s visited set."""
+    for kind in ("self", "mutual"):
+        index = _cyclic_index(kind)
+        first = next(iter(index.values()))
+        try:
+            R._assert_acyclic(index, first, set(), set())
+        except R.SchemaError as exc:
+            assert str(exc).startswith("I5 "), f"wrong invariant reported: {exc}"
+        else:
+            raise AssertionError(
+                f"_assert_acyclic did not detect a {kind} cycle; the acyclicity "
+                "invariant is an assertion of absence that has never been shown "
+                "to fire"
+            )
+        # ``is_stale`` must *terminate* on the same input -- that is what its
+        # visited set is for -- and report staleness rather than recursing.
+        class _CyclicStore(R.FactStore):
+            def by_id(self, cid):
+                return index.get(cid)
+
+        assert R.is_stale(_CyclicStore(), first) is True, (
+            f"is_stale did not terminate-and-refuse on a {kind} cycle")
 
 
 def prop_P18_equal_specificity_disagreement_refuses() -> None:
@@ -1156,6 +1404,637 @@ def prop_P19_cross_identity_coincidence_is_not_agreement() -> None:
     _count("P19 cross-identity pairs", 1)
 
 
+# ---------------------------------------------------------------------------
+# Round-3 properties.  Each one is the test that would have caught a HIGH
+# finding, and each is bound to a mutant that restores that finding.
+# ---------------------------------------------------------------------------
+
+
+GENERATIONS: Tuple[int, ...] = (0, 1, 5)
+
+
+def prop_P20_generation_is_store_assigned() -> None:
+    """Round-3 finding 1.  ``generation`` and ``id`` are functions of store
+    state, so merge order cannot change the document.
+
+    The defect: on a store with no terminal sibling the caller's ``generation``
+    survived, so merging the same assertion at 0 and at 5 left whichever arrived
+    first and the bytes depended on arrival order.  A determinism property over
+    permutations (P2) could not see it, because P2's fixtures all carried the
+    same generation.
+    """
+    pairs = 0
+    for g1, g2 in itertools.product(GENERATIONS, repeat=2):
+        for seed_terminal in (False, True):
+            docs = []
+            for order in ((g1, g2), (g2, g1)):
+                s = R.FactStore()
+                if seed_terminal:
+                    # A retracted sibling, so the store has an opinion about the
+                    # next generation and the caller's must not override it.
+                    R.merge(s, raw())
+                    R.retract(s, s.candidates(KEY)[0].id, "t2", "wrong", "op")
+                for gen in order:
+                    R.merge(s, {**raw(), "generation": gen}) if gen == (
+                        1 if seed_terminal else 0) else _merge_expecting_refusal(s, gen)
+                docs.append(R.canonical_document(s))
+            assert docs[0] == docs[1], (
+                f"merge order changed the document for generations {g1},{g2} "
+                f"(terminal seeded: {seed_terminal}): generation is not "
+                "store-assigned, so the bytes depend on arrival order"
+            )
+            pairs += 1
+
+    # Stated-but-wrong is refused, and refused *identically* whichever order it
+    # arrives in -- that is the half a silent correction would hide.
+    s = R.FactStore()
+    R.merge(s, raw())
+    R.retract(s, s.candidates(KEY)[0].id, "t2", "wrong", "op")
+    for wrong in (0, 5):
+        try:
+            R.merge(s, {**raw(), "generation": wrong})
+        except R.SchemaError as exc:
+            assert "assigned by the store" in str(exc), str(exc)
+        else:
+            raise AssertionError(
+                f"merge accepted caller-supplied generation {wrong} when the "
+                "store had already assigned 1")
+    # The round trip the reviewer named: a validated Candidate carries the
+    # store's own earlier assignment and must be re-mergeable, because
+    # validation necessarily fills in generation and id and there is otherwise
+    # no way to express "I have no opinion".
+    live = R.validate_candidate({**raw(), "generation": 1})
+    assert R.merge(s, live) is R.MergeDecision.APPENDED, \
+        "a validated candidate could not be re-merged: generation reads as an " \
+        "assertion when it is store state"
+    assert R.merge(s, live) is R.MergeDecision.DEDUPED
+    _count("P20 generation orders", pairs)
+
+
+def _merge_expecting_refusal(s: R.FactStore, gen: int) -> None:
+    """Merge a candidate stating ``gen``; a wrong statement must be refused, and
+    a refusal must leave the store untouched so the two orders still agree."""
+    before = R.canonical_document(s)
+    try:
+        R.merge(s, {**raw(), "generation": gen})
+    except R.SchemaError:
+        assert R.canonical_document(s) == before, \
+            "a refused merge mutated the store"
+
+
+def _distinct_evidence() -> List[Any]:
+    """Evidence values that are pairwise **different facts**.
+
+    Every pair here encoded identically under the shipped canonicaliser, which
+    matters because the observation union is keyed by that digest: distinct
+    evidence was silently discarded as a duplicate.
+    """
+    return [
+        {"a": "1"},
+        {"a": 1},
+        {"a": True},
+        {"a": None},
+        {"a": "b64:eA=="},          # the string that collided with b"x"
+        {"a": b"x"},
+        {"a": b""},
+        {"a": ""},
+        {"a": ["1"]},
+        {"a": [1]},
+        {"a": {"b": "1"}},
+        {"a": "1", "b": "2"},
+        {"b": "1", "a": "2"},
+    ]
+
+
+def prop_P21_canonicalisation_is_injective() -> None:
+    """Round-3 finding 3.  Distinct values encode distinctly; equal values encode
+    identically regardless of insertion order.
+
+    Canonicalisation is the foundation every digest rests on, so a collision
+    there is not a cosmetic bug: it makes ``_merge_observations`` drop evidence
+    and makes equal mappings hash differently depending on how they were built.
+    """
+    seen: Dict[str, Any] = {}
+    for value in _distinct_evidence():
+        enc = R.canonical(value)
+        assert enc not in seen, (
+            f"canonicalisation collision: {value!r} and {seen[enc]!r} both "
+            f"encode as {enc} -- distinct evidence is indistinguishable, so the "
+            "observation union discards one of them"
+        )
+        seen[enc] = value
+
+    # Order-independence: equal mappings, different insertion orders.
+    for keys in itertools.permutations(("a", "b", "c")):
+        built = {k: k.upper() for k in keys}
+        assert R.canonical(built) == R.canonical({"a": "A", "b": "B", "c": "C"}), \
+            "canonical bytes depend on insertion order"
+
+    # A non-string key is refused rather than coerced, and the reserved bytes tag
+    # cannot be spoofed by a real mapping.
+    for hostile in ({1: "a"}, {None: "a"}, {(1, 2): "a"}, {R._BYTES_TAG: "spoof"}):
+        try:
+            R.canonical(hostile)
+        except R.SchemaError:
+            pass
+        else:
+            raise AssertionError(
+                f"canonical accepted {hostile!r}; a coerced or spoofable key is "
+                "a digest collision waiting to happen")
+    _count("P21 distinct evidence values", len(seen))
+
+
+def _pinned_store() -> Tuple[R.FactStore, R.Candidate, R.Candidate]:
+    """A store with two candidates for KEY and one for another key."""
+    s = store_of(raw(), raw(value=80, method="m2"))
+    a, b = s.candidates(KEY)
+    R.merge(s, raw(key="libc.base", scope=R.Scope.PROCESS, value=0x7f0000000000,
+                   method="m3"))
+    return s, a, b
+
+
+def _forged_log_records(s: R.FactStore, a: R.Candidate, b: R.Candidate):
+    """Well-shaped-but-false lifecycle records, with the rule each one breaks."""
+    other = s.candidates("libc.base")[0]
+    good = dict(cls="pin", key=KEY, candidate_id=a.id, at="t1", seq=99,
+                actor="op", reason="why")
+    return [
+        ("names no candidate", {**good, "candidate_id": "f_" + "e" * 32}),
+        ("cross-key target", {**good, "candidate_id": other.id}),
+        ("integer candidate id", {**good, "candidate_id": 7}),
+        ("unknown key", {**good, "key": "no.such.key"}),
+        ("empty reason", {**good, "reason": ""}),
+        ("empty actor", {**good, "actor": ""}),
+        ("pin carrying a replacement", {**good, "by_candidate_id": b.id}),
+        ("unpin naming a candidate", {**good, "cls": "unpin"}),
+        ("supersede with no replacement", {**good, "cls": "supersede"}),
+        ("supersede naming itself twice",
+         {**good, "cls": "supersede", "by_candidate_id": a.id}),
+        ("supersede of an active candidate",
+         {**good, "cls": "supersede", "by_candidate_id": b.id}),
+        ("retract of an active candidate", {**good, "cls": "retract"}),
+        ("unknown class", {**good, "cls": "unretract"}),
+        ("seq zero", {**good, "seq": 0}),
+        ("boolean seq", {**good, "seq": True}),
+        ("not a PinRecord", None),
+    ]
+
+
+def prop_P22_the_log_is_referentially_sound() -> None:
+    """Round-3 finding 5 and I7/I8.  A forged log record is refused at write
+    **and** at read, and a terminal state with no record is refused.
+
+    Shape was not enough: a well-formed record naming a candidate that does not
+    exist, or one filed under another key, or a ``supersede`` with no
+    replacement, all passed -- and ``resolve`` honoured the resulting pin, which
+    is the one mechanism by which an assertion may beat a measurement.
+    """
+    checked = 0
+    for label, fields in _forged_log_records(*_pinned_store()):
+        s, a, b = _pinned_store()
+        record = "not a record" if fields is None else R.PinRecord(**fields)
+        s.resolutions.append(record)
+        for reader, call in (
+            ("validate_store", lambda: R.validate_store(s)),
+            ("current_pins", lambda: R.current_pins(s)),
+            ("resolve", lambda: R.resolve(s, KEY, CTX)),
+            ("canonical_document", lambda: R.canonical_document(s)),
+        ):
+            try:
+                call()
+            except R.SchemaError:
+                continue
+            except Exception as exc:  # noqa: BLE001 - wrong type is the failure
+                raise AssertionError(
+                    f"{reader} raised {type(exc).__name__} for a forged record "
+                    f"({label}); a malformed log must be a SchemaError, not an "
+                    "arbitrary exception from inside a regex"
+                ) from exc
+            raise AssertionError(
+                f"{reader} accepted a forged log record ({label}); the record "
+                "that grants an override is not checked where it is honoured"
+            )
+        checked += 1
+
+    # I8: a terminal state nobody logged.  This is the converse direction --
+    # without it the log could be complete and the candidates still lie.
+    for state in (R.State.RETRACTED, R.State.SUPERSEDED):
+        s, a, _b = _pinned_store()
+        s._replace(a, dataclasses.replace(a, state=state))
+        with pytest.raises(R.SchemaError):
+            R.validate_store(s)
+        checked += 1
+
+    # The controls: the real writers produce records that pass, so the checks
+    # above are not simply rejecting everything.
+    s, a, b = _pinned_store()
+    R.pin(s, KEY, a.id, "t1", "operator chose it", "op")
+    assert R.current_pins(s) == {KEY: a.id}
+    R.unpin(s, KEY, "t2", "changed my mind", "op")
+    assert R.current_pins(s) == {}
+    R.supersede(s, a.id, b.id, "t3", "better measurement", "op")
+    R.validate_store(s)
+    assert s.by_id(a.id).state is R.State.SUPERSEDED
+    _count("P22 forged log records", checked)
+
+
+def prop_P23_public_lists_are_validated() -> None:
+    """Round-3 finding 6 and I9/I1.  The conflict list and the candidates
+    themselves are validated, not merely the log.
+
+    ``store.conflicts`` is as public as ``store.resolutions`` and was checked
+    nowhere, so a malformed entry survived a conflict-free merge and surfaced
+    later out of ``canonical_document`` -- far from whatever put it there.  And
+    I1 only asserted that validation *did not raise*, ignoring the normalised
+    candidate it returns, so unsorted or duplicated observations -- which sit
+    outside the id digest, where I2 cannot see them -- passed while still
+    changing the bytes.
+    """
+    checked = 0
+    s0, a0, b0 = _pinned_store()
+    other = s0.candidates("libc.base")[0]
+    good_ids = tuple(sorted((a0.id, b0.id)))
+    bad_conflicts = [
+        ("not a Conflict", "nope"),
+        ("class is a string",
+         R.Conflict(KEY, "equally_specific", good_ids)),
+        ("unknown key",
+         R.Conflict("no.such.key", R.ConflictClass.EQUALLY_SPECIFIC, good_ids)),
+        ("one candidate",
+         R.Conflict(KEY, R.ConflictClass.EQUALLY_SPECIFIC, (a0.id,))),
+        ("unsorted ids",
+         R.Conflict(KEY, R.ConflictClass.EQUALLY_SPECIFIC,
+                    tuple(reversed(good_ids)))),
+        ("same id twice",
+         R.Conflict(KEY, R.ConflictClass.EQUALLY_SPECIFIC, (a0.id, a0.id))),
+        ("dangling id",
+         R.Conflict(KEY, R.ConflictClass.EQUALLY_SPECIFIC,
+                    tuple(sorted((a0.id, "f_" + "e" * 32))))),
+        ("cross-key id",
+         R.Conflict(KEY, R.ConflictClass.EQUALLY_SPECIFIC,
+                    tuple(sorted((a0.id, other.id))))),
+    ]
+    for label, entry in bad_conflicts:
+        s, _a, _b = _pinned_store()
+        s.conflicts.append(entry)
+        for reader, call in (("validate_store", lambda: R.validate_store(s)),
+                            ("canonical_document", lambda: R.canonical_document(s))):
+            try:
+                call()
+            except R.SchemaError:
+                continue
+            except Exception as exc:  # noqa: BLE001
+                raise AssertionError(
+                    f"{reader} raised {type(exc).__name__} for a malformed "
+                    f"conflict ({label}) rather than SchemaError") from exc
+            raise AssertionError(
+                f"{reader} accepted a malformed conflict record ({label})")
+        checked += 1
+
+    # A duplicate, and an out-of-order list: both change the document bytes.
+    s, a, b = _pinned_store()
+    existing = list(s.conflicts)
+    if existing:
+        s.conflicts.append(existing[0])
+        with pytest.raises(R.SchemaError):
+            R.validate_store(s)
+        checked += 1
+
+    # I1 as equality: observations are outside the id digest, so only
+    # normalisation-equality can see these.
+    for label, obs in (
+        ("duplicate observations",
+         (R.Observation("t1"), R.Observation("t1"))),
+        ("unsorted observations",
+         (R.Observation("t2"), R.Observation("t1"))),
+    ):
+        s, a, _b = _pinned_store()
+        s._replace(a, dataclasses.replace(a, observations=obs))
+        try:
+            R.validate_store(s)
+        except R.SchemaError:
+            checked += 1
+        else:
+            raise AssertionError(
+                f"validate_store accepted {label}; I1 checks only that "
+                "validation did not raise, so it ignores the normalised form it "
+                "is handed and the document bytes can still change")
+    _count("P23 malformed public entries", checked)
+
+
+def prop_P24_supersede_requires_the_same_proposition() -> None:
+    """Round-3 finding 7.  A supersession replaces a fact about the same subject.
+
+    Matching only the key let a candidate about another identity, process, boot
+    or mutually exclusive condition set supersede an unrelated fact, silently
+    destroying something still true.
+    """
+    variants = [
+        ("identity", dict(identity="t_other")),
+        ("conditions", dict(conditions=CONDITION_MAPS[1])),
+        ("mutually exclusive conditions", dict(conditions=CONDITION_MAPS[2])),
+    ]
+    checked = 0
+    for label, kwargs in variants:
+        s = store_of(raw(), raw(value=80, method="m2", **kwargs))
+        target = next(c for c in s.candidates(KEY) if c.value == 72)
+        replacement = next(c for c in s.candidates(KEY) if c.value == 80)
+        try:
+            R.supersede(s, target.id, replacement.id, "t2", "replacing", "op")
+        except R.StateTransitionError as exc:
+            assert "same proposition" in str(exc), str(exc)
+        else:
+            raise AssertionError(
+                f"a candidate differing in {label} superseded an unrelated fact; "
+                "a still-valid measurement was destroyed silently")
+        assert s.by_id(target.id).state is R.State.ACTIVE, \
+            "the refused supersession still changed a state"
+        checked += 1
+
+    # Scope is covered on a key that allows two scopes, since I4 forbids
+    # building the cross-scope pair on a build-only key at all.
+    s = R.FactStore()
+    R.merge(s, raw(key="env.aslr", scope=R.Scope.HOST, value="off", method="m1"))
+    R.merge(s, raw(key="env.aslr", scope=R.Scope.BOOT, value="on", method="m2"))
+    host_c = next(c for c in s.candidates("env.aslr")
+                  if c.applies_to.scope is R.Scope.HOST)
+    boot_c = next(c for c in s.candidates("env.aslr")
+                  if c.applies_to.scope is R.Scope.BOOT)
+    with pytest.raises(R.StateTransitionError):
+        R.supersede(s, host_c.id, boot_c.id, "t3", "replacing", "op")
+    checked += 1
+
+    # The control that makes the refusals meaningful: same proposition, and it
+    # must succeed.
+    s = store_of(raw(), raw(value=80, method="m2"))
+    target = next(c for c in s.candidates(KEY) if c.value == 72)
+    replacement = next(c for c in s.candidates(KEY) if c.value == 80)
+    R.supersede(s, target.id, replacement.id, "t2", "better run", "op")
+    assert s.by_id(target.id).state is R.State.SUPERSEDED, \
+        "a legitimate same-proposition supersession was refused"
+    _count("P24 supersede refusals", checked)
+
+
+def prop_P25_conflict_views_are_one_notion() -> None:
+    """Round-3 finding 8.  The stored list, the context-free view and the
+    context-sensitive view are nested views of one relation -- and every refusal
+    ``resolve`` makes is reported by that relation.
+
+    Two holes: equal encodings across identities made ``resolve`` refuse while
+    ``classify_pair`` returned ``None``, so the refusal appeared in no report at
+    all; and pairs no context could ever make jointly applicable were recorded as
+    conflicts nobody can encounter.
+    """
+    pool_raw = [
+        raw(value=72),
+        raw(value=72, identity="t_other", method="m2"),      # equal, other subject
+        raw(value=80, method="m3"),
+        raw(value=80, conditions=CONDITION_MAPS[1], method="m4"),
+        raw(value=75, conditions=CONDITION_MAPS[2], method="m5"),  # argv vs stdin
+    ]
+    contexts = _resolve_contexts()
+    checked = 0
+    for size in range(1, MAX_STORE + 1):
+        for batch in itertools.combinations(pool_raw, size):
+            s = store_of(*batch)
+            free = set(R.context_free_conflicts(s))
+            stored = set(s.conflicts)
+            assert free <= stored, (
+                f"merge did not record every context-free conflict: "
+                f"{free - stored}")
+            for ctx in contexts:
+                ctx_conflicts = set(R.conflicts(s, ctx))
+                assert ctx_conflicts <= free, (
+                    "a context-sensitive conflict is not context-free-visible: "
+                    f"{ctx_conflicts - free}")
+                # Every refusal is *reported*.  This is the half that was missing.
+                try:
+                    R.resolve(s, KEY, ctx)
+                except R.FactUnresolved as exc:
+                    reported = {c.cls for c in free if c.key == KEY}
+                    assert exc.conflict_class in reported, (
+                        f"resolve refused with {exc.conflict_class.value} but no "
+                        f"conflict record mentions it (recorded: "
+                        f"{sorted(c.value for c in reported)}); the operator has "
+                        "no record of why resolution failed")
+                except (R.FactUnavailable, R.FactStale, R.PinInapplicable):
+                    pass
+                except Exception as exc:  # noqa: BLE001 - part of the property
+                    # A classifier with a hole makes ``resolve`` unable to *name*
+                    # the conflict it is refusing, and an unnameable refusal is
+                    # not one of the declared exits.  Reported as this property
+                    # failing rather than as a crash, so the diagnosis points at
+                    # the classifier and not at the arithmetic that noticed.
+                    raise AssertionError(
+                        f"resolve neither selected nor declared a refusal: "
+                        f"{type(exc).__name__}({exc}). The pool disagrees but "
+                        "classify_pair reports nothing for it, so there is no "
+                        "class to refuse with -- that is the reporting hole, seen "
+                        "from resolve's side."
+                    ) from exc
+                checked += 1
+
+    # Mutually exclusive pairs are not conflicts anybody can encounter.
+    s = store_of(raw(value=72, conditions=CONDITION_MAPS[1]),
+                 raw(value=80, conditions=CONDITION_MAPS[2], method="m2"))
+    assert not R.context_free_conflicts(s), (
+        "a pair that no context can make jointly applicable was reported as a "
+        f"conflict: {R.context_free_conflicts(s)}")
+    a, b = s.candidates(KEY)
+    assert not R.jointly_satisfiable(a, b)
+    # ... and the near-miss control: same condition *name and value* on one side
+    # only is still jointly satisfiable, so it must still be reported.
+    s2 = store_of(raw(value=72), raw(value=80, conditions=CONDITION_MAPS[1],
+                                     method="m2"))
+    assert R.context_free_conflicts(s2), \
+        "joint satisfiability is over-filtering: a reachable disagreement went " \
+        "unreported"
+    _count("P25 conflict-view checks", checked)
+
+
+def _malformed_contexts() -> List[Tuple[str, Any]]:
+    return [
+        ("identities is None", dataclasses.replace(CTX, identities=None)),
+        ("identities holds an int",
+         dataclasses.replace(CTX, identities=frozenset({1}))),
+        ("identities holds an empty string",
+         dataclasses.replace(CTX, identities=frozenset({""}))),
+        ("identities is a list", dataclasses.replace(CTX, identities=["t_main"])),
+        ("conditions is a short pair",
+         dataclasses.replace(CTX, conditions=(("a",),))),
+        ("conditions value is an int",
+         dataclasses.replace(CTX, conditions=(("a", 1),))),
+        ("conditions is an int", dataclasses.replace(CTX, conditions=7)),
+        ("duplicate condition names",
+         dataclasses.replace(CTX, conditions=(("a", "x"), ("a", "y")))),
+        ("host_id is an int", dataclasses.replace(CTX, host_id=7)),
+        ("process_id is empty", dataclasses.replace(CTX, process_id="")),
+        ("unknown identity_mode",
+         dataclasses.replace(CTX, identity_mode="loose")),
+        ("capitalised identity_mode",
+         dataclasses.replace(CTX, identity_mode="None")),
+        ("not a context at all", {"identities": ["t_main"]}),
+    ]
+
+
+def prop_P26_resolve_is_total_over_contexts() -> None:
+    """Round-3 finding 9.  Every exit from ``resolve`` is a ``Selected``, one of
+    the five declared refusals, or a ``SchemaError`` for a malformed context.
+
+    The claim used to be false: ``identities=None`` leaked ``TypeError`` out of
+    ``applicable``, a bad condition pair leaked ``ValueError`` out of ``dict()``,
+    and an unknown ``identity_mode`` leaked nothing at all -- it silently meant
+    strict, discarding the operator's intent without a word.  P6 quantified over
+    one well-formed context, so it could not see any of this.
+    """
+    s = store_of(raw(), raw(value=80, method="m2"))
+    checked = 0
+    for label, ctx in _malformed_contexts():
+        for fn_name, call in (("resolve", lambda c=ctx: R.resolve(s, KEY, c)),
+                              ("conflicts", lambda c=ctx: R.conflicts(s, c)),
+                              ("agreements", lambda c=ctx: R.agreements(s, c))):
+            try:
+                call()
+            except R.SchemaError:
+                continue
+            except Exception as exc:  # noqa: BLE001 - the wrong type IS the bug
+                raise AssertionError(
+                    f"{fn_name} leaked {type(exc).__name__} ({exc}) for a "
+                    f"malformed context ({label}); the declared exit list is "
+                    "wrong, so a caller cannot tell bad input from a bug"
+                ) from exc
+            raise AssertionError(
+                f"{fn_name} silently accepted a malformed context ({label}); "
+                "an unknown identity_mode that reads as strict discards the "
+                "operator's intent without saying so")
+        checked += 1
+    # The control: every well-formed context is accepted.
+    for ctx in _resolve_contexts():
+        R.validate_context(ctx)
+    _count("P26 malformed contexts", checked)
+
+
+def _store_mutilations():
+    """One store-breaking edit per invariant: the positive controls.
+
+    Every entry in ``R.STORE_INVARIANTS`` asserts that something is **absent**,
+    and absence-assertions are exactly the checks this project keeps finding
+    cannot fail.  So each is paired with an edit that makes the absent thing
+    present, and the invariant must name itself in the refusal.
+    """
+    def i1(s):
+        c = s.candidates(KEY)[0]
+        s._replace(c, dataclasses.replace(
+            c, observations=(R.Observation("t2"), R.Observation("t1"))))
+
+    def i2(s):
+        # A hand-set id that is not a function of the content.  Caught inside
+        # ``validate_candidate``, which is where the rule lives -- the duplicate
+        # probe that used to sit in ``validate_store`` could never fire.
+        c = s.candidates(KEY)[0]
+        s._replace(c, dataclasses.replace(c, id="f_" + "a" * 32))
+
+    def i2b(s):
+        c = s.candidates(KEY)[0]
+        other = s.candidates("libc.base")[0]
+        s._bucket(KEY).append(other)
+
+    def i3(s):
+        c = s.candidates(KEY)[0]
+        sibling = dataclasses.replace(c, generation=c.generation + 1)
+        s._bucket(KEY).append(dataclasses.replace(
+            sibling, id=R.derive_id(sibling)))
+
+    def i4(s):
+        c = s.candidates(KEY)[0]
+        moved = dataclasses.replace(
+            c, applies_to=dataclasses.replace(c.applies_to, scope=R.Scope.HOST,
+                                              binding="h1"))
+        s._replace(c, dataclasses.replace(moved, id=R.derive_id(moved)))
+
+    def i5b(s):
+        # Reachable through the public API: ``spec_for`` checks that a ref's key
+        # *exists*, not that it is the key the named candidate is filed under.
+        other = s.candidates("libc.base")[0]
+        R.merge(s, raw(value=123, method="derived",
+                       provenance=R.Provenance.DERIVED,
+                       derived_from=[{"key": "libc.system_offset",
+                                      "id": other.id,
+                                      "digest": R.candidate_digest(other)}]))
+
+    def i6(s):
+        # A *terminal* candidate duplicated, so I3 -- which considers only active
+        # candidates -- steps aside and I6 is the invariant actually on trial.
+        # Duplicating an active one trips I3 first, which would have made this a
+        # control for the wrong rule.
+        c = s.candidates(KEY)[0]
+        R.retract(s, c.id, "t2", "wrong", "op")
+        s._bucket(KEY).append(s.by_id(c.id))
+
+    def i7(s):
+        s.resolutions.append(R.PinRecord(
+            cls="pin", key=KEY, candidate_id="f_" + "e" * 32, at="t1", seq=99,
+            actor="op", reason="forged"))
+
+    def i8(s):
+        c = s.candidates(KEY)[0]
+        s._replace(c, dataclasses.replace(c, state=R.State.RETRACTED))
+
+    def i9(s):
+        s.conflicts.append("not a conflict")
+
+    # I5 is deliberately absent: a cycle cannot be *put into* a store, because
+    # ids are content-derived, so any store-level attempt is rejected by I1/I2
+    # before the acyclicity walk runs -- which is exactly the vacuity round 3
+    # found in the old cycle test.  Its control lives in
+    # ``_assert_cycle_detector_fires``, which feeds the detector directly.
+    return {"I1": i1, "I2": i2, "I2b": i2b, "I3": i3, "I4": i4,
+            "I5b": i5b, "I6": i6, "I7": i7, "I8": i8, "I9": i9}
+
+
+def prop_P27_every_invariant_has_a_positive_control() -> None:
+    """Each declared store invariant can be made to fail, and says which it was.
+
+    Without this, ``validate_store`` is ten assertions of absence that nobody has
+    ever seen go red -- the exact shape of the nine validation-that-cannot-fail
+    defects already recorded in this project.  The cycle check is the sharpest
+    case: cycles are *unconstructible* through the public API because ids are
+    content-derived, so the only honest way to test the detector is to hand it a
+    cycle built by hand.
+    """
+    mutilations = _store_mutilations()
+    controlled = set(mutilations) | {"I5"}      # I5's control is the direct one
+    assert controlled == set(R.STORE_INVARIANTS), (
+        "an invariant has no positive control: "
+        f"{set(R.STORE_INVARIANTS) - controlled}"
+    )
+    _assert_cycle_detector_fires()              # I5
+    for name, mutilate in sorted(mutilations.items()):
+        s, _a, _b = _pinned_store()
+        R.validate_store(s)                 # the store starts valid
+        # The violation may be refused at the write (a transactional writer sees
+        # it immediately) or survive into the store and be caught by the next
+        # ``validate_store``.  Both prove the invariant fires; which one happens
+        # is a property of the path, not of the invariant.
+        raised: List[R.SchemaError] = []
+        try:
+            mutilate(s)
+        except R.SchemaError as exc:
+            raised.append(exc)
+        if not raised:
+            try:
+                R.validate_store(s)
+            except R.SchemaError as exc:
+                raised.append(exc)
+        if not raised:
+            raise AssertionError(
+                f"invariant {name} did not fire on a store that violates it; it "
+                "is an assertion of absence that cannot fail")
+        assert str(raised[0]).startswith(name + " "), (
+            f"{name}'s control tripped a different invariant: {raised[0]}")
+    _count("P27 invariants controlled", len(controlled))
+
+
 PROPERTIES = {
     "P1": prop_P1_merge_totality_and_semantics,
     "P1b": prop_P1b_validation_is_the_only_raiser,
@@ -1178,6 +2057,14 @@ PROPERTIES = {
     "P17": prop_P17_staleness_computed_and_monotone,
     "P18": prop_P18_equal_specificity_disagreement_refuses,
     "P19": prop_P19_cross_identity_coincidence_is_not_agreement,
+    "P20": prop_P20_generation_is_store_assigned,
+    "P21": prop_P21_canonicalisation_is_injective,
+    "P22": prop_P22_the_log_is_referentially_sound,
+    "P23": prop_P23_public_lists_are_validated,
+    "P24": prop_P24_supersede_requires_the_same_proposition,
+    "P25": prop_P25_conflict_views_are_one_notion,
+    "P26": prop_P26_resolve_is_total_over_contexts,
+    "P27": prop_P27_every_invariant_has_a_positive_control,
 }
 
 
@@ -1229,6 +2116,84 @@ def test_mutant_is_caught(name: str) -> None:
     raise AssertionError(
         f"mutant {name!r} (restores: {mutant.restores}) PASSED property "
         f"{mutant.breaks} -- that property has no teeth"
+    )
+
+
+def test_value_domain_keeps_the_deleted_canonical_gate_dead() -> None:
+    """The tripwire for a gate that was **deleted** for being unable to fail.
+
+    ``_validate_candidate`` used to probe ``canonical(candidate.value)`` after
+    the per-key type check had already restricted every value to ``int``,
+    ``bool`` or ``str`` -- none of which ``canonical`` can reject.  Round-3
+    finding 4 named it, and it was deleted rather than defended.
+
+    Deleting a check silently is its own hazard, so this test states the
+    condition under which the deletion is safe.  The moment the registry admits
+    a value type ``canonical`` could refuse -- ``bytes``, a list, a nested
+    mapping -- this goes red and the check must come back.
+    """
+    canonicalisable_scalars = {int, bool, str}
+    declared = {spec.value_type for spec in R.FACT_KEYS.values()}
+    declared |= {spec.value_type for spec in R._FACT_PREFIXES.values()}
+    assert declared <= canonicalisable_scalars, (
+        f"the registry now admits {sorted(t.__name__ for t in declared - canonicalisable_scalars)}, "
+        "which canonical() can reject -- restore the per-candidate "
+        "canonical(value) check in _validate_candidate, because it is no longer "
+        "dead code"
+    )
+    # And the reason it cannot fail: every admitted type round-trips.
+    for value_type in sorted(declared, key=lambda ty: ty.__name__):
+        R.canonical(_probe_value(value_type))
+    # Evidence, by contrast, is an *open* domain -- so the canonical() call that
+    # guards it is live, and here is the proof it can still refuse.
+    with pytest.raises(R.SchemaError):
+        R.canonical({"k": 1.5})
+
+
+def test_resolve_priority_covers_every_classifiable_conflict() -> None:
+    """``resolve`` picks the class it reports from ``CONFLICT_PRIORITY``.
+
+    It used to walk a hard-coded list of three and fall through to a literal
+    ``INCOMPARABLE``, so a class added later would have been silently
+    mislabelled -- reported as incomparable when it was something else.  The
+    fallback is gone, which is only safe if the map is total over what
+    ``classify_pair`` can return.
+    """
+    returnable = set(R.ConflictClass) - {
+        # merge-time classes: recorded against a terminal sibling, never
+        # produced by classify_pair and never a resolution outcome.
+        R.ConflictClass.REOBSERVED_AFTER_RETRACTION,
+        R.ConflictClass.REOBSERVED_AFTER_SUPERSESSION,
+    }
+    assert returnable <= set(R.CONFLICT_PRIORITY), (
+        "classify_pair can return a class resolve has no priority for: "
+        f"{sorted(c.value for c in returnable - set(R.CONFLICT_PRIORITY))}"
+    )
+    assert len(set(R.CONFLICT_PRIORITY.values())) == len(R.CONFLICT_PRIORITY), \
+        "two classes share a priority, so which one resolve reports is arbitrary"
+
+    # Every class in the map is reachable from classify_pair -- a priority for a
+    # class nothing produces is a rule about nothing.
+    produced = set()
+    universe = order_universe()
+    for a in universe:
+        # Same subject, different value: the only way to reach EQUALLY_SPECIFIC,
+        # since every *distinct* member of the universe differs in some ordered
+        # component.  Excluding the self-pair is what hid that class.
+        cls = R.classify_pair(dataclasses.replace(a, value=99), a)
+        if cls is not None:
+            produced.add(cls)
+        for b in universe:
+            if a is b:
+                continue
+            for left, right in ((a, b), (dataclasses.replace(a, value=99), b)):
+                cls = R.classify_pair(left, right)
+                if cls is not None:
+                    produced.add(cls)
+    missing = set(R.CONFLICT_PRIORITY) - produced
+    assert not missing, (
+        "CONFLICT_PRIORITY names classes classify_pair never produces: "
+        f"{sorted(c.value for c in missing)}"
     )
 
 

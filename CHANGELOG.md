@@ -55,6 +55,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   totality and the determinism property — and six properties had no mutant
   bound to them at all, so a second meta-test now asserts that every property
   has been seen to fail.
+  A second independent review of the corrected implementation found nine more,
+  all fixed here, and they are worth naming because seven were invisible to the
+  property suite rather than absent from it: `generation` was still taken from
+  the caller whenever no terminal sibling existed, so merging one assertion at
+  two generations left whichever arrived first — order-dependence the
+  determinism property could not see, because every fixture it quantified over
+  carried the same generation. Canonicalisation was not canonical: mapping keys
+  were coerced with `str()`, so the distinct keys `1` and `"1"` collapsed onto
+  one *and* tied on the sort, and `bytes` were prefixed `b64:` where a real
+  string could collide — both silently discarding evidence, since the
+  observation union is keyed by that digest. Every *falsey* malformed field
+  (`id=0`, `derived_from=0`, `evidence=0`, `conditions=0`) was normalised to
+  absent by `x or ()`, and unknown nested fields were discarded, so a typo
+  validated clean and asserted something nobody wrote. Log records were checked
+  for shape but not for reference, so a well-formed pin could name a candidate
+  that did not exist and resolution honoured it; `store.conflicts` was validated
+  nowhere at all; and a terminal state needed no lifecycle record, so a state
+  change made outside the state machine left no trace. `supersede` required only
+  the same fact *key*, letting a candidate about another identity, process or
+  mutually exclusive condition set destroy a still-valid measurement. Conflict
+  reporting had two holes in opposite directions — equal values from different
+  identities made resolution refuse with nothing classifying it, so the operator
+  got no record of why, while pairs no context could ever make jointly
+  applicable were recorded as conflicts nobody can encounter. And `resolve`
+  leaked `TypeError` from a malformed `ResolveContext` while silently reading an
+  unknown `identity_mode` as the stricter one, discarding the operator's intent
+  without a word. Two validation steps were found that **could not fail** and
+  have been deleted rather than defended — a value-canonicalisability probe made
+  dead by the per-key type check, and an id-shape check on a just-derived id —
+  with a tripwire test that says when the first must come back; a third instance
+  of the same defect turned up while building the new positive controls and is
+  gone too. The store invariants grew from seven to ten, and each of the ten now
+  has a **positive control** proving it can go red, including the acyclicity
+  check, which is fed a hand-built cycle directly because content-derived ids
+  make cycles unstorable. 29 properties and 37 mutants.
 - **Phase 5 (reliability hardening) — stdio-safe multi-part payload delivery**
   (`supwngo/exploit/pipeline/delivery.py`). Every native executor previously delivered
   its payload as a *single* write (`subprocess.run(input=blob)` / one `sendline`), which

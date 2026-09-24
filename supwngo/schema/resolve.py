@@ -15,14 +15,16 @@ possible:
 * stdlib only, and **no imports from** ``supwngo`` -- this module is reviewable
   and testable on its own,
 * no filesystem, no clock, no randomness, no logging: every input is passed in,
-* every public function is pure except :func:`merge`, :func:`supersede` and
-  :func:`retract`, which mutate exactly one :class:`FactStore`.
+* every public function is pure except the five writers -- :func:`merge`,
+  :func:`supersede`, :func:`retract`, :func:`pin` and :func:`unpin` -- each of
+  which mutates exactly one :class:`FactStore` and does so transactionally.
 
 See ``docs/plans/2026-09-24-standardized-context-schema.md``.
 """
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import enum
 import hashlib
@@ -38,13 +40,14 @@ __all__ = [
     "Observation", "Ref", "AppliesTo", "Candidate", "FactStore", "ResolveContext",
     "Selected", "Conflict", "Agreement", "PinRecord",
     "canonical", "derive_id", "candidate_digest", "dedup_key",
-    "validate_candidate", "validate_store",
-    "merge", "supersede", "retract", "transition",
+    "validate_candidate", "validate_store", "validate_context",
+    "merge", "supersede", "retract", "pin", "unpin", "transition",
     "compare_provenance", "compare_scope", "compare_conditions",
     "compare_specificity", "maximal",
     "applicable", "current_pins", "contradiction_guard", "agreeing",
-    "resolve", "try_resolve", "conflicts", "agreements", "is_stale",
-    "canonical_document", "classify_pair",
+    "resolve", "try_resolve", "conflicts", "context_free_conflicts",
+    "agreements", "is_stale", "jointly_satisfiable", "CONFLICT_PRIORITY",
+    "canonical_document", "classify_pair", "STORE_INVARIANTS",
     "FACT_KEYS", "spec_for", "emit_tables",
     "ID_DIGEST_FIELDS", "DEP_DIGEST_FIELDS", "DERIVED_FIELDS",
     "PROVENANCE_EDGES", "SCOPE_EDGES", "STATE_EVENTS",
@@ -126,6 +129,12 @@ class ConflictClass(enum.Enum):
     EQUALLY_SPECIFIC = "equally_specific"
     INCOMPARABLE = "incomparable"
     DOMINATED = "dominated"
+    #: Equal *encodings*, different subjects.  ``agreeing()`` deliberately
+    #: refuses to call two identities' matching ``0x401234`` a concurrence, so
+    #: ``resolve`` refuses such a pool -- but nothing used to *classify* it, so
+    #: the refusal appeared in no conflict report at all and an operator had no
+    #: record of why the resolution failed.
+    AMBIGUOUS_ACROSS_IDENTITIES = "ambiguous_across_identities"
     #: A re-observation after a terminal state.  The two terminal states are
     #: reported separately because they mean different things to an operator: a
     #: retraction was a judgement that the fact was wrong, a supersession was a
@@ -205,6 +214,11 @@ ABSENT = Absent()
 # ---------------------------------------------------------------------------
 
 
+#: Reserved mapping key carrying the base64 encoding of a ``bytes`` value.  It is
+#: refused as an ordinary mapping key, which is what makes the encoding injective.
+_BYTES_TAG = "__bytes_b64__"
+
+
 def _jsonable(obj: Any) -> Any:
     """Project to a JSON-canonicalisable form.  Raises for anything else, so a
     non-canonicalisable value is a validation failure rather than a surprise
@@ -216,9 +230,25 @@ def _jsonable(obj: Any) -> Any:
     if isinstance(obj, enum.Enum):
         return obj.value
     if isinstance(obj, bytes):
-        return "b64:" + __import__("base64").b64encode(obj).decode("ascii")
+        # Tagged, not prefixed.  ``"b64:" + b64`` collided with the *string*
+        # ``"b64:..."``, so distinct evidence encoded identically and the
+        # observation union silently discarded one of the two.  A single-key
+        # mapping cannot collide with a string, and the reserved key below is
+        # refused as a mapping key so it cannot collide with a real mapping.
+        return {_BYTES_TAG: base64.b64encode(obj).decode("ascii")}
     if isinstance(obj, Mapping):
-        return {str(k): _jsonable(v) for k, v in sorted(obj.items(), key=lambda kv: str(kv[0]))}
+        # Keys must already *be* strings.  Coercing with ``str(k)`` made the
+        # keys ``1`` and ``"1"`` project to the same key and tie on the sort,
+        # so one overwrote the other and equal mappings could canonicalise
+        # differently depending on insertion order -- in a digest.
+        for k in obj:
+            if not isinstance(k, str):
+                raise SchemaError(
+                    f"mapping keys must be strings, got {type(k).__name__} ({k!r})"
+                )
+            if k == _BYTES_TAG:
+                raise SchemaError(f"{_BYTES_TAG!r} is reserved for the bytes encoding")
+        return {k: _jsonable(v) for k, v in sorted(obj.items())}
     if isinstance(obj, (frozenset, set)):
         return sorted((_jsonable(v) for v in obj), key=lambda v: json.dumps(v, sort_keys=True))
     if isinstance(obj, (list, tuple)):
@@ -443,6 +473,38 @@ def _as_enum(cls, raw, what: str):
         raise SchemaError(f"{what}: {raw!r} not one of {[m.value for m in cls]}") from None
 
 
+_MISSING = object()
+
+
+def _reject_unknown(raw: Mapping, allowed: Iterable[str], what: str) -> None:
+    """Unknown nested fields were *silently discarded*, so a typo in
+    ``applies_to``/``observations``/``derived_from`` -- ``"scpoe"``,
+    ``"evidnece"`` -- validated clean and produced a candidate that asserted
+    something other than what the producer wrote."""
+    for k in raw:
+        if not isinstance(k, str):
+            raise SchemaError(f"{what} field names must be strings, got {k!r}")
+    unknown = set(raw) - set(allowed)
+    if unknown:
+        raise SchemaError(f"unknown {what} fields: {sorted(unknown)}")
+
+
+def _required_list(data: Mapping, name: str, what: str) -> Sequence[Any]:
+    """A list-valued field, absent-or-list only.
+
+    ``data.get(name) or ()`` treated every *falsey* malformed value -- ``0``,
+    ``False``, ``""`` -- as "absent", so ``derived_from=0`` and
+    ``evidence=0`` validated clean.  Absence is ``None``/missing and nothing
+    else.
+    """
+    raw = data.get(name, _MISSING)
+    if raw is _MISSING or raw is None:
+        return ()
+    if isinstance(raw, (str, bytes, Mapping)) or not isinstance(raw, (list, tuple)):
+        raise SchemaError(f"{what} must be a list, got {type(raw).__name__}")
+    return raw
+
+
 def _validate_conditions(raw: Any) -> Tuple[Tuple[str, str], ...]:
     """Conditions are a sorted tuple of ``(str, str)`` pairs.
 
@@ -451,7 +513,7 @@ def _validate_conditions(raw: Any) -> Tuple[Tuple[str, str], ...]:
     is not a validated one.  Sorting here is what makes
     :func:`compare_conditions`' set algebra and the canonical bytes agree.
     """
-    if raw is None:
+    if raw is None or raw is _MISSING:
         return ()
     if isinstance(raw, Mapping):
         items = list(raw.items())
@@ -533,8 +595,10 @@ def _validate_candidate(raw: Any) -> Candidate:
         if applies_to.binding is not None and not isinstance(applies_to.binding, str):
             raise SchemaError("applies_to.binding must be a string or null")
     elif isinstance(at_raw, Mapping):
+        _reject_unknown(at_raw, ("identity", "scope", "conditions", "binding"),
+                        "applies_to")
         scope = _as_enum(Scope, at_raw.get("scope"), "scope")
-        conds_items = _validate_conditions(at_raw.get("conditions") or ())
+        conds_items = _validate_conditions(at_raw.get("conditions", _MISSING))
         identity = at_raw.get("identity")
         if identity is not None and not isinstance(identity, str):
             raise SchemaError("applies_to.identity must be a string or null")
@@ -556,7 +620,7 @@ def _validate_candidate(raw: Any) -> Candidate:
         raise SchemaError(f"{key}: value must be {spec.value_type.__name__}")
     if applies_to.scope not in spec.allowed_scopes:
         raise SchemaError(
-            f"{key}: scope {applies_to.scope.value} not in "
+            f"I4 {key}: scope {applies_to.scope.value} not in "
             f"{sorted(s.value for s in spec.allowed_scopes)}"
         )
     if applies_to.scope in _BOUND_SCOPES and not applies_to.binding:
@@ -569,45 +633,63 @@ def _validate_candidate(raw: Any) -> Candidate:
         if not isinstance(val, str) or not val:
             raise SchemaError(f"{name} must be a non-empty string")
 
-    obs_raw = data.get("observations") or ()
-    if isinstance(obs_raw, (str, bytes, Mapping)) or not isinstance(obs_raw, (list, tuple)):
-        raise SchemaError("observations must be a list")
+    obs_raw = _required_list(data, "observations", "observations")
     observations: List[Observation] = []
     for o in obs_raw:
         # A constructed Observation is re-checked for the same reason as
         # AppliesTo above: a typed container is not a validated one.
-        at = o.at if isinstance(o, Observation) else (
-            o.get("at") if isinstance(o, Mapping) else None)
+        if isinstance(o, Observation):
+            at, ev = o.at, o.evidence
+        elif isinstance(o, Mapping):
+            _reject_unknown(o, ("at", "evidence"), "observation")
+            at, ev = o.get("at"), o.get("evidence", _MISSING)
+        else:
+            raise SchemaError(
+                f"observation must be a mapping or Observation, got {type(o).__name__}")
         if not isinstance(at, str) or not at:
             raise SchemaError("observation.at must be a non-empty string")
-        ev = (o.evidence if isinstance(o, Observation)
-              else (o.get("evidence") or ()))
-        if isinstance(ev, Mapping):
-            ev_items = tuple(sorted((str(k), v) for k, v in ev.items()))
+        if ev is _MISSING or ev is None:
+            ev_pairs: List[Tuple[str, Any]] = []
+        elif isinstance(ev, Mapping):
+            ev_pairs = list(ev.items())
         elif isinstance(ev, (list, tuple)):
-            ev_items = tuple(sorted((str(k), v) for k, v in ev))
+            ev_pairs = []
+            for pair in ev:
+                if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                    raise SchemaError("observation.evidence entries must be pairs")
+                ev_pairs.append((pair[0], pair[1]))
         else:
-            raise SchemaError("observation.evidence must be a mapping or pairs")
-        canonical(ev_items)
+            raise SchemaError(
+                f"observation.evidence must be a mapping or pairs, got "
+                f"{type(ev).__name__}")
+        # Names must *be* strings, not be coercible to strings: ``str(k)``
+        # mapped the distinct names ``1`` and ``"1"`` onto one name, and their
+        # sort keys then tied, so which one survived depended on input order.
+        for name, _ in ev_pairs:
+            if not isinstance(name, str) or not name:
+                raise SchemaError("observation.evidence names must be non-empty strings")
+        if len({n for n, _ in ev_pairs}) != len(ev_pairs):
+            raise SchemaError("observation.evidence names a field twice")
+        ev_items = tuple(sorted(ev_pairs, key=lambda kv: kv[0]))
+        canonical(ev_items)  # evidence values are open, so this one CAN fail
         observations.append(Observation(at, ev_items))
     if not observations:
         raise SchemaError("a candidate needs at least one observation")
 
-    refs_raw = data.get("derived_from") or ()
-    if isinstance(refs_raw, (str, bytes, Mapping)) or \
-            not isinstance(refs_raw, (list, tuple)):
-        raise SchemaError("derived_from must be a list")
+    refs_raw = _required_list(data, "derived_from", "derived_from")
     refs: List[Ref] = []
     for r in refs_raw:
         if isinstance(r, Ref):
             rkey, rid, rdigest = r.key, r.id, r.digest
         elif isinstance(r, Mapping):
+            _reject_unknown(r, ("key", "id", "digest"), "derived_from entry")
             missing = {"key", "id", "digest"} - set(r)
             if missing:
                 raise SchemaError(f"derived_from entry missing {sorted(missing)}")
             rkey, rid, rdigest = r["key"], r["id"], r["digest"]
         else:
-            raise SchemaError("derived_from entry must be a mapping")
+            raise SchemaError(
+                f"derived_from entry must be a mapping, got {type(r).__name__}")
         if not isinstance(rkey, str) or not rkey:
             raise SchemaError("derived_from.key must be a non-empty string")
         spec_for(rkey)
@@ -635,21 +717,32 @@ def _validate_candidate(raw: Any) -> Candidate:
         method=method,
         by=by,
         observations=_merge_observations((), tuple(observations)),
-        #: ``digest`` is in the sort key: two refs to the same ``(key, id)`` with
-        #: different digests are different facts, and omitting it left their
-        #: order dependent on input order.
+        #: Sorted by the whole triple.  ``(key, id)`` alone is already unique
+        #: -- the duplicate check above rejects two refs that share it, whatever
+        #: their digests -- so ``digest`` is in the key only to make the sort
+        #: total by construction rather than by relying on that check.
         derived_from=tuple(sorted(refs, key=lambda r: (r.key, r.id, r.digest))),
         state=state,
         generation=generation,
     )
-    canonical(candidate.value)  # raises SchemaError if not canonicalisable
+    # Two checks used to stand here and **neither could fail**: a
+    # ``canonical(candidate.value)`` probe, dead because the per-key value-type
+    # check above already restricts every value to ``int`` or ``str``; and an
+    # ``_ID_RE`` check on the id we had just derived, dead because
+    # ``derive_id``'s shape is fixed.  Both are deleted rather than defended --
+    # a gate that cannot go red is worse than no gate, because it reads as
+    # coverage.  ``test_value_domain_keeps_the_canonical_gate_dead`` is the
+    # tripwire: it fails if the registry ever admits a value type that
+    # ``canonical`` could reject, which is when the first check must come back.
     candidate = dataclasses.replace(candidate, id=derive_id(candidate))
 
-    given_id = data.get("id") or ""
-    if given_id and given_id != candidate.id:
-        raise SchemaError(f"id {given_id!r} is not derive_id(candidate) ({candidate.id})")
-    if not _ID_RE.match(candidate.id):  # pragma: no cover - derive_id shape is fixed
-        raise SchemaError(f"malformed id: {candidate.id}")
+    if "id" in data and data["id"] is not None:
+        given_id = data["id"]
+        if not isinstance(given_id, str):
+            raise SchemaError(f"id must be a string, got {type(given_id).__name__}")
+        if given_id != candidate.id:
+            raise SchemaError(
+                f"I2 id {given_id!r} is not derive_id(candidate) ({candidate.id})")
     return candidate
 
 
@@ -699,9 +792,21 @@ class FactStore:
     def _record_conflict(self, conflict: "Conflict") -> None:
         """Set semantics, so recording the same conflict twice (or from two
         merge orders) cannot change the bytes."""
-        if conflict not in self.conflicts:
-            self.conflicts.append(conflict)
-        self.conflicts.sort(key=lambda c: (c.key, c.cls.value, c.candidate_ids))
+        self._record_conflicts((conflict,))
+
+    def _record_conflicts(self, new: Iterable["Conflict"]) -> None:
+        """Union then sort **once**.
+
+        The per-conflict version did a linear membership scan and a full sort
+        for every conflict recorded, so a merge that produced k conflicts against
+        n existing ones cost O(k*(n + n log n)) -- quartic overall on a
+        conflict-heavy key, for a result that is just a sorted set.
+        """
+        merged = set(self.conflicts)
+        merged.update(new)
+        if len(merged) != len(self.conflicts):
+            self.conflicts[:] = sorted(
+                merged, key=lambda c: (c.key, c.cls.value, c.candidate_ids))
 
     def _next_seq(self) -> int:
         """Log sequence numbers are assigned by the store, never by a caller,
@@ -725,89 +830,220 @@ class FactStore:
         self.conflicts = list(conflicts)
 
 
+#: Every invariant ``validate_store`` enforces, by name.  Each one is an
+#: assertion that something is **absent** -- a duplicate, a cycle, a dangling
+#: reference, an unlogged state change -- and this project has repeatedly found
+#: that absence-assertions are exactly the checks that silently cannot fail.  So
+#: the suite carries a positive control per entry and
+#: ``test_every_store_invariant_has_a_positive_control`` fails if this tuple
+#: grows an entry that nothing can trip.
+STORE_INVARIANTS: Tuple[str, ...] = (
+    "I1", "I2", "I2b", "I3", "I4", "I5", "I5b", "I6", "I7", "I8", "I9",
+)
+
+
 def validate_store(store: FactStore) -> None:
-    """Check I1-I7 transactionally.  An invalid graph is never persisted."""
+    """Check I1-I9 transactionally.  An invalid graph is never persisted."""
     seen_ids: Dict[str, Candidate] = {}
     for key in store.keys():
         active_keys: Dict[str, str] = {}
         for c in store.candidates(key):
-            validate_candidate(c)                                     # I1
-            if c.id != derive_id(c):                                  # I2
-                raise SchemaError(f"{c.id}: id is not a function of content")
-            if c.key != key:
-                raise SchemaError(f"{c.id}: filed under {key!r} but claims {c.key!r}")
+            # I1 is *equality*, not "validation did not raise".  Checking only
+            # that it did not raise ignored the normalised candidate it returns,
+            # so a hand-built candidate carrying duplicate or unsorted
+            # observations -- which are outside the id digest, so I2 cannot see
+            # them -- validated clean and still changed the document bytes.
+            normalised = validate_candidate(c)                        # I1
+            if normalised != c:
+                raise SchemaError(
+                    f"I1 {c.id}: candidate is not in canonical form "
+                    "(observations or derived_from unnormalised)")
+            # There is deliberately **no** separate ``c.id != derive_id(c)``
+            # probe here.  I1 above already rejects a mismatched id -- it is
+            # ``validate_candidate`` that owns that rule -- so a second check
+            # could never fire, which is precisely the kind of reassuring dead
+            # gate this module has twice had to delete.  I2 is enforced, and
+            # labelled, inside ``_validate_candidate``.
+            if c.key != key:                                          # I2b
+                raise SchemaError(
+                    f"I2b {c.id}: filed under {key!r} but claims {c.key!r}")
             if c.state is State.ACTIVE:                               # I3
                 dk = dedup_key(c)
                 if dk in active_keys:
                     raise SchemaError(
-                        f"{key}: duplicate active dedup key ({active_keys[dk]}, {c.id})"
+                        f"I3 {key}: duplicate active dedup key "
+                        f"({active_keys[dk]}, {c.id})"
                     )
                 active_keys[dk] = c.id
             if c.id in seen_ids:                                      # I6
-                raise SchemaError(f"duplicate candidate id {c.id}")
+                raise SchemaError(f"I6 duplicate candidate id {c.id}")
             seen_ids[c.id] = c
+    # One shared ``done`` set and one id index.  The walk used to restart a fresh
+    # DFS per candidate and rescan every candidate for every edge, which is
+    # quartic on a dense dependency DAG -- it made ``merge`` a size-based denial
+    # of service against itself.
+    done: set = set()
     for c in seen_ids.values():                                       # I5
-        _assert_acyclic(store, c, set(), set())
+        _assert_acyclic(seen_ids, c, set(), done)
         for ref in c.derived_from:                                    # I5b
             src = seen_ids.get(ref.id)
             if src is not None and src.key != ref.key:
                 raise SchemaError(
-                    f"{c.id}: derived_from names {ref.id} under key {ref.key!r} "
-                    f"but that candidate is filed under {src.key!r}"
+                    f"I5b {c.id}: derived_from names {ref.id} under key "
+                    f"{ref.key!r} but that candidate is filed under {src.key!r}"
                 )
             # A ref whose source is ABSENT is deliberately **not** an invariant
             # violation: a document may legitimately be merged from fragments,
             # and rejecting a partial graph would make a fragment unmergeable.
             # It is handled where it belongs -- ``is_stale`` treats a dangling
             # ref as stale, so nothing is *consumed* on an unresolvable lineage.
-    _validate_log(store)                                              # I7
+    _validate_log(store, seen_ids)                                    # I7, I8
+    _validate_conflicts(store, seen_ids)                              # I9
 
 
 _LOG_CLASSES: Tuple[str, ...] = ("pin", "unpin", "supersede", "retract")
 
+#: Which terminal state each lifecycle class must have produced on its target.
+_LOG_TERMINAL: Dict[str, State] = {
+    "supersede": State.SUPERSEDED,
+    "retract": State.RETRACTED,
+}
 
-def _validate_log(store: FactStore) -> None:
-    """I7: the append-only log is well formed and totally ordered by ``seq``.
 
-    Without this the log was a public list of unvalidated records, and
-    :func:`current_pins` -- the one thing that can override a measurement --
-    folded over whatever a caller had appended.
+def _validate_log(store: FactStore, index: Mapping[str, Candidate]) -> None:
+    """I7: the log is well formed, uniquely sequenced, attributed **and
+    referentially sound**.  I8: no terminal state without a record.
+
+    Shape alone was not enough.  A well-shaped record naming a candidate that
+    does not exist, or one filed under a different key, or a ``supersede`` with
+    no replacement, or a ``pin`` carrying one, all passed -- and ``resolve`` then
+    honoured the pin.  An integer ``candidate_id`` did worse: it leaked
+    ``TypeError`` out of ``_ID_RE.match`` from inside ``merge``'s pre-write
+    validation, so a malformed log broke an unrelated write with the wrong
+    exception type.
+
+    What this does **not** do is make the log unforgeable.  A caller holding the
+    store can append to ``resolutions`` as easily as it can call :func:`pin`;
+    ``seq`` and ``actor`` are as forgeable as any other in-process value.  The
+    boundary being defended is the *document*, and what is enforced is that
+    every record crossing it is well formed, uniquely sequenced, attributed and
+    consistent with the candidate it names.
     """
     seen_seq = set()
     for rec in store.resolutions:
         if not isinstance(rec, PinRecord):
-            raise SchemaError(f"log entry is not a PinRecord: {type(rec).__name__}")
+            raise SchemaError(
+                f"I7 log entry is not a PinRecord: {type(rec).__name__}")
         if rec.cls not in _LOG_CLASSES:
-            raise SchemaError(f"log entry class {rec.cls!r} not in {list(_LOG_CLASSES)}")
+            raise SchemaError(
+                f"I7 log entry class {rec.cls!r} not in {list(_LOG_CLASSES)}")
         if isinstance(rec.seq, bool) or not isinstance(rec.seq, int) or rec.seq < 1:
-            raise SchemaError(f"log entry seq must be a positive int, got {rec.seq!r}")
+            raise SchemaError(
+                f"I7 log entry seq must be a positive int, got {rec.seq!r}")
         if rec.seq in seen_seq:
-            raise SchemaError(f"duplicate log seq {rec.seq}")
+            raise SchemaError(f"I7 duplicate log seq {rec.seq}")
         seen_seq.add(rec.seq)
-        if not isinstance(rec.at, str) or not rec.at:
-            raise SchemaError("log entry needs a non-empty at")
-        if not isinstance(rec.actor, str) or not rec.actor:
-            raise SchemaError("log entry needs a non-empty actor")
-        if not isinstance(rec.key, str) or not rec.key:
-            raise SchemaError("log entry needs a non-empty key")
+        for field in ("at", "actor", "key", "reason"):
+            value = getattr(rec, field)
+            if not isinstance(value, str) or not value:
+                raise SchemaError(f"I7 log entry needs a non-empty {field}")
+        spec_for(rec.key)
         for field in ("candidate_id", "by_candidate_id"):
             cid = getattr(rec, field)
-            if cid is not None and not _ID_RE.match(cid):
-                raise SchemaError(f"log entry {field} is not a candidate id: {cid!r}")
-        if rec.cls != "unpin" and rec.candidate_id is None:
-            raise SchemaError(f"a {rec.cls} record must name a candidate")
+            if cid is None:
+                continue
+            if not isinstance(cid, str) or not _ID_RE.match(cid):
+                raise SchemaError(
+                    f"I7 log entry {field} is not a candidate id: {cid!r}")
+            target = index.get(cid)
+            if target is None:
+                raise SchemaError(f"I7 log entry {field} names no candidate: {cid}")
+            if target.key != rec.key:
+                raise SchemaError(
+                    f"I7 log entry is filed under {rec.key!r} but {field} {cid} "
+                    f"is a {target.key!r} candidate")
+        if rec.cls == "unpin":
+            if rec.candidate_id is not None:
+                raise SchemaError("I7 an unpin record names no candidate")
+        elif rec.candidate_id is None:
+            raise SchemaError(f"I7 a {rec.cls} record must name a candidate")
+        if rec.cls == "supersede":
+            if rec.by_candidate_id is None:
+                raise SchemaError("I7 a supersede record must name its replacement")
+            if rec.by_candidate_id == rec.candidate_id:
+                raise SchemaError("I7 a supersede record cannot name itself twice")
+        elif rec.by_candidate_id is not None:
+            raise SchemaError(f"I7 a {rec.cls} record takes no by_candidate_id")
+        expected = _LOG_TERMINAL.get(rec.cls)
+        if expected is not None and index[rec.candidate_id].state is not expected:
+            raise SchemaError(
+                f"I7 log records {rec.cls} of {rec.candidate_id} but it is "
+                f"{index[rec.candidate_id].state.value}, not {expected.value}")
+    # I8, the converse: a terminal state with no record is a state change that
+    # happened outside the state machine, which is exactly what the log exists to
+    # make impossible to hide.
+    logged = {(r.cls, r.candidate_id) for r in store.resolutions}
+    for c in index.values():
+        for cls, state in _LOG_TERMINAL.items():
+            if c.state is state and (cls, c.id) not in logged:
+                raise SchemaError(
+                    f"I8 {c.id} is {state.value} but no {cls} record says so")
 
 
-def _assert_acyclic(store: FactStore, c: Candidate, path: set, done: set) -> None:
+def _validate_conflicts(store: FactStore, index: Mapping[str, Candidate]) -> None:
+    """I9: the recorded conflict list is well formed, unique, canonically
+    ordered, and points at candidates that exist under the key it names.
+
+    ``store.conflicts`` is as public as ``store.resolutions`` and was validated
+    nowhere, so a malformed entry survived a conflict-free merge and surfaced
+    later as an exception out of ``canonical_document`` -- at document-build
+    time, far from whatever put it there.
+    """
+    seen = set()
+    for rec in store.conflicts:
+        if not isinstance(rec, Conflict):
+            raise SchemaError(
+                f"I9 conflict entry is not a Conflict: {type(rec).__name__}")
+        if not isinstance(rec.cls, ConflictClass):
+            raise SchemaError(f"I9 conflict class is not a ConflictClass: {rec.cls!r}")
+        if not isinstance(rec.key, str) or not rec.key:
+            raise SchemaError("I9 conflict needs a non-empty key")
+        spec_for(rec.key)
+        ids = rec.candidate_ids
+        if not isinstance(ids, tuple) or len(ids) != 2:
+            raise SchemaError(f"I9 conflict must name exactly two candidates: {ids!r}")
+        if not all(isinstance(cid, str) for cid in ids):
+            raise SchemaError(f"I9 conflict ids must be strings: {ids!r}")
+        if list(ids) != sorted(ids) or ids[0] == ids[1]:
+            raise SchemaError(f"I9 conflict ids must be sorted and distinct: {ids!r}")
+        for cid in ids:
+            target = index.get(cid)
+            if target is None:
+                raise SchemaError(f"I9 conflict names no such candidate: {cid!r}")
+            if target.key != rec.key:
+                raise SchemaError(
+                    f"I9 conflict is filed under {rec.key!r} but {cid} is a "
+                    f"{target.key!r} candidate")
+        if rec in seen:
+            raise SchemaError(f"I9 duplicate conflict record {rec}")
+        seen.add(rec)
+    ordered = sorted(store.conflicts,
+                     key=lambda c: (c.key, c.cls.value, c.candidate_ids))
+    if list(store.conflicts) != ordered:
+        raise SchemaError("I9 conflict list is not in canonical order")
+
+
+def _assert_acyclic(index: Mapping[str, Candidate], c: Candidate,
+                    path: set, done: set) -> None:
     if c.id in done:
         return
     if c.id in path:
-        raise SchemaError(f"derived_from cycle through {c.id}")
+        raise SchemaError(f"I5 derived_from cycle through {c.id}")
     path.add(c.id)
     for ref in c.derived_from:
-        src = store.by_id(ref.id)
+        src = index.get(ref.id)
         if src is not None:
-            _assert_acyclic(store, src, path, done)
+            _assert_acyclic(index, src, path, done)
     path.discard(c.id)
     done.add(c.id)
 
@@ -848,6 +1084,22 @@ def merge(store: FactStore, incoming: Any) -> MergeDecision:
     key = candidate.key
     dk = dedup_key(candidate)
     matches = [c for c in store.active(key) if dedup_key(c) == dk]
+    terminal = [c for c in store.candidates(key)
+                if c.state is not appended_state and dedup_key(c) == dk]
+
+    # ``generation`` is assigned by the **store**, unconditionally.  It used to
+    # be taken from the caller whenever the store had no terminal sibling, which
+    # made merge order-dependent: merging the same assertion at generation 0 and
+    # at generation 5 on a fresh store left whichever arrived first, so reversing
+    # arrival order changed the document bytes.  Deriving it here from store
+    # state alone is what makes the result a function of the *set* of merged
+    # candidates.  ``dedup_key`` excludes ``generation``, so the lookups above
+    # are themselves generation-independent -- the two facts together are the
+    # whole argument for order-independence.
+    generation = (matches[0].generation if matches
+                  else 1 + max(c.generation for c in terminal) if terminal
+                  else 0)
+    candidate = _assign_generation(candidate, incoming, generation)
 
     snap = store._snapshot()
     try:
@@ -867,29 +1119,16 @@ def merge(store: FactStore, incoming: Any) -> MergeDecision:
             # Dedup considers ACTIVE candidates only.  Folding a fresh
             # observation into a retracted candidate would silently undo the
             # retraction and leave no active fact at all, so this appends -- at
-            # a fresh ``generation``, so the live and terminal siblings cannot
-            # share an id, and it tells the operator.
-            terminal = [c for c in store.candidates(key)
-                        if c.state is not appended_state and dedup_key(c) == dk]
-            if terminal:
-                generation = 1 + max(c.generation for c in terminal)
-                if candidate.generation != generation:
-                    if _carries_explicit_id(incoming):
-                        raise SchemaError(
-                            f"{key}: generation is assigned by the store "
-                            f"({generation} here), so the supplied id is stale; "
-                            "merge the candidate without an id"
-                        )
-                    candidate = dataclasses.replace(candidate, generation=generation)
-                    candidate = dataclasses.replace(candidate, id=derive_id(candidate))
-                for t in sorted(terminal, key=lambda c: c.id):
-                    store._record_conflict(Conflict(
-                        key,
-                        ConflictClass.REOBSERVED_AFTER_RETRACTION
-                        if t.state is State.RETRACTED
-                        else ConflictClass.REOBSERVED_AFTER_SUPERSESSION,
-                        tuple(sorted((t.id, candidate.id))),
-                    ))
+            # the fresh ``generation`` assigned above, so the live and terminal
+            # siblings cannot share an id, and it tells the operator.
+            for dead in sorted(terminal, key=lambda c: c.id):
+                store._record_conflict(Conflict(
+                    key,
+                    ConflictClass.REOBSERVED_AFTER_RETRACTION
+                    if dead.state is State.RETRACTED
+                    else ConflictClass.REOBSERVED_AFTER_SUPERSESSION,
+                    tuple(sorted((dead.id, candidate.id))),
+                ))
             store._bucket(key).append(candidate)
             store._sorted(key)
             decision = MergeDecision.APPENDED
@@ -897,8 +1136,7 @@ def merge(store: FactStore, incoming: Any) -> MergeDecision:
         # Conflicts are recorded on **every write**, not only on resolve: a
         # producer-only run (``analyze`` with no ``pwn``) never resolves, and
         # without this it accumulated contradictions in silence.
-        for conflict in context_free_conflicts(store, key):
-            store._record_conflict(conflict)
+        store._record_conflicts(context_free_conflicts(store, key))
 
         validate_store(store)                           # I1-I7 hold AFTER it too
     except Exception:
@@ -907,12 +1145,40 @@ def merge(store: FactStore, incoming: Any) -> MergeDecision:
     return decision
 
 
-def _carries_explicit_id(incoming: Any) -> bool:
-    if isinstance(incoming, Candidate):
-        return bool(incoming.id)
+def _stated(incoming: Any, field: str) -> Any:
+    """What the *raw input* asserted for a store-assigned field, if anything.
+
+    A :class:`Candidate` instance states **nothing**: its ``generation`` and
+    ``id`` are the store's own earlier assignment, so treating them as an
+    assertion made the round trip ``merge(store, validate_candidate(raw))``
+    fail whenever the store had moved on -- validation necessarily fills both
+    fields in, so there was no way to express "I have no opinion".  Only a
+    mapping can assert them, and then only to be checked.
+    """
     if isinstance(incoming, Mapping):
-        return bool(incoming.get("id"))
-    return False
+        value = incoming.get(field, _MISSING)
+        return _MISSING if value is None else value
+    return _MISSING
+
+
+def _assign_generation(candidate: Candidate, incoming: Any, generation: int) -> Candidate:
+    stated_gen = _stated(incoming, "generation")
+    if stated_gen is not _MISSING and stated_gen != generation:
+        raise SchemaError(
+            f"{candidate.key}: generation is assigned by the store ({generation} "
+            f"here), not by the caller ({stated_gen!r}); merge without it"
+        )
+    if candidate.generation != generation:
+        candidate = dataclasses.replace(candidate, generation=generation)
+        candidate = dataclasses.replace(candidate, id=derive_id(candidate))
+    stated_id = _stated(incoming, "id")
+    if stated_id is not _MISSING and stated_id != candidate.id:
+        raise SchemaError(
+            f"{candidate.key}: the supplied id {stated_id!r} is not this "
+            f"candidate's id at store-assigned generation {generation} "
+            f"({candidate.id}); merge it without an id"
+        )
+    return candidate
 
 
 # ---------------------------------------------------------------------------
@@ -1019,6 +1285,23 @@ def supersede(store: FactStore, candidate_id: str, by_candidate_id: str,
         raise StateTransitionError(
             f"{by_candidate_id} is {replacement.state.value}; a dead candidate "
             "cannot supersede a live one"
+        )
+    # Same key is not the same proposition.  Matching only the key let a
+    # candidate about another identity, another process, another boot, another
+    # libc file or a mutually exclusive condition set supersede an unrelated
+    # fact -- silently destroying something still true.  ``applies_to`` is the
+    # subject of the assertion, so replacing a fact requires speaking about the
+    # same subject; a *narrower* replacement does not cover the old claim and is
+    # therefore not a replacement either.
+    if replacement.applies_to != target.applies_to:
+        differing = [
+            name for name in ("identity", "scope", "binding", "conditions")
+            if getattr(replacement.applies_to, name) != getattr(target.applies_to, name)
+        ]
+        raise StateTransitionError(
+            f"cannot supersede {candidate_id} with {by_candidate_id}: they are "
+            f"not about the same proposition (applies_to differs in "
+            f"{differing}); re-assert the narrower fact instead"
         )
     _transition_candidate(store, candidate_id, "supersede", at, reason, actor,
                           by_candidate_id)
@@ -1293,6 +1576,44 @@ class PinRecord:
         return _sha(canonical(self))[:_ID_HEX]
 
 
+#: The two identity modes.  An unknown mode used to be treated as strict, so a
+#: typo -- ``"None"``, ``"loose"`` -- silently selected the *stricter* behaviour
+#: and the operator's intent was discarded without a word.
+IDENTITY_MODES: Tuple[str, ...] = ("strict", "none")
+
+
+def validate_context(ctx: Any) -> ResolveContext:
+    """Validate a :class:`ResolveContext`; raise :class:`SchemaError` if it is
+    malformed.
+
+    :func:`resolve` claims that every exit is a :class:`Selected` or one of five
+    declared refusals.  That claim was false for a *malformed* context:
+    ``identities=None`` leaked ``TypeError`` out of ``applicable``, bad condition
+    pairs leaked ``ValueError`` out of ``dict()``, and an unknown
+    ``identity_mode`` leaked nothing at all -- it just quietly meant strict.  The
+    claim now holds over well-formed contexts, and an ill-formed one is a
+    ``SchemaError`` before any of the five refusals can be reached.
+    """
+    if not isinstance(ctx, ResolveContext):
+        raise SchemaError(
+            f"context must be a ResolveContext, got {type(ctx).__name__}")
+    if not isinstance(ctx.identities, (frozenset, set)):
+        raise SchemaError(
+            f"context.identities must be a set, got {type(ctx.identities).__name__}")
+    for ident in ctx.identities:
+        if not isinstance(ident, str) or not ident:
+            raise SchemaError("context.identities entries must be non-empty strings")
+    _validate_conditions(ctx.conditions)
+    for name in ("host_id", "boot_id", "process_id", "attempt_id"):
+        value = getattr(ctx, name)
+        if value is not None and (not isinstance(value, str) or not value):
+            raise SchemaError(f"context.{name} must be a non-empty string or null")
+    if ctx.identity_mode not in IDENTITY_MODES:
+        raise SchemaError(
+            f"context.identity_mode {ctx.identity_mode!r} not in {list(IDENTITY_MODES)}")
+    return ctx
+
+
 def applicable(c: Candidate, ctx: ResolveContext) -> bool:
     """Pure predicate.  A candidate bound to another identity is **not
     demoted** -- its provenance is never rewritten; it is simply inapplicable
@@ -1328,7 +1649,7 @@ def current_pins(store: FactStore) -> Dict[str, str]:
     # forged record must now at least be well formed, uniquely sequenced and
     # *attributed*, and it is in the audit log either way.  The enforceable
     # boundary is the document, and I7 is what guards it.)
-    _validate_log(store)
+    _validate_log(store, {c.id: c for c in store.all_candidates()})
     latest: Dict[str, PinRecord] = {}
     for rec in store.resolutions:
         if rec.cls not in ("pin", "unpin"):
@@ -1360,19 +1681,44 @@ def contradiction_guard(key: str, pool: Sequence[Candidate], pins: Mapping[str, 
                 )
 
 
+def jointly_satisfiable(a: Candidate, b: Candidate) -> bool:
+    """Could one invocation find **both** candidates applicable?
+
+    Two candidates bound to different processes, different boots or
+    contradictory condition values can never both apply, so a disagreement
+    between them is not a conflict anybody can encounter -- reporting it as one
+    filled the log with pairs that no context could ever pit against each other.
+
+    Differing *identities* are **not** mutually exclusive: ``identity_mode
+    ="none"`` makes both applicable at once, which is exactly the hazard
+    :class:`ConflictClass.AMBIGUOUS_ACROSS_IDENTITIES` exists to name.
+    """
+    at_a, at_b = a.applies_to, b.applies_to
+    if at_a.scope is at_b.scope and at_a.scope in _BOUND_SCOPES \
+            and at_a.binding != at_b.binding:
+        return False
+    shared = at_a.conditions_map()
+    for name, value in at_b.conditions:
+        if name in shared and shared[name] != value:
+            return False
+    return True
+
+
 def classify_pair(a: Candidate, b: Candidate) -> Optional[ConflictClass]:
     """The **one** classifier, used by both :func:`resolve` and :func:`conflicts`.
 
     Factored out because two copies of an ordered partition drift, and a drifted
     partition is how a conflict ends up in two classes or none.  Ordered: the
-    first condition that holds wins, and the four cases are exhaustive over
-    differing-value pairs because :class:`Ordering` has exactly four members.
+    first condition that holds wins.
 
-    Returns ``None`` for a pair whose values agree -- those are agreements, not
-    conflicts.
+    Returns ``None`` exactly for a pair that is not a conflict: one that cannot
+    be jointly applicable, or one that genuinely :func:`agreeing`.  Equal values
+    across identities are **not** agreement and are no longer silently dropped.
     """
-    if canonical(a.value) == canonical(b.value):
+    if not jointly_satisfiable(a, b):
         return None
+    if canonical(a.value) == canonical(b.value):
+        return None if agreeing((a, b)) else ConflictClass.AMBIGUOUS_ACROSS_IDENTITIES
     if {a.provenance, b.provenance} == {Provenance.MEASURED, Provenance.ASSERTED}:
         return ConflictClass.CONTRADICTION_MEASURED_ASSERTED
     order = compare_specificity(a, b)
@@ -1381,6 +1727,20 @@ def classify_pair(a: Candidate, b: Candidate) -> Optional[ConflictClass]:
     if order is Ordering.INCOMPARABLE:
         return ConflictClass.INCOMPARABLE
     return ConflictClass.DOMINATED
+
+
+#: Which class ``resolve`` reports when a pool exhibits several.  Lower wins.
+#: It must cover every class :func:`classify_pair` can return, which
+#: ``test_resolve_priority_covers_every_classifiable_conflict`` checks -- the
+#: previous code fell through to a hard-coded ``INCOMPARABLE``, which would have
+#: mislabelled any class added later instead of failing.
+CONFLICT_PRIORITY: Dict[ConflictClass, int] = {
+    ConflictClass.CONTRADICTION_MEASURED_ASSERTED: 0,
+    ConflictClass.AMBIGUOUS_ACROSS_IDENTITIES: 1,
+    ConflictClass.INCOMPARABLE: 2,
+    ConflictClass.EQUALLY_SPECIFIC: 3,
+    ConflictClass.DOMINATED: 4,
+}
 
 
 def agreeing(candidates: Sequence[Candidate]) -> bool:
@@ -1402,6 +1762,12 @@ def resolve(store: FactStore, key: str, ctx: ResolveContext) -> Selected:
     never measured has no candidate, and the caller must handle that.
     """
     spec_for(key)  # unknown keys are a SchemaError, not an absence
+    validate_context(ctx)
+    # The store is validated on the way *out* as well as on the way in.  A
+    # malformed public list -- a forged log record, a hand-appended conflict --
+    # used to be honoured by resolution and only surfaced later from
+    # ``canonical_document``, i.e. nowhere near whatever put it there.
+    validate_store(store)
     pool = [c for c in store.active(key) if applicable(c, ctx)]
     pins = current_pins(store)
 
@@ -1433,15 +1799,13 @@ def resolve(store: FactStore, key: str, ctx: ResolveContext) -> Selected:
         # Every pair of maximal candidates is EQUAL or INCOMPARABLE -- if one
         # dominated the other the loser would not be maximal -- so DOMINATED is
         # unreachable here, and reporting it would have been a lie.
-        classes = {classify_pair(a, b) for a in winners for b in winners
-                   if a is not b}
+        classes = {classify_pair(a, b) for a, b in _pairwise(winners)}
         classes.discard(None)
-        for preferred in (ConflictClass.CONTRADICTION_MEASURED_ASSERTED,
-                          ConflictClass.INCOMPARABLE,
-                          ConflictClass.EQUALLY_SPECIFIC):
-            if preferred in classes:
-                raise FactUnresolved(key, winners, preferred)
-        raise FactUnresolved(key, winners, ConflictClass.INCOMPARABLE)
+        # ``winners`` is a maximal set that does not agree, so some pair differs
+        # in value or in identity, so ``classes`` is non-empty -- and every
+        # member is in ``CONFLICT_PRIORITY`` by the coverage test.  There is no
+        # fallback branch to be wrong.
+        raise FactUnresolved(key, winners, min(classes, key=CONFLICT_PRIORITY.__getitem__))
 
     # ``witnesses`` is the whole maximal set; ``witness`` is the representative.
     # It is well defined rather than arbitrary: past ``agreeing()`` every winner
@@ -1479,6 +1843,7 @@ def _pairwise(pool: Sequence[Candidate]) -> Iterator[Tuple[Candidate, Candidate]
 
 def conflicts(store: FactStore, ctx: ResolveContext) -> List[Conflict]:
     """Conflicts *in a given context* -- the resolve-time view."""
+    validate_context(ctx)
     out: List[Conflict] = []
     for key in store.keys():
         pool = [c for c in store.active(key) if applicable(c, ctx)]
@@ -1516,6 +1881,7 @@ def agreements(store: FactStore, ctx: ResolveContext) -> List[Agreement]:
     builds' ``0x401234`` as concurrence, which contradicted both ``agreeing()``
     and P19.
     """
+    validate_context(ctx)
     out: List[Agreement] = []
     for key in store.keys():
         pool = [c for c in store.active(key) if applicable(c, ctx)]
@@ -1564,6 +1930,7 @@ def is_stale(store: FactStore, c: Candidate, _seen: Optional[set] = None) -> boo
 
 
 def canonical_document(store: FactStore) -> str:
+    validate_store(store)
     facts = {}
     for key in store.keys():
         facts[key] = [
