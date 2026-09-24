@@ -983,6 +983,19 @@ def _default_jobs() -> int:
     return max(1, min(os.cpu_count() or 1, 8))
 
 
+def effective_jobs(requested: int, n_targets: int) -> int:
+    """The worker count the run will ACTUALLY use.
+
+    `requested <= 0` means "decide for me". The result is clamped to the number
+    of targets because run_targets() goes serial for a single target, and a
+    report.json claiming 8 workers for a 1-target run would misdescribe its own
+    provenance. Never returns less than 1, so a zero-target run still records a
+    sane value rather than 0.
+    """
+    want = requested if requested > 0 else _default_jobs()
+    return max(1, min(want, n_targets or 1))
+
+
 def run_targets(corpus: Corpus, targets: list[dict], timeout: float,
                 results_dir: Path, strict_attribution: bool, jobs: int) -> list[dict]:
     """Run targets, optionally in parallel, and return results in MANIFEST
@@ -1146,7 +1159,7 @@ def write_summary(results: list[dict], out_path: Path, timeout: float, corpus: C
         lines.append("  VOID is detected per run from the negative controls, the script")
         lines.append("  audit and the provisioning checks -- there is NO hardcoded")
         lines.append("  exclusion list, so a target that becomes benign-input-solvable in")
-        lines.append("  any future corpus is caught automatically. The four causes mean")
+        lines.append("  any future corpus is caught automatically. The causes mean")
         lines.append("  different things and need different responses:")
         for cause, meaning in VOID_CAUSES.items():
             lines.append(f"    {cause:<30} {meaning}")
@@ -1288,7 +1301,7 @@ def main():
     results_dir = corpus.results_root() / ts
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    jobs = args.jobs if args.jobs > 0 else min(len(targets), _default_jobs())
+    jobs = effective_jobs(args.jobs, len(targets))
     with corpus_lock(corpus):
         results = run_targets(corpus, targets, args.timeout, results_dir,
                               strict_attribution=args.strict_attribution,
@@ -1299,6 +1312,12 @@ def main():
         "timeout": args.timeout,
         "corpus_root": str(corpus.root),
         "manifest": str(corpus.manifest),
+        # Provenance: both of these change what a verdict MEANS, so a report
+        # that omits them cannot be compared against another report.
+        # strict_attribution decides whether an unwitnessed success scores at
+        # all, and jobs is the scheduling shape the run actually used.
+        "jobs": jobs,
+        "strict_attribution": bool(args.strict_attribution),
         "targets_run": [t["slug"] for t in targets],
         "results": results,
     }

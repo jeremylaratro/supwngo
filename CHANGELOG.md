@@ -89,6 +89,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   12, 14, 15), which randomizing `-DFLAG` does **not** fix because the random flag is still
   compiled into `.rodata`. Recommends having `win()` read `flag.txt` at runtime.
 
+### Fixed
+- `benchmark/run_bench.py`'s `report.json` now records `strict_attribution` and
+  `jobs` — the worker count the run *actually used*, clamped to the target count,
+  since `run_targets()` goes serial for a single target and a report claiming 8
+  workers for a 1-target run would misdescribe its own provenance. Both settings
+  change what a verdict *means* — `strict_attribution`
+  decides whether an unwitnessed success scores at all, and `jobs` is the
+  scheduling shape the run used — so a report omitting them could not be
+  compared against another report. Found by exercising `--corpus-root` end to
+  end against an alternate corpus; a test now asserts the report carries every
+  setting that affects interpretation.
+- `benchmark/build_all.sh`'s fail-closed message for a target with no `cflags`
+  file cited README rule R8; the rule is R9. The message is what an operator
+  reads when a build refuses to guess protections, so the wrong pointer sends
+  them to the wrong rule.
+- `benchmark/run_bench.py`'s VOID-cause legend said "The four causes" while
+  listing seven.
+
 ### Security
 - **`benchmark/run_bench.py` could report `SUCCESS` without any exploitation
   having occurred, invalidating the `2/15` Phase-1 baseline.** Two

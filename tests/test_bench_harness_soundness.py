@@ -225,6 +225,35 @@ class TestCorpusParameterisation:
     def test_binary_name_strips_numeric_prefix(self):
         assert rb.Corpus.binary_name("07_ret2libc_leak") == "ret2libc_leak"
 
+    def test_report_records_the_settings_that_change_a_verdicts_meaning(self):
+        """A report that omits these cannot be compared against another report.
+
+        `strict_attribution` decides whether an unwitnessed success scores at
+        all, and `jobs` is the scheduling shape the run used -- two runs of the
+        same corpus that differ in either are not the same experiment. Found
+        during the R4 plumbing check, where a report gave no way to tell.
+        """
+        import ast
+
+        tree = ast.parse(RUN_BENCH.read_text())
+        main = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef) and n.name == "main")
+        keys: set[str] = set()
+        for node in ast.walk(main):
+            if isinstance(node, ast.Dict):
+                got = {k.value for k in node.keys
+                       if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+                if "corpus_root" in got and "results" in got:
+                    keys = got
+                    break
+        assert keys, "could not find main()'s report dict"
+        for required in ("jobs", "strict_attribution", "corpus_root", "manifest",
+                         "timeout", "targets_run"):
+            assert required in keys, (
+                f"report.json omits {required!r}; a run artifact must record the "
+                f"settings that change what its verdicts mean"
+            )
+
 
 class TestVoidIsDetectedNotHardcoded:
     """VOID must come from measurement, so a benign-input-solvable target in
@@ -515,6 +544,22 @@ class TestParallelSchedulingIntegrity:
 
     TARGETS = [{"slug": f"{i:02d}_t", "technique": "x", "difficulty": "easy"}
                for i in range(1, 8)]
+
+    def test_recorded_job_count_describes_what_the_run_did(self):
+        """`jobs` in report.json must describe the run, not the request.
+
+        run_targets() goes serial for a single target, so recording a requested
+        8 for a 1-target run would misdescribe the artifact's own provenance.
+        """
+        assert rb.effective_jobs(8, 1) == 1, "1 target is a serial run"
+        assert rb.effective_jobs(3, 1) == 1
+        assert rb.effective_jobs(3, 15) == 3, "an explicit request is honoured"
+        assert rb.effective_jobs(1, 15) == 1
+        assert rb.effective_jobs(99, 15) == 15, "never more workers than targets"
+        # requested <= 0 means "decide for me", and must still be clamped.
+        assert rb.effective_jobs(0, 15) == min(rb._default_jobs(), 15)
+        assert rb.effective_jobs(0, 1) == 1
+        assert rb.effective_jobs(0, 0) >= 1, "never zero workers"
 
     def _fake_run_one(self, monkeypatch, behaviour):
         seen = []
