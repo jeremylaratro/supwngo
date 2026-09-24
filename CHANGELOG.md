@@ -151,3 +151,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   updated to demonstrate the tightened contract (a loose `"uid=0(root)"` match
   alone no longer yields SUCCESS; supplying and echoing back a receipt token
   does). Part of Phase 3 of `docs/plans/2026-09-23-effectiveness-and-usability.md`.
+
+### Added
+- `supwngo/exploit/pipeline/leak_stage.py`'s `acquire_leaks(context)` extension
+  point — previously a documented no-op for `needs_leak` targets — now drives the
+  repaired `AutoLeakFinder` (see above) as its real implementation: local-only,
+  discovers the buffer offset via the same GDB cyclic-pattern probe every other
+  native executor uses when `context.offset` isn't already known, and stores a
+  recovered libc base on `context.leaks['libc']`/`context.libc.base`.
+- `supwngo/exploit/rop/chain.py`'s `ROPChainBuilder.call_function` gained an
+  optional fallback (`_call_function_via_z3`) to the repaired
+  `Z3ROPSolver.solve_call` (see above) for when its own simple per-register
+  gadget lookup is incomplete — a documented pre-existing bug where a missing
+  `pop <reg>; ret` gadget was silently skipped rather than failing the chain,
+  leaving that argument register unset. The fallback is lazy/optional (safe when
+  `z3` isn't installed) and only engages when the primary lookup was actually
+  incomplete; if it also can't find a chain, the original (still-documented-
+  incomplete) chain is returned rather than raising, preserving the method's
+  existing best-effort contract.
+- `supwngo/exploit/pipeline/verifier.py`'s `PipelineVerifier` gained
+  `verify_via_tester()`, wiring the now-tightened `ExploitTester` (see above) in
+  as an available, **non-default** local/docker/remote verification backend
+  alongside `verification.ExploitVerifier` — for callers that already have a full
+  generated exploit script and want to test it end-to-end (optionally in Docker
+  against a specific libc, or against a real remote target) rather than driving a
+  raw payload/tube directly via `verify_payload`/`verify_shell`. No native
+  pipeline executor calls it automatically; module docstring updated to reflect
+  the new verifier composition. Part of Phase 3 of
+  `docs/plans/2026-09-23-effectiveness-and-usability.md`.
