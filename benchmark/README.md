@@ -132,6 +132,21 @@ the secret inside its binary image — see "Known limitation" below. **Prefer
 designing new targets to print the *contents of* `flag.txt` rather than a
 compiled-in literal**, which removes that exposure entirely.
 
+**Do the read once at startup, immediately after `setvbuf()` — never lazily
+inside `win()`.** `fopen`/`getline`/`fclose` allocate, and on a heap target
+those allocations land in the same tcache bins the intended exploit grooms. A
+read that happens after the exploit has arranged the heap can perturb the exact
+state the exploit depends on, changing the target's difficulty with no signal
+that it moved. Reading before any allocation the exploit cares about keeps the
+flag out of the binary *and* keeps the measurement stable. This placement is
+load-bearing for allocation-sensitive targets; treat it as part of R4, not a
+style preference.
+
+Whenever you change an existing target this way, the acceptance criterion is
+**"the reference exploit still passes"**, not merely "the scrape probe now
+fails". A target whose scrape is closed but whose intended exploit broke is a
+worse outcome than the defect you fixed.
+
 ### R5 — Gitignore
 
 Never commit binaries, `flag.txt`, run output, or the harness lock:
@@ -354,24 +369,85 @@ fails fast rather than letting two runs corrupt each other.
    audit, and head+tail excerpts of the verification `stdout`/`stderr`) and a
    human-readable `summary.txt`.
 
-### Known limitation
+### Behavioural attribution — who wrote the flag
 
-Verification is **not sandboxed** — the generated script runs as the same
-user, so it can read `flag.txt` and the binary image. For the 9 win()-style
-targets the secret is necessarily compiled into the binary, so a script could
-scrape it rather than exploit. Step 5 is a heuristic backstop, not a proof;
-each result records
-`negative_control.flag_statically_extractable_from_binary` so `SUCCESS` on
-those targets carries the caveat explicitly. Closing it properly would mean
-having `win()` print the *contents of* `flag.txt` instead of a compiled-in
-literal — a corpus change, deliberately out of scope here.
+A flag string in the output is a *proxy* for exploitation. Every
+false-positive channel this harness has suffered lived in the gap between the
+proxy and the thing, and the pattern audit (step 5) can never fully close it,
+because verification is not sandboxed and a string-built path or directory walk
+is out of reach of any regex — `soundness_probes/pure_python_scrape.py` defeats
+it in four lines.
+
+So the harness no longer asks *whether* the flag appeared. It asks **who wrote
+it**. `benchmark/attribution.py` re-executes the script under `strace -f`,
+reconstructs the process tree from `execve`/`clone`/`write`, and credits a
+`SUCCESS` only if the flag was written by the **target process or a descendant
+of it** — the target's own `win()`, or `cat` running under a shell the exploit
+obtained. A write by the script, or by a child of the script, is not credited.
+
+That closes `cat flag.txt`, `open()`, `glob`, `strings` and `ELF.search` in one
+move, including variants nobody has enumerated, because none of them route
+through the target's address space. Measured on the real corpus:
+
+| probe | string match | attribution |
+| --- | --- | --- |
+| `real_exploit_15.py` (genuine ret2win) | flag found | **credited** — `win_function` wrote it |
+| `real_exploit_02*.py` (genuine ret2plt) | flag found | **credited** — `cat` under the obtained shell |
+| `pure_python_scrape.py` | flag found | **not credited** |
+| `hardcoded_flag.py` | flag found | **not credited** |
+
+How to read a result:
+
+- **`BEHAVIOURALLY ATTRIBUTED`** — the exploitation event was observed. Strong.
+- **`VOID` / `script_gamed_the_check`** — we *watched* the script obtain the
+  flag without exploiting. A finding about supwngo, not a guess.
+- **`UNWITNESSED`** — no usable witness (no `strace`, or ptrace denied), so the
+  result falls back to string match plus the bypassable pattern audit and says
+  so. A missing witness is never treated as a negative one.
+  `--strict-attribution` refuses to score these at all.
+
+`summary.txt` always breaks the successes into witnessed and unwitnessed, so
+**quote both numbers.** A run on a box without `strace` says so explicitly.
+
+Residual gap, stated plainly: a script could still deliberately write the flag
+into the target's own output channel. That takes real effort rather than a
+shortcut, and `shell_exec_by_target` corroborates the six shell-based targets
+independently, but it is not structurally prevented. Witnessing the target's
+control flow directly (a breakpoint on `win()`) would close it.
+
+### Run time
+
+Targets run in parallel — one worker per core, capped at 8
+(`--jobs N`, `--jobs 1` to force serial). Each target is confined to its own
+directory and gets a private `TMPDIR`, and results are reported in **manifest
+order regardless of completion order**, so a parallel run and a serial run
+produce the same report. A crash or hang in one target cannot alter another's
+verdict: it becomes a `harness_error` `VOID`, which is *fatal* and withholds
+the whole run's rate rather than quietly shrinking the denominator.
+
+Builds are deliberately **not** cached. `gcc` on a single small C file is
+milliseconds against ~2 minutes of `autopwn` per target, so caching would save
+under 1% while risking the thing that matters most: for the win()-style targets
+the flag is compiled in, so a cached binary would carry a **stale flag** and
+silently break per-run flag rotation.
 
 ### Re-checking the harness itself
 
 `benchmark/soundness_probes/` holds the adversarial probes behind the audit:
-three non-exploiting scripts that must never score `SUCCESS`, and two genuine
-hand-written ret2plt exploits (in `io.interactive()` and explicit-`sendline`
-shapes) that must never be lost to buffering or the anti-gaming checks.
+four non-exploiting scripts that must never be credited, and genuine
+hand-written exploits for both target families — `real_exploit_02.py` /
+`real_exploit_02_explicit.py` (shell-obtaining, in `io.interactive()` and
+explicit-`sendline` shapes) and `real_exploit_15.py` (ret2win) — which must
+never be lost to buffering or to the anti-gaming checks.
+
+```bash
+# does any target hand out its flag to benign input, or scrape from .rodata?
+python3 benchmark/soundness_probes/negative_control_sweep.py
+
+# does attribution credit real exploits and reject scrapes? (exits non-zero if not)
+python3 benchmark/soundness_probes/attribution_sweep.py
+```
+
 Pure-logic regressions live in `tests/test_bench_harness_soundness.py`.
 
 ## The 15 targets

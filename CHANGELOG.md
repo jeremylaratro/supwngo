@@ -116,16 +116,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `ELF(b).search(b'FLAG{')`). The known forms are closed, but verification
     is not sandboxed and the audit is a **bypassable heuristic, not a proof**.
     `SUCCESS` means "the script produced this run's secret and tripped no known
-    cheat pattern". The robust fix is behavioural attribution — assert via
-    ptrace/`strace`/`LD_PRELOAD` that the target process entered `win()` or
-    `execve`d a shell — which would remove the need for secret flags, `-DFLAG`
-    and these regexes entirely. Recommended next step.
+    cheat pattern". **This is now fixed at the root by behavioural attribution
+    (see `benchmark/attribution.py` under Added): a `SUCCESS` requires the flag
+    to have been written by the target's own process tree, so the pattern audit
+    is no longer the thing standing between a scrape and a score.** The audit
+    remains only as a fallback for hosts without `strace`, where results are
+    explicitly labelled `UNWITNESSED`.
 - A `provisioning_failed` `VOID` now **withholds the success rate entirely**
   (`RATE WITHHELD`, raw counts only) instead of printing a rate under a warning
   banner. Because any `VOID` shrinks the denominator, a build/infra fault would
   otherwise read as a score *improvement*.
 
 ### Added
+- **`benchmark/attribution.py` — behavioural attribution. A `SUCCESS` now
+  requires observing the exploitation event, not inferring it from a string.**
+  This is the root fix for the whole class of false positives above: the flag
+  string was a *proxy* for exploitation, and every channel found lived in the
+  gap between the proxy and the thing. The harness no longer asks whether the
+  flag appeared, it asks **who wrote it** — the script is re-executed under
+  `strace -f`, the process tree is reconstructed from `execve`/`clone`/`write`,
+  and a `SUCCESS` is credited only if the flag was written by the **target
+  process or a descendant of it** (the target's own `win()`, or `cat` under a
+  shell the exploit obtained). A write by the script, or by a child of the
+  script, is not credited.
+  - Closes `cat flag.txt`, `open('flag'+'.txt')`, `glob`, `strings` and
+    `ELF.search` **in one move**, including variants nobody has enumerated,
+    because none of them route the bytes through the target's address space.
+    Notably it closes `pure_python_scrape.py`, which no regex can catch and
+    which was documented as an open hole in the previous release note.
+  - A missing witness is **not** a negative witness: no `strace` or denied
+    ptrace yields `inconclusive`, the result falls back to the old string-match
+    path, and it is labelled `UNWITNESSED`. `summary.txt` always reports
+    witnessed and unwitnessed successes separately and says outright when
+    `strace` is absent, so both numbers can be quoted.
+  - `--strict-attribution` changed meaning accordingly: it now requires a
+    behavioural witness for every `SUCCESS` (`VOID`/`unwitnessed_success`),
+    replacing the previous "VOID anything scrapeable". Scrapeability survives
+    only as a severity note on the unwitnessed fallback path — it is no longer
+    load-bearing, because a scrapeable `.rodata` literal can no longer score.
+  - Verified with `benchmark/soundness_probes/attribution_sweep.py` (exits
+    non-zero on any discrepancy): all four non-exploiting probes are rejected
+    and genuine exploits for **both** target families are credited — the two
+    `ret2plt` shapes on `02_ret2plt_system` (with `shell_exec_by_target` as a
+    behavioural shell witness, replacing the fakeable `echo $((6*7))` marker)
+    and a new `real_exploit_15.py` ret2win on `15_win_function`.
+  - Residual gap, stated rather than papered over: a script could deliberately
+    write the flag into the target's own output channel. That takes real effort
+    rather than a shortcut, but it is not structurally prevented; witnessing the
+    target's control flow directly (a breakpoint on `win()`) would close it.
+- **`benchmark/run_bench.py --jobs/-j`: targets now run in parallel**, one
+  worker per core capped at 8 (`--jobs 1` forces the old serial behaviour).
+  A full 15-target run was the rate limiter on the whole project at roughly 28
+  minutes serial. Integrity is preserved deliberately over raw speed:
+  - Results are reported in **manifest order regardless of completion order**,
+    so a parallel run and a serial run produce the same report.
+  - Each target is confined to its own directory and gets a private `TMPDIR`;
+    `~/.supwngo/libcs` stays shared on purpose (a read-mostly download cache
+    keyed by distinct filenames — isolating it would make several targets
+    re-fetch libc over the network, trading a real flakiness risk for a
+    theoretical one). `autopwn` does not touch the SQLite database that would
+    otherwise be shared state.
+  - A crash or hang in one target **cannot** alter another's verdict: it becomes
+    a `harness_error` `VOID`, which is *fatal* and withholds the whole run's
+    rate rather than quietly shrinking the denominator and reading as a score
+    improvement.
+  - Per-step logging is buffered per target and flushed as one block, so
+    interleaved workers cannot splice misleading log lines.
+  - Build caching was considered and **rejected**: `gcc` on one small C file is
+    milliseconds against ~2 minutes of `autopwn` per target, so it would save
+    under 1% while risking the thing that matters — the win()-style targets
+    compile the flag in, so a cached binary would carry a stale flag and
+    silently break per-run flag rotation.
 - `benchmark/run_bench.py` gained `--corpus-root` and `--manifest`, defaulting
   to `benchmark/corpus/` and `benchmark/corpus.yaml`, so later rounds
   following the `benchmark/corpus_r<N>/` + `benchmark/corpus_r<N>.yaml`

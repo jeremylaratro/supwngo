@@ -8,6 +8,7 @@ live in benchmark/soundness_probes/.
 """
 import importlib.util
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -392,29 +393,15 @@ class TestScrapeChannels:
             {"flag_scrapeable_without_exploit": [],
              "flag_statically_extractable_from_binary": False}) == []
 
-    def test_strict_attribution_voids_a_scrapeable_target(self):
+    def test_scrapeability_is_reported_on_the_unwitnessed_path(self):
+        """Scrapeability no longer decides anything by itself -- behavioural
+        attribution does. It survives as a severity note on the fallback path."""
         control = {"flag_leaked_without_exploit": [],
                    "flag_scrapeable_without_exploit": ["strings_output"]}
-        status, reason, cause = rb.classify(None, FLAG_FOUND, control,
-                                            CLEAN_AUDIT, strict_attribution=True)
-        assert status == "VOID"
-        assert cause == "corpus_flag_is_scrapeable"
-        assert "strings" in reason
-
-    def test_strict_attribution_leaves_clean_targets_alone(self):
-        control = {"flag_leaked_without_exploit": [],
-                   "flag_scrapeable_without_exploit": []}
-        status, _r, _c = rb.classify(None, FLAG_FOUND, control, CLEAN_AUDIT,
-                                     strict_attribution=True)
+        status, reason, _c = rb.classify(None, FLAG_FOUND, control, CLEAN_AUDIT)
         assert status == "SUCCESS"
-
-    def test_strict_attribution_is_off_by_default(self):
-        """Default-on would exclude every win()-style target, which must
-        compile its flag in -- that is a corpus fix, not a scoring change."""
-        control = {"flag_leaked_without_exploit": [],
-                   "flag_scrapeable_without_exploit": ["strings_output"]}
-        status, _r, _c = rb.classify(None, FLAG_FOUND, control, CLEAN_AUDIT)
-        assert status == "SUCCESS"
+        assert "UNWITNESSED" in reason
+        assert "strings_output" in reason
 
 
 class TestAttributionStrengthIsReported:
@@ -427,52 +414,186 @@ class TestAttributionStrengthIsReported:
     STRONG = {"flag_leaked_without_exploit": [],
               "flag_statically_extractable_from_binary": False}
 
-    def test_weak_attribution_is_flagged_in_the_reason(self):
-        status, reason, _c = rb.classify(None, FLAG_FOUND, self.WEAK, CLEAN_AUDIT)
+    WITNESSED = {"available": True, "flag_disclosed_by_target": True,
+                 "flag_in_output": True, "target_observed": True,
+                 "shell_proven": False,
+                 "credited_writers": [{"pid": 42, "chain": "42:win_function <- 7:python3"}],
+                 "uncredited_writers": []}
+    NOT_CREDITED = {"available": True, "flag_disclosed_by_target": False,
+                    "flag_in_output": True, "target_observed": True,
+                    "shell_proven": False, "credited_writers": [],
+                    "uncredited_writers": [{"pid": 7, "chain": "7:python3"}]}
+    NO_WITNESS = {"available": False, "unavailable_reason": "strace is not installed"}
+
+    def test_witnessed_success_says_so_and_carries_no_caveat(self):
+        status, reason, cause = rb.classify(
+            None, FLAG_FOUND, self.WEAK, CLEAN_AUDIT, attribution=self.WITNESSED)
+        assert status == "SUCCESS" and cause is None
+        assert "BEHAVIOURALLY ATTRIBUTED" in reason
+        assert "UNWITNESSED" not in reason
+
+    def test_a_witness_overrides_scrapeability(self):
+        """The whole point: once we have watched the target disclose the flag,
+        the fact that the flag is ALSO scrapeable stops mattering."""
+        status, reason, _c = rb.classify(
+            None, FLAG_FOUND, self.WEAK, CLEAN_AUDIT, attribution=self.WITNESSED)
         assert status == "SUCCESS"
-        assert "WEAK ATTRIBUTION" in reason
+        assert "scrapeable" not in reason
 
-    def test_strong_attribution_carries_no_caveat(self):
-        status, reason, _c = rb.classify(None, FLAG_FOUND, self.STRONG, CLEAN_AUDIT)
-        assert status == "SUCCESS"
-        assert "WEAK ATTRIBUTION" not in reason
+    def test_not_credited_is_void_and_blames_the_script(self):
+        status, reason, cause = rb.classify(
+            None, FLAG_FOUND, self.WEAK, CLEAN_AUDIT, attribution=self.NOT_CREDITED)
+        assert status == "VOID"
+        assert cause == "script_gamed_the_check"
+        assert "WITHOUT exploiting" in reason
 
-    def test_weak_attribution_does_not_change_the_score(self):
-        """It is a caveat, not a downgrade: a scrapeable flag is inherent to
-        win()-style targets, so voiding them would gut the corpus and conflate
-        'weakly attributed' with 'unmeasurable'."""
-        for control in (self.WEAK, self.STRONG):
-            status, _r, cause = rb.classify(None, FLAG_FOUND, control, CLEAN_AUDIT)
-            assert status == "SUCCESS" and cause is None
+    def test_a_witness_overrides_a_clean_pattern_audit(self):
+        """pure_python_scrape.py passes every regex. The witness must still
+        reject it -- that is the hole behavioural attribution exists to close."""
+        status, _r, cause = rb.classify(
+            None, FLAG_FOUND, self.WEAK, CLEAN_AUDIT, attribution=self.NOT_CREDITED)
+        assert status == "VOID" and cause == "script_gamed_the_check"
 
-    def test_summary_separates_weak_from_strong_successes(self, tmp_path):
+    def test_missing_witness_falls_back_and_is_labelled(self):
+        """A missing witness is NOT a negative witness."""
+        status, reason, cause = rb.classify(
+            None, FLAG_FOUND, self.STRONG, CLEAN_AUDIT, attribution=self.NO_WITNESS)
+        assert status == "SUCCESS" and cause is None
+        assert "UNWITNESSED" in reason
+        assert "strace is not installed" in reason
+
+    def test_strict_attribution_voids_an_unwitnessed_success(self):
+        status, reason, cause = rb.classify(
+            None, FLAG_FOUND, self.STRONG, CLEAN_AUDIT,
+            attribution=self.NO_WITNESS, strict_attribution=True)
+        assert status == "VOID"
+        assert cause == "unwitnessed_success"
+        assert "--strict-attribution" in reason
+
+    def test_strict_attribution_keeps_witnessed_successes(self):
+        status, _r, cause = rb.classify(
+            None, FLAG_FOUND, self.WEAK, CLEAN_AUDIT,
+            attribution=self.WITNESSED, strict_attribution=True)
+        assert status == "SUCCESS" and cause is None
+
+    def test_a_cheating_script_that_produced_nothing_still_just_fails(self):
+        """Attribution must not turn a plain failure into a VOID and shrink
+        the denominator."""
+        status, _r, cause = rb.classify(
+            {"success": False}, NO_FLAG, self.WEAK,
+            dict(CLEAN_AUDIT, reads_flag_file_directly=True),
+            attribution={"available": True, "flag_in_output": False,
+                         "flag_disclosed_by_target": False,
+                         "target_observed": True})
+        assert status == "FAILED" and cause is None
+
+    def test_summary_separates_witnessed_from_unwitnessed(self, tmp_path):
         results = [
             {"slug": "15_win_function", "difficulty": "easy", "status": "SUCCESS",
              "reason": "ok", "verification": {"shell_proven": False},
-             "negative_control": self.WEAK},
+             "negative_control": self.WEAK, "attribution": self.WITNESSED},
             {"slug": "02_ret2plt_system", "difficulty": "medium",
              "status": "SUCCESS", "reason": "ok",
              "verification": {"shell_proven": True},
-             "negative_control": self.STRONG},
+             "negative_control": self.STRONG, "attribution": self.NO_WITNESS},
         ]
         text = rb.write_summary(results, tmp_path / "s.txt", 12.0,
                                 rb.Corpus(root=rb.DEFAULT_CORPUS_DIR,
                                           manifest=rb.DEFAULT_CORPUS_YAML))
-        assert "WEAKLY attributed" in text
-        assert "1 of 2 SUCCESS" in text
-        # the weak one is named, and the strong one is named as strong
-        assert "- 15_win_function:" in text
-        assert "Strongly attributed" in text and "02_ret2plt_system" in text
+        assert "1 behaviourally witnessed, 1 unwitnessed" in text
+        assert "WITNESSED    15_win_function" in text
+        assert "UNWITNESSED  02_ret2plt_system" in text
+        assert "--strict-attribution" in text
+        # the credited write chain is shown, so the claim is checkable
+        assert "42:win_function <- 7:python3" in text
 
-    def test_summary_omits_the_block_when_all_successes_are_strong(self, tmp_path):
-        results = [{"slug": "02_ret2plt_system", "difficulty": "medium",
-                    "status": "SUCCESS", "reason": "ok",
-                    "verification": {"shell_proven": True},
-                    "negative_control": self.STRONG}]
-        text = rb.write_summary(results, tmp_path / "s.txt", 12.0,
-                                rb.Corpus(root=rb.DEFAULT_CORPUS_DIR,
-                                          manifest=rb.DEFAULT_CORPUS_YAML))
-        assert "WEAKLY attributed" not in text
+
+class TestParallelSchedulingIntegrity:
+    """Speed must never cost result integrity: results stay in manifest order,
+    one target's crash cannot alter another's verdict, and a harness fault is
+    loud rather than a silent denominator shrink."""
+
+    TARGETS = [{"slug": f"{i:02d}_t", "technique": "x", "difficulty": "easy"}
+               for i in range(1, 8)]
+
+    def _fake_run_one(self, monkeypatch, behaviour):
+        seen = []
+
+        def fake(corpus, target, timeout, results_dir, strict_attribution=False,
+                 tmpdir=None, echo=True):
+            seen.append((target["slug"], tmpdir))
+            return behaviour(target, tmpdir)
+
+        monkeypatch.setattr(rb, "run_one", fake)
+        return seen
+
+    def test_results_come_back_in_manifest_order(self, monkeypatch, tmp_path):
+        """Completion order under parallelism is nondeterministic; the report
+        must not be."""
+        import random
+
+        def behaviour(target, tmpdir):
+            time.sleep(random.uniform(0, 0.05))
+            return {"slug": target["slug"], "status": "FAILED", "reason": "x",
+                    "difficulty": "easy"}
+
+        self._fake_run_one(monkeypatch, behaviour)
+        out = rb.run_targets(None, self.TARGETS, 1.0, tmp_path,
+                             strict_attribution=False, jobs=4)
+        assert [r["slug"] for r in out] == [t["slug"] for t in self.TARGETS]
+
+    def test_each_target_gets_a_private_tmpdir(self, monkeypatch, tmp_path):
+        seen = self._fake_run_one(
+            monkeypatch,
+            lambda t, d: {"slug": t["slug"], "status": "FAILED", "reason": "x",
+                          "difficulty": "easy"})
+        rb.run_targets(None, self.TARGETS, 1.0, tmp_path,
+                       strict_attribution=False, jobs=4)
+        dirs = [d for _s, d in seen]
+        assert all(d is not None for d in dirs)
+        assert len(set(map(str, dirs))) == len(self.TARGETS), "tmpdirs collided"
+        assert all(Path(d).is_dir() for d in dirs)
+
+    def test_one_target_crashing_does_not_affect_the_others(self, monkeypatch, tmp_path):
+        def behaviour(target, tmpdir):
+            if target["slug"] == "03_t":
+                raise RuntimeError("boom")
+            return {"slug": target["slug"], "status": "FAILED", "reason": "x",
+                    "difficulty": "easy"}
+
+        self._fake_run_one(monkeypatch, behaviour)
+        out = rb.run_targets(None, self.TARGETS, 1.0, tmp_path,
+                             strict_attribution=False, jobs=4)
+        assert len(out) == len(self.TARGETS)
+        crashed = [r for r in out if r["slug"] == "03_t"][0]
+        assert crashed["status"] == "VOID"
+        assert crashed["void_cause"] == "harness_error"
+        assert all(r["status"] == "FAILED" for r in out if r["slug"] != "03_t")
+
+    def test_a_harness_error_is_fatal_and_withholds_the_score(self):
+        """An instrument fault must not read as a score change -- it removes a
+        target from the denominator, which would push the rate UP."""
+        assert "harness_error" in rb.FATAL_VOID_CAUSES
+        assert "harness_error" in rb.VOID_CAUSES
+
+    def test_serial_and_parallel_agree(self, monkeypatch, tmp_path):
+        def behaviour(target, tmpdir):
+            return {"slug": target["slug"],
+                    "status": "SUCCESS" if target["slug"] == "02_t" else "FAILED",
+                    "reason": "x", "difficulty": "easy"}
+
+        self._fake_run_one(monkeypatch, behaviour)
+        serial = rb.run_targets(None, self.TARGETS, 1.0, tmp_path / "a",
+                                strict_attribution=False, jobs=1)
+        parallel = rb.run_targets(None, self.TARGETS, 1.0, tmp_path / "b",
+                                  strict_attribution=False, jobs=5)
+        assert [(r["slug"], r["status"]) for r in serial] == \
+               [(r["slug"], r["status"]) for r in parallel]
+
+    def test_default_job_count_is_bounded(self):
+        """angr will happily exhaust memory, so the default is capped rather
+        than 'however many cores this box has'."""
+        assert 1 <= rb._default_jobs() <= 8
 
 
 class TestExcerpt:

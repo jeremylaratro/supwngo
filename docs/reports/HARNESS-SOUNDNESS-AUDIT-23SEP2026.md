@@ -3,7 +3,9 @@
 **Date:** 23 Sep 2026
 **Auditor branch:** `fix/benchmark-harness-soundness-20260923` (off `integration/phases-0-4-7-20260923`)
 **Subject:** the Phase-1 measurement instrument — `benchmark/run_bench.py` + `benchmark/build_all.sh`
-**Verdict:** **the harness was UNSOUND. The 2/15 (13.3%) baseline in `docs/reports/PHASE1-BASELINE-24SEP2026.md` does not stand.** Corrected baseline: **1/13 (7.7%)**, and that single SUCCESS is weakly attributed.
+**Verdict:** **the harness was UNSOUND. The 2/15 (13.3%) baseline in `docs/reports/PHASE1-BASELINE-24SEP2026.md` does not stand.** Corrected baseline: **1/13 (7.7%)**.
+
+**Root fix landed:** SUCCESS is no longer inferred from a flag string appearing. It now requires a **behavioural witness** — the flag must have been written by the target's own process tree. See "The root fix" below; the one surviving SUCCESS (`15_win_function`) is now *evidenced* rather than *inferred*.
 
 ---
 
@@ -368,7 +370,75 @@ above), so they are genuine tool gaps rather than instrument artifacts.
 
 ---
 
-## Residual limitation (honest disclosure)
+## The root fix: behavioural attribution
+
+Everything above is a symptom of one root cause: **the flag string was a proxy
+for exploitation rather than evidence of it.** Each fix closed a channel; none
+closed the class, and the pattern audit never could, because verification is
+unsandboxed and a string-built path is beyond any regex.
+
+So the harness stopped asking *whether* the flag appeared and started asking
+**who wrote it**. `benchmark/attribution.py` re-executes the script under
+`strace -f`, reconstructs the process tree from `execve`/`clone`/`write`, and
+credits a SUCCESS only when the flag was written by the **target process or a
+descendant of it**.
+
+Why that is the right cut: the script's stdout is a shared channel it may write
+anything into, but the `write(2)` that first put those bytes into the world
+belongs to exactly one process, with one lineage. `cat flag.txt`, `open()`,
+`glob`, `strings` and `ELF.search` all place the script (or a child of the
+script) at the end of that lineage. Only genuine exploitation routes the bytes
+through the target's address space.
+
+Measured, on the real corpus with fresh secrets
+(`benchmark/soundness_probes/attribution_sweep.py`, exits non-zero on any
+discrepancy — currently `FAILURES: 0`):
+
+```
+02_ret2plt_system   flag_in_binary=False
+  [NO-EXPLOIT] pure_python_scrape.py       string_match=False -> no_flag
+  [GENUINE   ] real_exploit_02.py          string_match=True  -> credited  shell=True
+  [GENUINE   ] real_exploit_02_explicit.py string_match=True  -> credited  shell=True
+15_win_function     flag_in_binary=True
+  [NO-EXPLOIT] hardcoded_flag.py           string_match=True  -> not_credited
+  [NO-EXPLOIT] pure_python_scrape.py       string_match=True  -> not_credited   <-- the hole, closed
+  [GENUINE   ] real_exploit_15.py          string_match=True  -> credited
+```
+
+The `pure_python_scrape.py` row is the point. Under string matching it is a
+SUCCESS and no regex can stop it; under attribution it is `not_credited`
+because the script, not the target, wrote the bytes.
+
+And on a live harness run, `15_win_function`'s SUCCESS is now backed by an
+observation rather than an inference:
+
+```
+EVIDENCE FOR THE 1 SUCCESS(es) -- 1 behaviourally witnessed, 0 unwitnessed:
+  WITNESSED    15_win_function: flag written by 379951:win_function <- 379794:python3.11
+```
+
+Three properties that keep this honest:
+
+- **A missing witness is not a negative witness.** No `strace`, or ptrace
+  denied, yields `inconclusive`; the result falls back to the old string-match
+  path and is labelled `UNWITNESSED`. `summary.txt` always reports witnessed
+  and unwitnessed counts separately, and says so outright when `strace` is
+  absent. `--strict-attribution` refuses to score unwitnessed successes at all.
+- **A witness overrides the pattern audit in both directions** — it both
+  rescues a legitimate `sendline(b'cat flag.txt')` and rejects a scrape the
+  regexes cleared.
+- **Scrapeability stops being load-bearing.** It survives only as a severity
+  note on the unwitnessed fallback path. This is also why the R8 corpus change
+  (having `win()` read `flag.txt`) became *less* urgent: a scrapeable
+  `.rodata` literal is no longer sufficient to score.
+
+Residual gap: a script could deliberately write the flag into the target's own
+output channel. That requires real effort rather than a shortcut, and
+`shell_exec_by_target` corroborates the six shell-based targets independently,
+but it is not structurally prevented. Witnessing the target's control flow
+directly (a breakpoint on `win()`) would close it.
+
+## Residual limitation (superseded in part — read the section above first)
 
 Verification is **not sandboxed**: the generated script runs as the same user,
 so it *can* read `flag.txt` and the binary image. For the 9 win()-style
@@ -391,10 +461,43 @@ heuristic backstop, **not a proof**.
 
 Closing it properly requires a change outside this audit's remit
 (`benchmark/corpus/*.c` is the fixed measurement instrument and was not
-touched). **Recommendation for the corpus owner:** have `win()` print the
+touched). **Recommendation for the corpus owner:** have the target print the
 *contents of `flag.txt`* rather than a compiled-in literal. The flag then
 never exists in the binary, and the only remaining channel — a script reading
 `flag.txt` directly in Python — is already gated.
+
+**Two constraints on that change, both learned the hard way elsewhere and
+recorded here so whoever lands it does not have to rediscover them.**
+
+*Read the flag at startup, not inside `win()`.* `fopen`/`getline`/`fclose`
+allocate, and those allocations land in the same tcache bins the heap targets
+groom. A lazy read inside `win()` happens *after* the exploit has arranged the
+heap, so it can perturb exactly the state the intended exploit depends on —
+silently making a target harder, or impossible, with no signal that the
+difficulty moved. The R4 corpus agent hit this and documented its placement as
+load-bearing: the read goes immediately after `setvbuf()`, before any
+allocation the exploit cares about. In this corpus that binds
+`12_heap_tcache_poison`, which is the *worst* target to perturb — it is the
+hardest one remaining, needing three simultaneous glibc-version-specific
+invariants to hold, so a phantom regression there would cost the hardening
+effort real time. `11_heap_uaf_leak` is allocation-sensitive too, though it is
+`VOID` for an unrelated reason.
+
+*Closing the scrape is not the acceptance criterion — unchanged difficulty
+is.* Verifying that the scrape probe now fails is necessary and insufficient;
+a target whose scrape is closed but whose intended exploit broke is a worse
+outcome than the defect being fixed. The reference exploits on
+`docs/reference-exploits-corpus1-20260923` are the regression suite: every
+touched target must still fall to its reference exploit afterwards. Land the
+change as one clearly-labelled atomic commit, because the round-1 ablation
+suite is being built against current heap behaviour and will need to be told
+what invalidated what.
+
+**Status: not done, and not mine to do.** The corpus is fenced by the
+maintainer as the fixed measurement instrument. Behavioural attribution has
+removed its urgency for *scoring* — a scrapeable `.rodata` literal can no
+longer produce a `SUCCESS` — so what remains is defence in depth, not a
+soundness hole.
 
 ## Canonical convention for the other corpora
 

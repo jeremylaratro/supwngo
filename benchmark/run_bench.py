@@ -61,29 +61,44 @@ attributed to exploitation, so the target is scored VOID instead of SUCCESS.
 This generalises to any future corpus rather than depending on byte counts in
 this one.
 
-KNOWN WEAKNESS -- read this before trusting a SUCCESS
------------------------------------------------------
-There is NO structural guarantee on the SCRIPT side. Verification is not
-sandboxed: the generated script runs as the same user and can read flag.txt
-and the target binary by any means it chooses. An independent review defeated
-an earlier version of the checks below with several two-line scripts
+BEHAVIOURAL ATTRIBUTION -- what a SUCCESS now means
+---------------------------------------------------
+A flag string appearing in the output is a *proxy* for exploitation, not
+evidence of it, and every false-positive channel this harness has suffered
+lived in that gap. Verification is not sandboxed, so the script can read
+flag.txt or scrape the binary by any means it likes, and the pattern audit in
+inspect_generated_script() is a BYPASSABLE HEURISTIC -- an independent review
+defeated an earlier version with several two-line scripts
 (`subprocess.run(['cat','flag.txt'])`, `open('flag'+'.txt')`,
-`glob.glob('*.txt')`, `Path('.').iterdir()`, `ELF(b).search(b'FLAG{')`).
-inspect_generated_script() now closes the known forms, but it is a
-BYPASSABLE HEURISTIC, not a proof -- a string-built or directory-walked path
-is out of reach of any regex.
+`glob.glob('*.txt')`, `Path('.').iterdir()`, `ELF(b).search(b'FLAG{')`), and
+`soundness_probes/pure_python_scrape.py` still defeats it in four lines.
 
-So: SUCCESS means "the script produced this run's secret flag and did not
-trip any known cheat pattern". For a target whose
-`negative_control.flag_statically_extractable_from_binary` is true, it does
-NOT prove the target was exploited.
+So the harness no longer asks *whether* the flag appeared. It asks **who
+wrote it**. See benchmark/attribution.py: the script is re-executed under
+`strace -f`, the process tree is reconstructed from execve/clone/write, and
+a SUCCESS requires the flag to have been written by the TARGET process or a
+descendant of it (e.g. `cat` under a shell the exploit obtained). A write by
+the script, or by a child of the script, is not credited -- which closes
+`cat flag.txt`, `open()`, `glob`, `strings` and `ELF.search` in one move,
+including variants nobody has enumerated, because none of them route through
+the target's address space.
 
-The robust fix is behavioural attribution -- assert that the TARGET process
-did the thing (win() entered, or execve("/bin/sh") in a target descendant),
-via ptrace/strace or an LD_PRELOAD shim -- rather than that a flag string
-appeared somewhere. That removes the need for a secret flag, -DFLAG, the
-corpus flag contract and these regexes entirely, and is the recommended next
-step.
+Consequences for reading a result:
+  - "BEHAVIOURALLY ATTRIBUTED" in the reason  => the exploitation event was
+    observed. This is the strong case.
+  - VOID / script_gamed_the_check             => we WATCHED the script obtain
+    the flag without exploiting. Not a guess.
+  - "UNWITNESSED" in the reason               => no usable witness (no strace
+    or no ptrace permission), so the result falls back to string-match plus
+    the bypassable pattern audit and is labelled as such. Never treat a
+    missing witness as a negative one. `--strict-attribution` refuses to
+    score these at all.
+
+Residual gap, stated plainly: a script could still write the flag into the
+target's own output channel deliberately. That takes real effort rather than
+a shortcut, and `shell_exec_by_target` corroborates the six shell-based
+targets independently, but it is not structurally prevented. Witnessing the
+target's control flow directly (a breakpoint on win()) would close it.
 
 See docs/reports/HARNESS-SOUNDNESS-AUDIT-23SEP2026.md for the full audit and
 reproductions.
@@ -116,6 +131,7 @@ import sys
 import time
 import fcntl
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -125,6 +141,10 @@ try:
 except ImportError:
     print("PyYAML is required (pip install pyyaml)", file=sys.stderr)
     sys.exit(1)
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from attribution import (  # noqa: E402
+    attribution_verdict, strace_available, witness as attribution_witness)
 
 HERE = Path(__file__).resolve().parent          # benchmark/
 REPO_ROOT = HERE.parent                          # worktree root (supwngo/ package lives here)
@@ -363,11 +383,11 @@ def build_with_secret(corpus: Corpus, slug: str, secret: str) -> None:
         )
 
 
-def run_supwngo(binary_abs: Path, timeout: float, extra_args: list[str]):
+def run_supwngo(binary_abs: Path, timeout: float, extra_args: list[str],
+                tmpdir: Path | None = None):
     """Invoke the real supwngo autopwn CLI as a subprocess. Returns
     (returncode_or_None, stdout, stderr, wall_timed_out)."""
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    env = _script_env(tmpdir)
     cmd = [
         sys.executable, "-m", "supwngo.cli", "autopwn", str(binary_abs),
         "--timeout", str(timeout),
@@ -426,9 +446,25 @@ def _excerpt(text: str, limit: int = 2000) -> str:
     return f"{text[:limit]}\n...[{omitted} chars omitted]...\n{text[-limit:]}"
 
 
-def _run_capture(argv: list[str], cwd: Path, stdin_bytes: bytes, wall_timeout: float):
+def _script_env(tmpdir: Path | None = None) -> dict:
+    """The environment a re-executed script sees.
+
+    Shared with the attribution witness deliberately: if the traced run and the
+    plain run did not see identical environments, a disagreement between them
+    would be the harness's fault rather than a finding.
+    """
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    if tmpdir is not None:
+        # Private per-target temp space, so parallel workers cannot collide on
+        # a temp name or read each other's leftovers.
+        env["TMPDIR"] = str(tmpdir)
+    return env
+
+
+def _run_capture(argv: list[str], cwd: Path, stdin_bytes: bytes, wall_timeout: float,
+                 tmpdir: Path | None = None):
+    env = _script_env(tmpdir)
     try:
         proc = subprocess.run(
             argv, input=stdin_bytes, cwd=str(cwd), env=env,
@@ -439,7 +475,8 @@ def _run_capture(argv: list[str], cwd: Path, stdin_bytes: bytes, wall_timeout: f
         return (e.stdout or b""), (e.stderr or b""), True
 
 
-def negative_control(corpus: Corpus, slug: str, expected_flag: str, timeout: float) -> dict:
+def negative_control(corpus: Corpus, slug: str, expected_flag: str, timeout: float,
+                     tmpdir: Path | None = None) -> dict:
     """Run the target with NO exploit at all, under the same conditions the
     verification step uses. If the flag appears here it was free, and nothing
     a generated script does can be credited to exploitation."""
@@ -453,7 +490,7 @@ def negative_control(corpus: Corpus, slug: str, expected_flag: str, timeout: flo
         ("bare_run_filler", CONTROL_FILLER),
     ):
         out_b, err_b, timed_out = _run_capture(
-            [str(bp)], tdir, stdin_bytes, wall_timeout
+            [str(bp)], tdir, stdin_bytes, wall_timeout, tmpdir=tmpdir
         )
         text = (out_b + err_b).decode("utf-8", "replace")
         controls[name] = {
@@ -470,7 +507,7 @@ def negative_control(corpus: Corpus, slug: str, expected_flag: str, timeout: flo
     menu_timed_out = False
     for stdin_bytes in CONTROL_MENU_PROBES:
         out_b, err_b, timed_out = _run_capture(
-            [str(bp)], tdir, stdin_bytes, wall_timeout
+            [str(bp)], tdir, stdin_bytes, wall_timeout, tmpdir=tmpdir
         )
         text = (out_b + err_b).decode("utf-8", "replace")
         menu_timed_out = menu_timed_out or timed_out
@@ -496,7 +533,8 @@ def negative_control(corpus: Corpus, slug: str, expected_flag: str, timeout: flo
         scrape_hits.append("elf_image_substring")
     strings_bin = shutil.which("strings")
     if strings_bin:
-        out_b, _e, _t = _run_capture([strings_bin, str(bp)], tdir, b"", wall_timeout)
+        out_b, _e, _t = _run_capture([strings_bin, str(bp)], tdir, b"", wall_timeout,
+                                     tmpdir=tmpdir)
         if expected_flag.encode() in out_b:
             scrape_hits.append("strings_output")
 
@@ -525,12 +563,13 @@ VOID_CAUSES = {
     "harness_stdin_solves_target": "instrument fault -- the harness's own stdin reached the flag",
     "corpus_trivially_solvable": "corpus fault -- structure-free filler reached the flag",
     "corpus_missing_liveness_gate": "corpus fault -- a benign menu walk reached the flag",
-    "corpus_flag_is_scrapeable": "corpus fault -- the flag is readable from the binary image",
+    "unwitnessed_success": "no behavioural witness -- scored only under --strict-attribution",
     "script_gamed_the_check": "supwngo finding -- the script obtained the flag without exploiting",
     "provisioning_failed": "BUILD/INFRA FAULT -- the flag could not be made a real secret",
+    "harness_error": "HARNESS FAULT -- run_bench.py itself raised on this target",
 }
 # Causes that mean "the whole run is untrustworthy", not "skip this target".
-FATAL_VOID_CAUSES = {"provisioning_failed"}
+FATAL_VOID_CAUSES = {"provisioning_failed", "harness_error"}
 
 
 # Anti-gaming static checks on the generated script.
@@ -650,7 +689,8 @@ def script_cheat_reason(script_audit: dict) -> str | None:
     return None
 
 
-def independent_verify(script_path: Path, target_dir: Path, expected_flag: str, timeout: float) -> dict:
+def independent_verify(script_path: Path, target_dir: Path, expected_flag: str,
+                       timeout: float, tmpdir: Path | None = None) -> dict:
     """The ONLY source of truth for SUCCESS: actually run the generated
     script fresh and look for the exact flag string in its own output.
     Never trust autopwn's own success/verified claims here."""
@@ -662,7 +702,7 @@ def independent_verify(script_path: Path, target_dir: Path, expected_flag: str, 
 
     out_b, err_b, timed_out = _run_capture(
         [sys.executable, str(script_path)], target_dir, VERIFY_STDIN,
-        max(30.0, timeout * 4),
+        max(30.0, timeout * 4), tmpdir=tmpdir,
     )
     out = out_b.decode("utf-8", "replace")
     err = err_b.decode("utf-8", "replace")
@@ -694,8 +734,8 @@ def scrape_channels(control: dict) -> list[str]:
 
 
 def classify(supwngo_json: dict | None, verify: dict, control: dict,
-             script_audit: dict, strict_attribution: bool = False
-             ) -> tuple[str, str, str | None]:
+             script_audit: dict, strict_attribution: bool = False,
+             attribution: dict | None = None) -> tuple[str, str, str | None]:
     """Returns (status, reason, void_cause).
 
     void_cause is machine-readable and distinguishes the four very different
@@ -732,9 +772,40 @@ def classify(supwngo_json: dict | None, verify: dict, control: dict,
     # FAILED and must stay in the denominator -- voiding a failure would
     # silently inflate the success rate.
     if verify["flag_found"]:
+        # PRIMARY EVIDENCE: who actually wrote the flag. This is the exploitation
+        # event rather than a symptom of it, so it is consulted before the
+        # pattern audit and overrides it in both directions.
+        verdict, why = attribution_verdict(attribution or {})
+
+        if verdict == "credited":
+            return "SUCCESS", (
+                "BEHAVIOURALLY ATTRIBUTED: " + why + ", so the flag was produced "
+                "by exploiting the target rather than read by the script; the "
+                "negative controls produced nothing"
+            ), None
+
+        if verdict == "not_credited":
+            # Not a heuristic guess -- we watched the syscalls. This is a
+            # finding about the generated script, not about the corpus.
+            return "VOID", (
+                "the generated script produced the flag WITHOUT exploiting the "
+                f"target: {why}. Not scored"
+            ), "script_gamed_the_check"
+
+        # verdict == "inconclusive" (or the witness disagreed with the plain
+        # run, e.g. a flaky exploit): fall back to the weaker string-match plus
+        # pattern-audit path, and label the result as unwitnessed. Never treat a
+        # missing witness as a negative one.
         cheat = script_cheat_reason(script_audit)
         if cheat:
             return "VOID", f"{cheat}, so this result is not scored", "script_gamed_the_check"
+
+        if strict_attribution:
+            return "VOID", (
+                f"no behavioural witness could be obtained ({why}), and "
+                "--strict-attribution refuses to score a SUCCESS that rests only "
+                "on a flag string appearing plus a bypassable pattern audit"
+            ), "unwitnessed_success"
 
         how = ("via a shell the exploit obtained" if verify.get("shell_proven")
                else "from the target's own output")
@@ -743,29 +814,20 @@ def classify(supwngo_json: dict | None, verify: dict, control: dict,
             f"this run's secret flag string ({how}), and the negative controls "
             "did not"
         )
-        # Attribution strength is NOT uniform across targets and the difference
-        # has to travel with the result. If the secret is sitting in the
-        # binary's image -- unavoidable for win()-style targets, which must
-        # puts() it -- then "produced the flag" is only evidence of exploitation
-        # as far as the script audit is trustworthy, and the script audit is a
-        # bypassable heuristic (see the module docstring). Where the image holds
-        # no flag, the flag can only have come from the target's runtime, which
-        # is a structural argument rather than a heuristic one.
+        # No witness, so we are back to inference. Say so, and say how weak the
+        # inference is: where the secret is also sitting in the binary image
+        # (unavoidable for win()-style targets, which must puts() it) a script
+        # could have scraped it, and only the bypassable pattern audit stands in
+        # the way. Where the image holds no flag, it can only have come from the
+        # target's runtime, which is at least a structural argument.
         channels = scrape_channels(control)
-        if channels:
-            if strict_attribution:
-                return "VOID", (
-                    "this run's secret is obtainable with no exploit at all via "
-                    f"{', '.join(channels)} (e.g. `strings` recon, which an "
-                    "exploitation framework performs routinely), so a flag match "
-                    "does not attribute to exploitation and --strict-attribution "
-                    "refuses to score it"
-                ), "corpus_flag_is_scrapeable"
-            reason += (
-                " [WEAK ATTRIBUTION: this run's secret is readable with no exploit "
-                f"via {', '.join(channels)}, so this SUCCESS rests on the bypassable "
-                "script audit, not on a structural guarantee]"
-            )
+        reason += (
+            f" [UNWITNESSED: {why}"
+            + (f"; and this run's secret is readable with no exploit via "
+               f"{', '.join(channels)}, so this rests on the bypassable pattern "
+               "audit rather than a structural guarantee" if channels else "")
+            + "]"
+        )
         return "SUCCESS", reason, None
 
     claimed_success = bool(supwngo_json and supwngo_json.get("success"))
@@ -792,9 +854,18 @@ def classify(supwngo_json: dict | None, verify: dict, control: dict,
 
 
 def run_one(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
-            strict_attribution: bool = False) -> dict:
+            strict_attribution: bool = False, tmpdir: Path | None = None,
+            echo: bool = True) -> dict:
     slug = target["slug"]
-    print(f"=== {slug}  [{target['technique']}, {target['difficulty']}] ===", flush=True)
+
+    def say(msg: str) -> None:
+        # Suppressed under parallelism: interleaved per-step lines from several
+        # workers splice into misleading output. run_targets() prints one
+        # authoritative line per target on completion instead.
+        if echo:
+            print(msg, flush=True)
+
+    say(f"=== {slug}  [{target['technique']}, {target['difficulty']}] ===")
 
     base = {
         "slug": slug,
@@ -808,7 +879,7 @@ def run_one(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
     try:
         build_with_secret(corpus, slug, secret)
     except ProvisionError as e:
-        print(f"    -> VOID: {e}", flush=True)
+        say(f"    -> VOID: {e}")
         return {
             **base,
             "elapsed_sec": round(time.time() - t0, 1),
@@ -823,7 +894,7 @@ def run_one(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
             f"flag for {slug} is only {len(expected_flag)} chars "
             f"(< {MIN_FLAG_LEN}); too weak to grep for honestly"
         )
-        print(f"    -> VOID: {reason}", flush=True)
+        say(f"    -> VOID: {reason}")
         return {**base, "elapsed_sec": round(time.time() - t0, 1),
                 "status": "VOID", "reason": reason,
                 "void_cause": "provisioning_failed"}
@@ -832,26 +903,48 @@ def run_one(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
     target_dir = bp.parent
 
     # (0) prove the flag is not free BEFORE crediting any script for it
-    control = negative_control(corpus, slug, expected_flag, timeout)
+    control = negative_control(corpus, slug, expected_flag, timeout, tmpdir=tmpdir)
 
     # (1) structured self-report
-    rc1, out1, err1, to1 = run_supwngo(bp, timeout, ["--json"])
+    rc1, out1, err1, to1 = run_supwngo(bp, timeout, ["--json"], tmpdir=tmpdir)
     supwngo_json = parse_json_result(out1) if out1 else None
 
     # (2) the actual generated script (only written in non-JSON mode -- see
     #     module docstring)
     script_path = results_dir / f"{slug}_generated.py"
-    rc2, out2, err2, to2 = run_supwngo(bp, timeout, ["-o", str(script_path)])
+    rc2, out2, err2, to2 = run_supwngo(bp, timeout, ["-o", str(script_path)],
+                                       tmpdir=tmpdir)
 
     # (3) genuine independent verification
     script_audit = inspect_generated_script(script_path, expected_flag)
-    verify = independent_verify(script_path, target_dir, expected_flag, timeout)
+    verify = independent_verify(script_path, target_dir, expected_flag, timeout,
+                                tmpdir=tmpdir)
+
+    # (4) behavioural attribution: re-execute under strace and establish WHO
+    # wrote the flag. Only run when the plain verification actually produced the
+    # flag -- there is nothing to attribute otherwise, and tracing every failing
+    # target would double the cost of a mostly-failing run for no information.
+    attribution: dict = {"available": False,
+                         "unavailable_reason": "not run (no flag to attribute)"}
+    if verify["flag_found"]:
+        attribution = attribution_witness(
+            script_path=script_path,
+            target_dir=target_dir,
+            target_binary=bp,
+            expected_flag=expected_flag,
+            stdin_bytes=VERIFY_STDIN,
+            timeout=timeout,
+            env=_script_env(tmpdir),
+            python=sys.executable,
+            trace_dir=results_dir / f"{slug}_attribution",
+        )
 
     elapsed = time.time() - t0
     status, reason, void_cause = classify(supwngo_json, verify, control, script_audit,
-                                          strict_attribution=strict_attribution)
+                                          strict_attribution=strict_attribution,
+                                          attribution=attribution)
 
-    print(f"    -> {status}: {reason}", flush=True)
+    say(f"    -> {status}: {reason}")
 
     return {
         **base,
@@ -872,10 +965,108 @@ def run_one(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
             "stderr_tail": (err2 or "")[-1500:],
         },
         "verification": verify,
+        "attribution": attribution,
         "status": status,
         "reason": reason,
         "void_cause": void_cause,
     }
+
+
+def _default_jobs() -> int:
+    """One worker per core, capped.
+
+    Each worker spends most of its wall time waiting on `autopwn`, which is
+    itself CPU-hungry (angr/Z3), so the useful parallelism is bounded by cores
+    rather than by the number of targets. The cap keeps a big box from
+    thrashing on memory, which angr will happily do.
+    """
+    return max(1, min(os.cpu_count() or 1, 8))
+
+
+def run_targets(corpus: Corpus, targets: list[dict], timeout: float,
+                results_dir: Path, strict_attribution: bool, jobs: int) -> list[dict]:
+    """Run targets, optionally in parallel, and return results in MANIFEST
+    ORDER regardless of completion order.
+
+    Parallelism is safe here because a target's entire footprint is confined to
+    its own directory: the rebuild writes only `corpus/<slug>/{binary,flag.txt}`,
+    verification runs with cwd set there and reads that flag.txt, and the
+    generated script, strace log and attribution artifacts are all named per
+    slug under results_dir. Each worker additionally gets a PRIVATE TMPDIR so
+    two targets cannot collide on a temp name.
+
+    `~/.supwngo/libcs` stays shared deliberately: it is a read-mostly download
+    cache keyed by distinct filenames, and isolating it would make several
+    targets re-fetch libc over the network, trading a real flakiness risk for a
+    theoretical one. `autopwn` does not touch the SQLite database that would
+    otherwise be shared state (that lives on the `libc-id` path).
+
+    Output is buffered per target and flushed as one block, so interleaved
+    workers cannot produce spliced, misleading log lines.
+    """
+    if jobs <= 1 or len(targets) <= 1:
+        return [_run_one_isolated(corpus, t, timeout, results_dir,
+                                  strict_attribution, echo=True)
+                for t in targets]
+
+    print(f"running {len(targets)} targets with {jobs} parallel workers "
+          f"(per-target isolation: private cwd + TMPDIR)", flush=True)
+
+    by_slug: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        futures = {
+            pool.submit(_run_one_isolated, corpus, t, timeout, results_dir,
+                        strict_attribution, False): t
+            for t in targets
+        }
+        done = 0
+        for fut in as_completed(futures):
+            t = futures[fut]
+            res = fut.result()          # never raises; see _run_one_isolated
+            by_slug[t["slug"]] = res
+            done += 1
+            print(f"[{done}/{len(targets)}] {t['slug']:<24} {res['status']}: "
+                  f"{res['reason'][:160]}", flush=True)
+
+    return [by_slug[t["slug"]] for t in targets]
+
+
+def _run_one_isolated(corpus: Corpus, target: dict, timeout: float,
+                      results_dir: Path, strict_attribution: bool,
+                      echo: bool) -> dict:
+    """run_one() with a private TMPDIR and no way to take the run down.
+
+    A crash or hang in one target must never alter another target's verdict --
+    an infrastructure fault that silently removed targets would shrink the
+    denominator and read as a score improvement, which is the exact failure
+    mode the provisioning fix exists to prevent. So an unexpected exception
+    becomes a FATAL VOID for that target: recorded, attributed to the harness
+    rather than to supwngo, and sufficient to withhold the whole run's rate.
+    """
+    slug = target["slug"]
+    # Threads share os.environ, so TMPDIR is threaded through to each spawned
+    # child explicitly rather than set globally -- mutating os.environ here
+    # would race between workers and hand one target another's temp dir.
+    tmpdir = results_dir / f"{slug}_tmp"
+    tmpdir.mkdir(parents=True, exist_ok=True)
+    try:
+        return run_one(corpus, target, timeout, results_dir,
+                       strict_attribution=strict_attribution,
+                       tmpdir=tmpdir, echo=echo)
+    except Exception as e:  # noqa: BLE001 -- deliberately total
+        reason = (f"the HARNESS itself failed on this target "
+                  f"({type(e).__name__}: {e}); this is an instrument fault, "
+                  f"not a measurement of supwngo")
+        print(f"    -> VOID (harness error): {reason}", flush=True)
+        return {
+            "slug": slug,
+            "technique_intended": target.get("technique"),
+            "difficulty": target.get("difficulty", "unknown"),
+            "protections": target.get("protections"),
+            "status": "VOID",
+            "reason": reason,
+            "void_cause": "harness_error",
+        }
 
 
 STATUSES = ("SUCCESS", "PARTIAL", "FAILED", "VOID")
@@ -967,30 +1158,36 @@ def write_summary(results: list[dict], out_path: Path, timeout: float, corpus: C
         lines.append("No VOID targets: every target run was scorable.")
         lines.append("")
 
-    # Not all SUCCESSes are equally well attributed, and the summary must not
-    # present them as if they were. See classify()'s WEAK ATTRIBUTION note.
-    weak = [r for r in results
-            if r["status"] == "SUCCESS"
-            and scrape_channels(r.get("negative_control") or {})]
-    strong = [r for r in results if r["status"] == "SUCCESS" and r not in weak]
-    if weak:
-        lines.append(f"ATTRIBUTION -- {len(weak)} of {counts['SUCCESS']} SUCCESS(es) are "
-                     f"WEAKLY attributed:")
-        for r in weak:
-            lines.append(f"  - {r['slug']}: this run's secret is readable directly out "
-                         f"of the binary image.")
-        lines.append("    For these targets the flag MUST be compiled in (win() has to")
-        lines.append("    print it), so an unsandboxed script could read it instead of")
-        lines.append("    exploiting. Only the script audit stands in the way, and that")
-        lines.append("    is a bypassable heuristic, not a proof. Treat these as 'not")
-        lines.append("    disproven' rather than 'proven'. The corpus-side fix is to have")
-        lines.append("    win() print the CONTENTS OF flag.txt instead of a baked-in")
-        lines.append("    literal; the harness-side fix is behavioural attribution")
-        lines.append("    (assert win() was entered / execve of a shell occurred).")
-        if strong:
-            lines.append(f"    Strongly attributed (no flag in the image, so it can only "
-                         f"have come from the running target): "
-                         f"{', '.join(r['slug'] for r in strong)}")
+    # Not all SUCCESSes are equally well evidenced and the summary must never
+    # present them as if they were. WITNESSED means we observed the target's own
+    # process tree write the flag; UNWITNESSED means we only saw the string.
+    successes = [r for r in results if r["status"] == "SUCCESS"]
+    witnessed = [r for r in successes
+                 if (r.get("attribution") or {}).get("flag_disclosed_by_target")]
+    unwitnessed = [r for r in successes if r not in witnessed]
+    if successes:
+        lines.append(f"EVIDENCE FOR THE {len(successes)} SUCCESS(es) -- "
+                     f"{len(witnessed)} behaviourally witnessed, "
+                     f"{len(unwitnessed)} unwitnessed:")
+        for r in witnessed:
+            att = r["attribution"]
+            shell = " (target exec'd a shell)" if att.get("shell_proven") else ""
+            chain = (att.get("credited_writers") or [{}])[0].get("chain", "?")
+            lines.append(f"  WITNESSED    {r['slug']}: flag written by {chain}{shell}")
+        for r in unwitnessed:
+            att = r.get("attribution") or {}
+            why = att.get("unavailable_reason", "no witness")
+            chans = scrape_channels(r.get("negative_control") or {})
+            extra = (f"; secret also scrapeable via {','.join(chans)}" if chans else "")
+            lines.append(f"  UNWITNESSED  {r['slug']}: {why}{extra}")
+        if unwitnessed:
+            lines.append("    An UNWITNESSED success rests on a flag string appearing plus")
+            lines.append("    a BYPASSABLE pattern audit -- treat it as 'not disproven',")
+            lines.append("    not 'proven'. Re-run with --strict-attribution to exclude")
+            lines.append("    them, and quote both numbers when reporting.")
+        if not strace_available():
+            lines.append("    NOTE: strace is not installed on this host, so NO success")
+            lines.append("    could be witnessed. Install it before quoting this figure.")
         lines.append("")
 
     lines.append(f"{'slug':<26} {'difficulty':<10} {'status':<9} reason")
@@ -1051,13 +1248,19 @@ def main():
                      help=f"Corpus directory of <NN>_<slug>/ targets (default {DEFAULT_CORPUS_DIR})")
     ap.add_argument(
         "--strict-attribution", action="store_true",
-        help="VOID any target whose flag can be scraped from the binary image "
-             "with no exploit (measured per run, see negative_control). Default "
-             "OFF: that exposure is inherent to win()-style targets, which must "
-             "print a compiled-in flag, so enabling this excludes them rather "
-             "than failing them. Prefer fixing the corpus so win() reads "
-             "flag.txt at runtime; use this flag to measure how much of a score "
-             "depends on the script audit.")
+        help="Require a BEHAVIOURAL WITNESS for every SUCCESS: VOID any target "
+             "whose flag could not be attributed to the target's own process "
+             "tree (see benchmark/attribution.py). Default OFF, so that a box "
+             "without strace still produces a number -- but that number rests "
+             "on a flag string appearing plus a bypassable pattern audit, and is "
+             "labelled UNWITNESSED. Use this to report how much of a score is "
+             "backed by observed exploitation rather than inference.")
+    ap.add_argument(
+        "--jobs", "-j", type=int, default=0,
+        help="Run this many targets in parallel (default: one per core, capped "
+             "at 8; use 1 to force serial). Each target is isolated to its own "
+             "directory and TMPDIR, and results are always reported in manifest "
+             "order regardless of completion order.")
     ap.add_argument("--manifest", type=Path, default=DEFAULT_CORPUS_YAML,
                      help=f"Corpus manifest YAML (default {DEFAULT_CORPUS_YAML})")
     args = ap.parse_args()
@@ -1085,11 +1288,11 @@ def main():
     results_dir = corpus.results_root() / ts
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    results = []
+    jobs = args.jobs if args.jobs > 0 else min(len(targets), _default_jobs())
     with corpus_lock(corpus):
-        for t in targets:
-            results.append(run_one(corpus, t, args.timeout, results_dir,
-                                   strict_attribution=args.strict_attribution))
+        results = run_targets(corpus, targets, args.timeout, results_dir,
+                              strict_attribution=args.strict_attribution,
+                              jobs=jobs)
 
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
