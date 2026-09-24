@@ -244,6 +244,63 @@ different constants. Required before the R5 measurement, whichever is cheaper:
 Option 1 is preferred. The recovery function already exists and works; the gap is
 that this executor does not call it.
 
+### Precondition: the attempt ordering is a prior fitted to R1, and must be declared before the figure exists
+
+Measured attribution of which layer fixes each executor's attempt position
+(`push()` dedupes, earliest layer wins):
+
+| layer that fixes the position | executors |
+| --- | --- |
+| `FIRST_TECHNIQUES`, consulted **before** the strategy report | 11 |
+| `UNMODELED_TECHNIQUES` | 3 |
+| forced last (`LAST_TECHNIQUES`) | 2 |
+| **the strategy layer** | **1** (`direct_shellcode`) |
+
+The reason is documented in-code at `orchestrator.py:73-92`: `StrategySuggester`
+"put `VARIABLE_OVERWRITE` at priority 1 for all 15 benchmark targets and pushed
+`RET2PLT` to priority 4", so Phase 5 layered hardcoded lists over it rather than
+fixing the model. The suggester was not imprecise — it was **inverted across the
+entire R1 corpus**, and it has been routed around rather than repaired.
+
+This is the same family as the constant sweep above, but it is a **weaker and
+different** defect, and the distinction is load-bearing:
+
+- The constant sweep can **manufacture credit** — a flag obtained from a folklore
+  list is not capability. That makes it a credit-validity defect.
+- The ordering **cannot manufacture a flag**. It decides what is *tried first*
+  under a wall-clock budget (`run_bench.py:407`, 360s outer), so it can convert a
+  would-be timeout into a solve and vice versa. That makes it a
+  **generalisation-claim** defect: an R5 figure produced under an R1-fitted
+  ordering measures the ordering's fit as much as the pipeline's reasoning, and
+  nothing in the figure separates the two.
+
+Required before the R5 measurement:
+
+1. **Commit this attribution table, unchanged, before the cold run** — it is a
+   pre-registration on the same footing as the four non-like-for-like axes, and it
+   exists so the caveat cannot be written after seeing whether it was needed.
+2. **Run a permuted-ordering ablation arm.** Commit one fixed permutation of
+   `FIRST_TECHNIQUES` (reversed is sufficient and needs no judgement) **before**
+   arm 1 runs; run it immediately after arm 1 with **no intervening edit of any
+   kind**; report the delta as the ordering's contribution. The headline figure is
+   **arm 1 only** — arm 2 is an ablation, never a second attempt at the number.
+
+On single-use (Problem 2): arm 2 does not violate it. The corpus is single-use
+against *tuning*, and the pipeline carries no state between runs, so two arms
+differing only by a pre-committed permutation is the harness's existing ablation
+pattern, not a retry. The condition that makes it sound is the one stated above —
+no code change lands between the arms. If one does, arm 2 is void and is reported
+as void.
+
+**Named and not taken:** fix `StrategySuggester` so the strategy layer earns its
+position back, then measure. Rejected for R5 — repairing a model that is inverted
+on the only corpus we can calibrate against is an open-ended research task, and
+doing it *before* the unseen measurement would tune against R1 in the one place we
+have agreed not to. It is the right post-R5 work. **What would flip it:** evidence
+that the fitted ordering is worth a large share of the solve count — which is
+exactly what arm 2 measures. A large delta turns the suggester from cleanup into
+the critical path.
+
 ## Sequencing
 
 R5 is the last item. It runs after R2, R3, R4 and after the walkthrough second
