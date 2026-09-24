@@ -298,6 +298,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `./walkthrough_output/`.
 
 ### Fixed
+- **`supwngo analyze --json` silently discarded ten protections it had just
+  measured.** `DetailedProtections` (`supwngo/analysis/protections.py`) declares 22
+  fields but inherited `Protections.to_dict()` (`supwngo/core/binary.py`), which
+  hard-codes six keys — so `full_relro`, `partial_relro`, `stack_protector`,
+  `fortify_level`, `pie_type`, `stripped`, `static`, `has_debug_info`,
+  `libc_version` and `uses_tcache` were computed by `ProtectionAnalyzer.analyze()`
+  and then dropped at serialization. `handoff.py` had been routing around the gap
+  with `getattr(binary.protections, "static", False)`. The subclass now has its own
+  `to_dict()` emitting all sixteen measured fields. **The change is a strict
+  superset:** every previously emitted key keeps its name, type and meaning, so
+  existing readers are unaffected; the three affected outputs are `analyze --json`
+  on stdout, the `<name>_analysis.json` file `analyze` always writes, and the
+  batch-scan JSON. `Binary.checksec()` and therefore
+  `StaticAnalyzer.analyze()["protections"]` are deliberately **unchanged** at six
+  keys. The six fields nothing ever measures (`stack_clash_protection`,
+  `safe_stack`, `cfi`, `shadow_stack`, `rpath`, `runpath` — `analyze()` assigns
+  none of them) are deliberately *not* emitted rather than published as `false`,
+  since a serialized default is indistinguishable from a real finding; they are
+  declared in `_UNMEASURED`, and a test fails on any field that is neither
+  serialized nor declared there, so a future field cannot silently vanish the way
+  these did.
 - **`benchmark/soundness_probes/drive.py` never exercised behavioural
   attribution, so the tool that validates the harness could not fail.** It called
   `classify()` without the `attribution=` argument that `run_one()` always
