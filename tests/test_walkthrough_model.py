@@ -26,7 +26,49 @@ from supwngo.exploit.walkthrough.model import (
     WalkthroughError,
     comment_block,
     dedent_code,
+    splice,
 )
+
+
+class TestSplice:
+    """``splice()`` must fail loudly on a placeholder it cannot substitute.
+
+    The interesting case is the *inline* one.  Placeholders are whole-line by
+    design, because each block is re-indented to its placeholder's column -- so
+    an inline ``@@NAME@@`` is not substitutable at all.  The original leftover
+    check reused the whole-line regex, which meant an inline placeholder was
+    skipped by the substitution AND missed by the check, and travelled verbatim
+    into the generated script.  The script still ran, so nothing alerted; the
+    only symptom was ``Characterisation of @@NAME@@`` printed to the operator,
+    found by executing a generated walkthrough rather than by reading it.
+    """
+
+    def test_whole_line_placeholder_is_substituted_and_reindented(self):
+        out = splice(
+            """
+            if True:
+                @@BODY@@
+            """,
+            BODY="first()\nsecond()",
+        )
+        assert out == "if True:\n    first()\n    second()"
+
+    def test_inline_placeholder_raises_rather_than_passing_through(self):
+        with pytest.raises(ValueError, match="@@NAME@@"):
+            splice('log.info("hello @@NAME@@")\n', NAME="world")
+
+    def test_inline_placeholder_raises_even_when_no_block_is_offered(self):
+        # No keyword at all: still an authoring error, still must not survive.
+        with pytest.raises(ValueError, match="@@NAME@@"):
+            splice('log.info("hello @@NAME@@")\n')
+
+    def test_missing_block_for_a_whole_line_placeholder_still_raises(self):
+        with pytest.raises(KeyError, match="MISSING"):
+            splice("x = 1\n@@MISSING@@\n")
+
+    def test_error_message_explains_the_whole_line_rule(self):
+        with pytest.raises(ValueError, match="whole line"):
+            splice('f("@@X@@")\n', X="y")
 
 
 def make_fact(name="OFFSET", value=72, **kw):

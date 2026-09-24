@@ -364,7 +364,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.88/0.90 to 0.96/0.97 off ties with SROP and ret2shellcode; `fmtstr` raised its
   read route off 0.90 and its GOT route off 0.80, two ties invisible on its own
   targets).
-  - `tests/test_walkthrough_scores.py` (11 tests) enumerates every `Route` score in
+  - `tests/test_walkthrough_scores.py` (12 tests) enumerates every `Route` score in
     every family with `ast` — not by calling `propose()`, so it needs no binaries,
     sees branches no corpus target exercises (`rop_chain`'s `0.95 if has_rdi else
     0.35` contributes both arms), and cannot be satisfied by a family that merely
@@ -396,6 +396,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `./walkthrough_output/`.
 
 ### Fixed
+- **`splice()` let an unsubstitutable placeholder through into generated
+  walkthrough scripts** (`supwngo/exploit/walkthrough/model.py`). Placeholders are
+  whole-line by design, because each inserted block is re-indented to its
+  placeholder's column — so an *inline* `@@NAME@@` cannot be substituted. The
+  leftover check reused the same whole-line regex, which meant an inline
+  placeholder was skipped by the substitution *and* missed by the check: it
+  travelled verbatim into the generated script, which still ran, so nothing
+  alerted. The only symptom was `Characterisation of @@NAME@@` printed to the
+  operator, found by executing a generated walkthrough rather than reading it.
+  The leftover check now uses a deliberately broader regex and raises with a
+  message stating the whole-line rule.
 - **`supwngo analyze --json` silently discarded ten protections it had just
   measured.** `DetailedProtections` (`supwngo/analysis/protections.py`) declares 22
   fields but inherited `Protections.to_dict()` (`supwngo/core/binary.py`), which
