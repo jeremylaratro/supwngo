@@ -321,6 +321,29 @@ holds constant, because nothing can infer intent. Two things do not:
   never-fired count itself has not been re-measured since. A census that lacks a
   category for a construct it encounters silently mis-files it.)
 
+  > **ERRATUM, same day, left beside the original because the correction is itself a
+  > finding.** The second half of that parenthesis is **false**. The census output
+  > reads `bare re-raise sites (exempt): 4` — verified by me in the artifact, not
+  > relayed: `docs/plans/2026-09-24-schema-unit-1-canonicalisation.md` line 609 at
+  > `31291c2`, line 617 at `e6498a7`. The category existed and was labelled *exempt*.
+  > **2 out of scope, not 1** stands (the block reads `1`; the sites are `L200
+  > TypeError` and `L2154 SystemExit`). **28 of 106 in scope** stands. Never-fired
+  > remains un-re-measured.
+  >
+  > How it got in: an agent's round-1 report said the category was missing, and I
+  > wrote it into this document without opening the output. That is
+  > [[claim-provenance-at-point-of-use]] and §5.1 in one move — a delegate's claim
+  > about an instrument, propagated as measured. The agent then retracted it against
+  > itself; I confirmed the retraction in the artifact rather than relaying that too,
+  > because the retraction is a delegate claim on identical footing to the original.
+  >
+  > **The rule this earns: before reporting a category absent from an instrument's
+  > output, quote the output.** Note the direction — this is the *second* time this
+  > instrument was accused of being worse than it is, both times by the same route,
+  > both times erring toward alarm. Errors about a measuring device are not
+  > symmetric: an instrument wrongly called broken gets replaced, and its correct
+  > readings go with it.
+
   **And the instrument must report what it cannot instrument as *out of scope*, never
   as *uncovered*.** That sweep first reported 29 of 107 and accused a branch of
   carrying a false `# pragma: no cover - exercised via pytest.raises` comment. The
