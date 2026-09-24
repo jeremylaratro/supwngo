@@ -492,6 +492,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subdirectory so an intermittent target's evidence is not overwritten.
 
 ### Fixed
+- **Concurrent benchmark runs shared one non-atomic pwntools gadget cache, so a
+  solvable target could fail for a reason that was not its capability**
+  (`benchmark/run_bench.py`). pwntools keys its ROP gadget cache by the ELF's
+  sha256 under `$XDG_CACHE_HOME/.pwntools-cache-<pyver>/`, writes it with
+  `open(f, 'w+').write(repr(data))` — truncate-in-place, unlocked, non-atomic —
+  and reads it back through an uncaught `eval(open(f).read())`. Two benchmark
+  processes analysing the same corpus binary therefore shared one file, and a
+  reader arriving mid-write raised out of `ROP()`, surfacing as a spurious
+  technique failure — a fabricated *capability* result, which is the one thing
+  this harness must never produce. `run_bench.py` now defaults `XDG_CACHE_HOME`
+  to a per-process directory at module import (so every CLI child inherits it),
+  via `setdefault` so an explicitly chosen root still wins. This race is real and
+  has a demonstrated positive control, but it was **not** the cause of the
+  walkthrough `triage` cluster — that was the poisoned `pwnlib` import fixed
+  below, and the two are deliberately not conflated. No scoring, verification or
+  attribution code is touched.
 - **A first `import pwn` under an in-memory stdout permanently broke pwntools for
   the rest of the process, silently collapsing walkthrough families to `triage`**
   (new root `conftest.py`). `pwnlib/term/text.py` calls `curses.setupterm()` at
