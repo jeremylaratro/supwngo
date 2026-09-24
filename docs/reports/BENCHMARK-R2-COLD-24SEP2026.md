@@ -673,7 +673,110 @@ Added by this run, not present in the plan:
    varied delivery and R2 remains uniform, R2 is permanently the round that cannot
    answer this question.
 
-### 2.10 What happens next, and what this figure is not
+### 2.10 Two findings about the measurement instrument, not just this round
+
+Recorded before step 3 changed any code, because both bear on corpus design rather
+than on this round's score.
+
+#### 2.10.1 Primitive depth predicts the outcome; human difficulty tiers do not
+
+The declared `easy`/`medium`/`hard` tiers are close to uncorrelated with what the
+pipeline actually did (easy 2/5, medium 1/6, hard 1/4 — a `hard` `ret2csu` chain at
+5/5 alongside an `easy` shellcode target that stubbed 5/5). The variable that does
+separate the results is **how many primitives must be acquired and chained before the
+control-flow redirect** — *primitive depth*.
+
+The boundary needs no fine judgement, which is what makes it usable: **does the
+pipeline have to obtain any new information or memory-state primitive before it can
+redirect execution to an address it already knows?**
+
+| primitive depth | targets | cold score |
+|---|---|---|
+| **0** — redirect to an already-known address, nothing acquired first | `07`, `10`, `13`, `15` | **4 / 4** |
+| **≥1** — at least one leak, write, or heap/integer state primitive required first | the other 11 | **0 / 11** |
+
+A clean separation on 15 points. **Stated honestly: this classification was drawn
+after seeing the results, so the perfect split is not evidence of anything on its
+own** — a post-hoc classifier fitted to 15 outcomes can always be made to separate
+them. What makes it more than curve-fitting is that the rule is mechanical, can be
+applied to a target from its source alone without running anything, and therefore
+makes a **falsifiable prediction**.
+
+So it is pre-registered here as one, before R3 is merged or seen:
+
+> **Prediction for R3/R4/R5:** targets at primitive depth 0 will be solved; targets at
+> primitive depth ≥1 will fail, until step-3 development closes the primitive-acquisition
+> gap. Depth is to be assigned from each target's source **before** its result is looked
+> at. If depth ≥1 targets start succeeding, the gap closed. If depth 0 targets start
+> failing, this account is wrong.
+
+Recommendation for R5's generator, alongside the varied-delivery amendment already
+agreed: **label targets by primitive depth and stratify on it**, and treat
+human-intuition difficulty tiers as a secondary annotation rather than the sampling
+axis. Difficulty tiers appear to be measuring how hard a *person* finds the puzzle,
+which is a different quantity from how many primitives an automated pipeline must
+chain.
+
+#### 2.10.2 R2 is a *paired* shape-variant of R1 — and that is the sharpest evidence of overfit
+
+This was not in the brief and changes how the round should be read. Every R2 source
+header names the specific R1 target it re-shapes, and states that it is deliberately a
+different surface mechanic for the **same technique family** — e.g. R2 `02` builds
+`"/bin/sh"` at runtime by concatenating `"/bin"` + `"/sh"` where R1 `02` had it as a
+single literal; R2 `01`'s overflow is not a direct `read()` into the vulnerable buffer
+where R1 `01`'s was; R2 `14` is a positive out-of-bounds **read** where R1 `14` was a
+negative-index **write**.
+
+That makes R1↔R2 a **paired design controlling for technique family**, which is far
+stronger than the unpaired `13/13` vs `4/15` comparison the brief anticipated:
+
+| R2 target | R1 ancestor | R1 result | R2 cold result |
+|---|---|---|---|
+| `01_stack_shellcode_relay` | `01_shellcode_stack` | SUCCESS 5/5 | FAILED (stub 5/5) |
+| `02_ret2plt_strcat_system` | `02_ret2plt_system` | SUCCESS 5/5 | FAILED (technique ran) |
+| `03_pie_write_leak_ret2libc` | `03_pie_leak_ret2libc` | SUCCESS 5/5 | FAILED (stub 5/5) |
+| `04_canary_relay_bypass` | `04_canary_leak_bypass` | SUCCESS 5/5 (strict 4/5) | FAILED (stub 5/5) |
+| `05_fmtstr_pie_leak` | `05_fmtstr_arbread` | SUCCESS 5/5 | FAILED (stub 5/5) |
+| `06_fmtstr_short_write` | `06_fmtstr_arbwrite` | SUCCESS 5/5 | FAILED (stub 5/5) |
+| `07_static_ret2syscall` | `02_ret2plt_system` (leak-free) | SUCCESS 5/5 | **SUCCESS 5/5** |
+| `08_int_mul_overflow` | `10_int_overflow` | SUCCESS 5/5 | FAILED (stub 5/5) |
+| `11_heap_overflow_tcache_poison` | `12_heap_tcache_poison` | SUCCESS 5/5 | FAILED (technique ran) |
+| `14_oob_read_flag_array` | `14_negative_index` | SUCCESS 5/5 | FAILED (stub 5/5) |
+| `15_ret2win_arg_gate` | `15_win_function` | SUCCESS 5/5 | **SUCCESS 5/5** |
+| `09_heap_dangling_global` | `11_heap_uaf_leak` | **VOID** | FAILED (stub 5/5) |
+| `13_off_by_one_retaddr_lsb` | `13_off_by_one` | **VOID** | **SUCCESS 5/5** |
+| `10_ret2csu_execve` | *(none declared)* | — | **SUCCESS 5/5** |
+| `12_fmtstr_got_overwrite` | *(none declared)* | — | FAILED (stub 5/5) |
+
+**Of the 11 families R1 solved, re-shaping the surface mechanic broke 9 and left 2
+standing.** The 2 survivors are `07` and `15` — exactly the two depth-0 members of the
+paired set. The two R2 targets whose R1 ancestors were `VOID` (the degenerate ones that
+handed over the flag without the vulnerability) split one each way.
+
+This is the strongest statement available about the original concern that 13/13 was
+overfit, and it is stronger than the scalar drop because technique family is held
+fixed: **the pipeline's R1 performance was substantially specific to the surface shape
+of R1's targets, not to the technique classes those targets were meant to represent.**
+Nine families it "had" at 5/5 do not survive a change of mechanic within the same
+family.
+
+It also explains the stub concentration mechanically rather than by appeal to a bug:
+most of R2's re-shapings *add* a primitive acquisition step (build the string rather
+than find it; write before leaking; relay the canary rather than read it straight).
+Discovery proposes nothing because the shape it pattern-matches on is absent, and the
+technique behind it was never the thing being matched.
+
+**Caveat on R2's design, in the other direction.** Because R2 is a deliberate
+re-shaping of R1 rather than an independent sample, it is not a uniform random draw
+from the space of exploitation targets, and 4/15 should not be read as an estimate of
+performance on arbitrary binaries. It is an estimate of performance on *adversarially
+re-shaped variants of targets the pipeline already solves* — which is the harder and
+more informative question for detecting overfit, and a pessimistic one for absolute
+capability. This is a fourth axis on which R1↔R2 is not like-for-like, additional to
+the three in §1.4, and it was found by reading the corpus sources rather than being
+declared in the brief.
+
+### 2.11 What happens next, and what this figure is not
 
 The cold measurement is complete and committed. Development (step 3) begins only
 after this commit lands, under the §5 generalize-versus-target-specific rules, and
@@ -683,4 +786,27 @@ regression gate. The R3 and R4 corpora (`9326d95`, `9868b75`) remain unmerged an
 unseen; code freezes before any access to them.
 
 **4/15 is the generalization number. Any later number on R2 is a training number.**
-The two are not comparable and will not be presented as if they were.
+The two are not comparable and will not be presented as if they were. Once the
+pipeline has been tuned against R2, **only R3/R4/R5 can measure generalization again** —
+R2's capacity to do so was spent by this measurement and cannot be restored.
+
+Step 3 is ordered by leverage, highest first, and deliberately *not* by how clean each
+failure is to debug:
+
+1. **The discovery/analysis stage** — 9 of 11 failures never emitted a technique at
+   all. Largest bucket by a wide margin, and uniform 5/5 means deterministic, therefore
+   reproducible, therefore debuggable without fighting noise. Includes resolving
+   `_probe_echo_sizes` / `deliver_parts` empirically: if teaching `deliver_parts` to
+   distinguish a timeout from an empty response converts stubs into techniques, that
+   answers the "cause undetermined" verdict better than any further reading of the code.
+2. **Leak and write primitive acquisition** — the generalization of what all four wins
+   skip. Format string 0/3 and heap metadata control 0/2 are stage gaps, not target gaps.
+3. **`02_ret2plt_strcat_system` and `11_heap_overflow_tcache_poison` last.** They are
+   the cleanest gaps, which is precisely why they are the lowest leverage: the pipeline
+   already reached the technique stage on both, so fixing them moves 2 while fixing
+   discovery could move 9.
+
+§2.10.2 is the reason this ordering must be *generalization* and not per-target repair:
+nine technique families already failed to survive one change of surface mechanic. Fixes
+fitted to R2's shapes would fail R3's shapes the same way, and the paired table above is
+the evidence that this is the actual failure mode rather than a theoretical risk.

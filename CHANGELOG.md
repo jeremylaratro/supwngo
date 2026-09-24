@@ -193,6 +193,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   integer-overflow size confusion, or an OOB index. Protections do not separate the two
   groups and the corpus's difficulty labels are near-uncorrelated with the result
   (easy 2/5, medium 1/6, hard 1/4).
+- **Two findings about the benchmark instrument itself, recorded before step-3 development
+  changed any code** (report §2.10). First, the corpus's `easy`/`medium`/`hard` labels are
+  nearly uncorrelated with pipeline outcome (easy 2/5, medium 1/6, hard 1/4), while
+  **primitive depth** — how many leak/write/heap-state primitives must be acquired before
+  the control-flow redirect — separates the results completely: depth 0 scores **4/4**,
+  depth ≥1 scores **0/11**. Flagged as a post-hoc classification and therefore
+  *pre-registered as a falsifiable prediction* for R3/R4/R5, with depth to be assigned
+  from source before results are seen. Recommendation for R5's generator: stratify on
+  primitive depth and demote difficulty tiers to a secondary annotation, since those
+  tiers measure how hard a *person* finds the puzzle, not how many primitives a pipeline
+  must chain. Second, and sharper: **R2 turns out to be a *paired* shape-variant of R1** —
+  each R2 source header names the specific R1 target it re-shapes with a different surface
+  mechanic inside the same technique family. That makes R1↔R2 a paired design controlling
+  for technique family, and **of the 11 families R1 solved at 5/5, re-shaping broke 9 and
+  left 2 standing** — the 2 survivors being exactly the depth-0 pair. This is stronger
+  evidence that R1's 13/13 was overfit than the scalar drop is, because family is held
+  fixed; it also explains the stub concentration mechanically (the re-shapings add a
+  primitive acquisition step, so discovery pattern-matches on an absent shape). Carried
+  as a fourth axis on which R1↔R2 is not like-for-like, and as a caveat in the opposite
+  direction: 4/15 estimates performance on adversarially re-shaped variants of targets the
+  pipeline already solves, not on arbitrary binaries.
 - `benchmark/summarize_cold.py` — per-target `solved` + `reliability` k/N table with
   attribution witness class, outer-truncation check and the pre-registered
   discovery-stall triage. Reports both endpoints side by side because neither is the
