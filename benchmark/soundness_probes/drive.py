@@ -12,7 +12,7 @@ sys.path.insert(0, str(BENCH))
 import run_bench as rb                 # noqa: E402
 
 NON_EXPLOITING = ["donothing_interactive.py", "donothing_subprocess.py",
-                  "hardcoded_flag.py"]
+                  "hardcoded_flag.py", "pure_python_scrape.py"]
 GENUINE = {"02_ret2plt_system": ["real_exploit_02.py",
                                  "real_exploit_02_explicit.py"]}
 
@@ -39,12 +39,18 @@ for slug in TARGETS:
         kind = "GENUINE " if probe in GENUINE.get(slug, []) else "NO-EXPLOIT"
         audit = rb.inspect_generated_script(HERE / probe, flag)
         v = rb.independent_verify(HERE / probe, tdir, flag, 10.0)
-        status, reason = rb.classify(None, v, control, audit)
+        status, reason, cause = rb.classify(None, v, control, audit)
         verdict = "ok"
         if kind.strip() == "NO-EXPLOIT" and status == "SUCCESS":
-            verdict = "*** FALSE POSITIVE ***"
+            # Distinguish a NEW hole from the documented weak-attribution one:
+            # on a target whose flag is compiled in, an unsandboxed script can
+            # always read it, and the harness now says so in the reason.
+            verdict = ("*** FALSE POSITIVE (known: weak-attribution target) ***"
+                       if "WEAK ATTRIBUTION" in reason
+                       else "*** FALSE POSITIVE -- NEW HOLE ***")
         if kind.strip() == "GENUINE" and status != "SUCCESS":
             verdict = "*** FALSE NEGATIVE ***"
         print(f"  [{kind}] {probe:<30} -> {status:<8} "
-              f"flag={v['flag_found']} shell={v['shell_proven']}  {verdict}")
+              f"flag={v['flag_found']} shell={v['shell_proven']} "
+              f"cause={cause or '-':<28} {verdict}")
     print()

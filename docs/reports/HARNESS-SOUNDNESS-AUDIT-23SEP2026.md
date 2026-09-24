@@ -3,7 +3,7 @@
 **Date:** 23 Sep 2026
 **Auditor branch:** `fix/benchmark-harness-soundness-20260923` (off `integration/phases-0-4-7-20260923`)
 **Subject:** the Phase-1 measurement instrument — `benchmark/run_bench.py` + `benchmark/build_all.sh`
-**Verdict:** **the harness was UNSOUND. The 2/15 (13.3%) baseline in `docs/reports/PHASE1-BASELINE-24SEP2026.md` does not stand.**
+**Verdict:** **the harness was UNSOUND. The 2/15 (13.3%) baseline in `docs/reports/PHASE1-BASELINE-24SEP2026.md` does not stand.** Corrected baseline: **1/13 (7.7%)**, and that single SUCCESS is weakly attributed.
 
 ---
 
@@ -12,6 +12,14 @@
 Two independent false-positive channels were found and reproduced. Between
 them they could manufacture SUCCESS on **10 of the 15 targets, including both
 targets the 2/15 baseline rested on.**
+
+Two further defects were found during remediation and are covered below: a
+second unmeasurable target (`11_heap_uaf_leak`, whose flag comes out of a *live*
+chunk with no use-after-free), and a `strings`-recon channel that per-build flag
+randomisation does **not** close on the 9 win()-style targets. One residual hole
+is knowingly left open and documented rather than papered over: verification is
+not sandboxed, so the script-side anti-gaming checks are a bypassable heuristic,
+not a proof.
 
 ### FP-1 — the harness solved `13_off_by_one` by itself (critical)
 
@@ -159,67 +167,127 @@ the target value was publicly available to anything generating a script.
 
 ### Post-fix validation
 
-Every non-exploiting probe is now rejected, and both genuine exploit shapes
-still pass:
+Positive and negative controls, against the final harness:
 
 ```
-13_off_by_one    negative control leaked: ['bare_run_filler']
-  [NO-EXPLOIT] donothing_subprocess.py   -> VOID    ok
-  [NO-EXPLOIT] hardcoded_flag.py         -> VOID    ok
-15_win_function  negative control leaked: NONE
-  [NO-EXPLOIT] donothing_subprocess.py   -> FAILED  ok
-  [NO-EXPLOIT] hardcoded_flag.py         -> VOID    ok
-02_ret2plt_system negative control leaked: NONE
-  [NO-EXPLOIT] hardcoded_flag.py         -> VOID    ok
-  [GENUINE   ] real_exploit_02.py           -> SUCCESS shell=True  ok
-  [GENUINE   ] real_exploit_02_explicit.py  -> SUCCESS             ok
+VERIFY_STDIN = b'cat flag.txt\necho $((6*7))\n'  (27 bytes)
+
+13_off_by_one     control leaked: ['bare_run_filler']   scrapeable: yes
+  [NO-EXPLOIT] donothing_interactive.py  -> VOID    corpus_trivially_solvable
+  [NO-EXPLOIT] donothing_subprocess.py   -> VOID    corpus_trivially_solvable
+  [NO-EXPLOIT] hardcoded_flag.py         -> VOID    corpus_trivially_solvable
+  [NO-EXPLOIT] pure_python_scrape.py     -> VOID    corpus_trivially_solvable
+15_win_function   control leaked: NONE                scrapeable: yes
+  [NO-EXPLOIT] donothing_interactive.py  -> FAILED
+  [NO-EXPLOIT] donothing_subprocess.py   -> FAILED
+  [NO-EXPLOIT] hardcoded_flag.py         -> VOID    script_gamed_the_check
+  [NO-EXPLOIT] pure_python_scrape.py     -> SUCCESS  *** known weak-attribution hole ***
+02_ret2plt_system control leaked: NONE                scrapeable: no
+  [NO-EXPLOIT] donothing_interactive.py  -> FAILED
+  [NO-EXPLOIT] donothing_subprocess.py   -> FAILED
+  [NO-EXPLOIT] hardcoded_flag.py         -> FAILED
+  [NO-EXPLOIT] pure_python_scrape.py     -> FAILED
+  [GENUINE   ] real_exploit_02.py          -> SUCCESS shell_proven=True
+  [GENUINE   ] real_exploit_02_explicit.py -> SUCCESS
 ```
+
+**Positive controls hold.** Both genuine `ret2plt` shapes on `02` still score
+`SUCCESS` — the `io.interactive()` shape and the explicit
+`sendline(b'cat flag.txt')` shape — confirming the shortened 27-byte stdin still
+reaches a shell the exploit obtained, and that the anti-gaming patterns do not
+misfire on the intended solve path for the six shell-based targets. One shape
+reports `shell_proven=True`; the other drives the shell itself rather than
+letting the injected marker through, which is why `shell_proven` is a
+diagnostic and never a gate.
+
+**An earlier draft of this report claimed "every non-exploiting probe is now
+rejected". That was overstated and is withdrawn.** An independent review
+defeated the script audit with several two-line scripts
+(`subprocess.run(['cat','flag.txt'])`, `open('flag'+'.txt')`,
+`glob.glob('*.txt')`, `Path('.').iterdir()`, `ELF(b).search(b'FLAG{')`). The
+known forms are now closed, but the audit is a **bypassable heuristic, not a
+proof** — a string-built or directory-walked path is out of reach of any regex.
+`pure_python_scrape.py` above is a *deliberately* unfixed demonstration of the
+residual hole, which exists because verification is not sandboxed. See
+"Residual limitation" below.
 
 Probes are committed under `benchmark/soundness_probes/` so this is
-re-runnable; pure-logic regressions are in
+re-runnable; 56 pure-logic regressions are in
 `tests/test_bench_harness_soundness.py`.
 
 ---
 
-## Is `13_off_by_one` the only target reachable by benign input?
+## Which targets are reachable by benign input?
 
-**Yes.** Swept all 15 targets' negative controls (each rebuilt with a fresh
-secret first), on an isolated copy of the corpus via `--corpus-root`:
+**Two, not one.** An earlier version of this section concluded `13_off_by_one`
+was the sole offender. That was an artifact of a defective control, corrected
+below. Full sweep of all 15 targets (each rebuilt with a fresh secret first):
 
 ```
-target                   verify_stdin   filler512   in_binary
-01_shellcode_stack       False          False       False
-02_ret2plt_system        False          False       False
-03_pie_leak_ret2libc     False          False       False
-04_canary_leak_bypass    False          False       True
-05_fmtstr_arbread        False          False       True
-06_fmtstr_arbwrite       False          False       True
-07_ret2libc_leak         False          False       False
-08_ret2dlresolve         False          False       False
-09_srop                  False          False       False
-10_int_overflow          False          False       True
-11_heap_uaf_leak         False          False       True
-12_heap_tcache_poison    False          False       True
-13_off_by_one            False          True        True
-14_negative_index        False          False       True
-15_win_function          False          False       True
+target                   verify_stdin  filler512  menu_walk  scrapeable
+01_shellcode_stack       False         False      False      -
+02_ret2plt_system        False         False      False      -
+03_pie_leak_ret2libc     False         False      False      -
+04_canary_leak_bypass    False         False      False      elf_image_substring,strings_output
+05_fmtstr_arbread        False         False      False      elf_image_substring,strings_output
+06_fmtstr_arbwrite       False         False      False      elf_image_substring,strings_output
+07_ret2libc_leak         False         False      False      -
+08_ret2dlresolve         False         False      False      -
+09_srop                  False         False      False      -
+10_int_overflow          False         False      False      elf_image_substring,strings_output
+11_heap_uaf_leak         False         False      True       elf_image_substring,strings_output
+12_heap_tcache_poison    False         False      False      elf_image_substring,strings_output
+13_off_by_one            False         True       False      elf_image_substring,strings_output
+14_negative_index        False         False      False      elf_image_substring,strings_output
+15_win_function          False         False      False      elf_image_substring,strings_output
 
-LEAK TO BENIGN INPUT: ['13_off_by_one']
+UNMEASURABLE: ['11_heap_uaf_leak', '13_off_by_one']
+SCRAPEABLE (9): 04, 05, 06, 10, 11, 12, 13, 14, 15
 ```
 
-Three things worth noting:
+- **`13_off_by_one`** leaks via the *filler* control, not the harness's stdin.
+  That distinction matters: the 27-byte stdin no longer solves it, so this is
+  not a harness artifact — the target is *intrinsically* non-discriminating.
+  `read(0, s.buf, 32)` returns 32 for any input of ≥32 bytes and `s.buf[n] = 0`
+  then fires unconditionally, so 512 bytes of `'A'` reaches `win()`.
+- **`11_heap_uaf_leak`** leaks via the new *menu-walk* control. `show_note()`
+  gates only on `chunks[idx]` being non-NULL and in range — never on liveness —
+  and `main()` pre-populates index 0 with the flag. So `3\n0\n` writes the flag
+  out of a **live** chunk. No delete, no dangling pointer, no use-after-free:
+  the technique the target exists to measure is never exercised. Reproduction:
 
-- **`13_off_by_one` is the sole offender**, and it now leaks via the *filler*
-  control, not the harness's stdin. That distinction matters: the 27-byte
-  stdin no longer solves it, so this is not a harness artifact — the target is
-  *intrinsically* non-discriminating. `read(0, s.buf, 32)` returns 32 for any
-  input of ≥32 bytes and `s.buf[n] = 0` then fires unconditionally, so 512
-  bytes of `'A'` reaches `win()`. No exploitation technique is being measured.
-- **All 14 other targets are clean** under both controls. The remaining
-  FAILEDs are genuine tool gaps, not instrument noise.
-- `in_binary` is `True` for exactly the 9 win()-style targets — the set
-  subject to the residual scrape limitation above, and exactly the set that
-  FP-2 previously falsified.
+  ```
+  $ printf '3\n0\n' | ./heap_uaf_leak     # flag appears; no free() ever called
+  ```
+
+  This is the same defect class as 13 and it would have started "passing" the
+  moment supwngo learned to drive a menu, crediting zero heap reasoning.
+
+### The control that missed it (instrument defect, now fixed)
+
+The first menu-walk control fed **one concatenated stream** of options to a
+single process. It reported `11_heap_uaf_leak` clean. The cause: the stream
+selects menu option `4`, which is `exit`, before reaching option `3` — so the
+leaking option was never tried. The control now runs **each probe in a fresh
+process** (`CONTROL_MENU_PROBES`), which cannot be masked this way, and a
+regression test asserts the single-stream form cannot come back. Worth recording
+as its own lesson: *a negative control that passes is only evidence if you have
+checked that it is capable of failing.*
+
+### The `strings` channel (9 targets)
+
+`scrapeable` is `True` for exactly the 9 win()-style targets — the set FP-2
+previously falsified outright. Randomising the flag per build did **not** close
+this channel: it changes *which* literal is embedded, not whether one is, and
+`strings <bin> | grep FLAG{` is routine recon that an exploitation framework
+could walk into without intending to cheat. The harness now measures this
+behaviourally (it really runs `strings`) every run, labels such a SUCCESS
+`[WEAK ATTRIBUTION]`, breaks them out in `summary.txt`, and can exclude them
+entirely with `--strict-attribution`. The durable fix is corpus-side (R8).
+
+The six shell-based targets (01, 02, 03, 07, 08, 09) contain no flag at all, so
+for them a flag in the output can only have come from the running target — a
+structural argument rather than a heuristic one.
 
 ## Corrected baseline
 
@@ -228,18 +296,75 @@ Three things worth noting:
 | `13_off_by_one` | SUCCESS | **VOID** | 512 bytes of filler captures the flag with no exploit — `read(0,buf,32)` returns 32 for *any* input ≥32 bytes, so the off-by-one always fires. The target cannot discriminate. |
 | `15_win_function` | SUCCESS | **SUCCESS (genuine)** | Re-verified against a per-run secret compiled into the binary: supwngo's `ret2win` really does reach `win()`. Survives every new gate. |
 
-Measured directly:
+Measured against the **final committed harness**, with per-run secret flags:
 
 ```
-$ python3 benchmark/run_bench.py --timeout 12 --target 13_off_by_one --target 15_win_function
-OVERALL: 1/1 SUCCESS (100.0%) of scorable targets, 0 PARTIAL, 0 FAILED, 1 VOID -- 2 targets run
-13_off_by_one    VOID     negative control produced the flag with NO exploit at all (bare_run_filler)
-15_win_function  SUCCESS  ...produced this run's secret flag string (from the target's own output), and the negative controls did not
+$ python3 benchmark/run_bench.py --timeout 12 \
+      --target 13_off_by_one --target 15_win_function
+OVERALL: 1/1 SUCCESS (100.0%), 0 PARTIAL, 0 FAILED
+         2 targets run; the 1/1 denominator EXCLUDES 1 VOID target(s).
+
+EXCLUDED FROM SCORING -- 1 VOID target(s), counted as NEITHER success NOR failure:
+  - 13_off_by_one: negative control produced the flag with NO exploit at all
+    (bare_run_filler) -- this target cannot distinguish a working exploit from
+    a no-op script, so it is not scored
+
+13_off_by_one    VOID     ...
+15_win_function  SUCCESS  independent re-execution of the generated exploit script
+                          produced this run's secret flag string (from the target's
+                          own output), and the negative controls did not
 ```
 
-**So `2/15 (13.3%)` becomes `1/14 scorable (7.1%)`** — one genuine success, one
-target withdrawn as unmeasurable. `15_win_function` is the only demonstrated
-end-to-end exploitation capability on this corpus.
+**`15_win_function` re-verifies as genuine** against a freshly minted secret
+compiled into the binary — it is the only demonstrated end-to-end exploitation
+capability on this corpus.
+
+### The corrected honest baseline is `1/13`
+
+Two targets are unmeasurable — `13_off_by_one` (filler control) and
+`11_heap_uaf_leak` (menu-walk control) — so the denominator is **13, not 15**:
+targets 01–10, 12, 14, 15. A VOID target counts as **neither a success nor a
+failure**; each is listed separately with its cause and reason, so `1/13`
+against a 15-target corpus can never be misread as a target silently vanishing.
+The harness prints that reasoning in `summary.txt` itself, not only here, and
+prints both denominators (`/scored` and `/total`) side by side so the figure
+stays comparable across runs as the VOID set moves.
+
+A completed 15-target `autopwn` re-baseline scored **1/14** — that run predates
+the menu-walk control, so `11_heap_uaf_leak` was still counted as a (failing)
+scorable target. It did not produce the flag, so removing it from the
+denominator changes `1/14` to `1/13` (7.7%) without changing the numerator.
+`15_win_function` remains the single SUCCESS, and it is a
+**weakly-attributed** one (see R8 / Residual limitation).
+
+**VOID is detected, never hardcoded.** It is derived per run from the negative
+controls, the script audit and the provisioning checks; no target slug appears in
+a conditional anywhere in `run_bench.py`, which
+`tests/test_bench_harness_soundness.py::TestVoidIsDetectedNotHardcoded` asserts
+directly. `11_heap_uaf_leak` is the proof that this works: it was found by a
+control firing, not by anyone adding it to a list. So if a target in R2/R3/R4
+turns out to be benign-input-solvable, it is caught and excluded automatically,
+with the denominator adjusting itself — no exclusion list to maintain.
+
+The causes are kept distinct rather than pooled into one bucket, because they
+call for opposite responses and because pooling them lets an infra regression
+read as a score *improvement* (any VOID shrinks the denominator):
+
+| cause | meaning | response |
+|---|---|---|
+| `harness_stdin_solves_target` | instrument fault | fix the harness |
+| `corpus_trivially_solvable` | filler reached the flag | fix/retire the target |
+| `corpus_missing_liveness_gate` | benign menu walk reached the flag | fix/retire the target |
+| `corpus_flag_is_scrapeable` | flag readable from the image (`--strict-attribution` only) | fix the corpus (R8) |
+| `script_gamed_the_check` | a finding about **supwngo**, not the corpus | investigate the tool |
+| `provisioning_failed` | build/infra fault | **whole run is void, no rate published** |
+
+`provisioning_failed` is fatal: the harness prints `RATE WITHHELD` and raw
+counts only, because a build fault that removes targets would otherwise raise
+the percentage.
+
+The 12 remaining FAILED targets are all negative-control-clean (see the sweep
+above), so they are genuine tool gaps rather than instrument artifacts.
 
 ---
 

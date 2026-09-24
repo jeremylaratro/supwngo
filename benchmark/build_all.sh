@@ -128,8 +128,34 @@ build_one() {
             flags+=(-fno-stack-protector -no-pie -Wl,-z,relro,-z,now)
             ;;
         *)
-            echo "SKIP: unknown target directory $(basename "$dir")" >&2
-            return 1
+            # A target from a corpus round this case statement has never heard
+            # of. The per-target protection flags ARE the measurement, so we
+            # must not guess them -- building a canary=ON target with defaults
+            # would silently measure a different challenge. Instead the target
+            # declares them itself, in a `cflags` file beside its source, one
+            # gcc flag per line (blank lines and #-comments ignored):
+            #
+            #     benchmark/corpus_r2/03_your_target/cflags
+            #         -fno-stack-protector
+            #         -no-pie
+            #
+            # Absent that file we fail closed rather than build something
+            # plausible, so a corpus author gets a clear error instead of a
+            # quiet mis-measurement.
+            if [[ -f "$dir/cflags" ]]; then
+                local line
+                while IFS= read -r line || [[ -n "$line" ]]; do
+                    line="${line%%#*}"
+                    line="$(echo "$line" | tr -d '[:space:]')"
+                    [[ -n "$line" ]] && flags+=("$line")
+                done < "$dir/cflags"
+            else
+                echo "FAIL: $(basename "$dir") is not a known target and has no" >&2
+                echo "      $dir/cflags declaring its protection flags." >&2
+                echo "      Protections are part of the measurement, so this" >&2
+                echo "      builder will not guess them. See benchmark/README.md R8." >&2
+                return 1
+            fi
             ;;
     esac
 

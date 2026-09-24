@@ -54,12 +54,36 @@ original 48-byte stdin, `13_off_by_one` (`read(0, s.buf, 32)` followed by
 entire body was `subprocess.run(['./off_by_one'])` scored SUCCESS.
 
 Two guards address this. The injected stdin is kept deliberately short (see
-VERIFY_STDIN), and -- the actual structural guarantee -- before scoring, the
-harness runs the target with no exploit at all under the same conditions. If
-the flag shows up there, nothing a script does can be attributed to
-exploitation, so the target is scored VOID instead of SUCCESS. This
-generalises to any future corpus rather than depending on byte counts in
+VERIFY_STDIN), and -- the structural guarantee on the TARGET side -- before
+scoring, the harness runs the target with no exploit at all under the same
+conditions. If the flag shows up there, nothing a script does can be
+attributed to exploitation, so the target is scored VOID instead of SUCCESS.
+This generalises to any future corpus rather than depending on byte counts in
 this one.
+
+KNOWN WEAKNESS -- read this before trusting a SUCCESS
+-----------------------------------------------------
+There is NO structural guarantee on the SCRIPT side. Verification is not
+sandboxed: the generated script runs as the same user and can read flag.txt
+and the target binary by any means it chooses. An independent review defeated
+an earlier version of the checks below with several two-line scripts
+(`subprocess.run(['cat','flag.txt'])`, `open('flag'+'.txt')`,
+`glob.glob('*.txt')`, `Path('.').iterdir()`, `ELF(b).search(b'FLAG{')`).
+inspect_generated_script() now closes the known forms, but it is a
+BYPASSABLE HEURISTIC, not a proof -- a string-built or directory-walked path
+is out of reach of any regex.
+
+So: SUCCESS means "the script produced this run's secret flag and did not
+trip any known cheat pattern". For a target whose
+`negative_control.flag_statically_extractable_from_binary` is true, it does
+NOT prove the target was exploited.
+
+The robust fix is behavioural attribution -- assert that the TARGET process
+did the thing (win() entered, or execve("/bin/sh") in a target descendant),
+via ptrace/strace or an LD_PRELOAD shim -- rather than that a flag string
+appeared somewhere. That removes the need for a secret flag, -DFLAG, the
+corpus flag contract and these regexes entirely, and is the recommended next
+step.
 
 See docs/reports/HARNESS-SOUNDNESS-AUDIT-23SEP2026.md for the full audit and
 reproductions.
@@ -81,13 +105,16 @@ fails). The package itself is importable, so this harness invokes it as
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import time
+import fcntl
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -132,7 +159,32 @@ SHELL_PROOF_RE = re.compile(r"(?m)^\s*42\s*$")
 
 # A second, cruder negative control: a benign filler blob. If this captures
 # the flag, the target hands it out for arbitrary garbage.
+#
+# CAVEAT, so this control is not over-read: 512 bytes of 'A' is ALSO the shape
+# of a blind stack-overflow payload. So a leak here does not strictly prove
+# "any garbage wins" -- it proves "the canonical structure-free first payload
+# wins, with no offset, address or gadget computed". Either way the target
+# cannot distinguish reasoning from a blob, which is what disqualifies it; but
+# the right conclusion is "this target does not discriminate", not "this target
+# is readable by accident".
 CONTROL_FILLER = b"A" * 512 + b"\n"
+
+# A third benign-input control, for MENU-DRIVEN targets, which the filler blob
+# cannot reach: scanf("%d") rejects 'A', so the target bails out before any menu
+# option runs. Each probe is an ordinary menu selection plus index 0 -- input any
+# user might type, containing no address, offset or gadget. A target that hands
+# over the flag for this has no liveness or authorization gate on its read path,
+# so it does not require the vulnerability it claims to teach (a use-after-free
+# that never needs the free, say).
+#
+# EACH PROBE RUNS IN A FRESH PROCESS, deliberately. A single concatenated stream
+# does not work: one of the options is invariably "exit", and once the walk
+# selects it the process is gone and every later option in the stream is never
+# tried. That is not hypothetical -- an earlier single-stream version of this
+# control reported a clean bill of health for 11_heap_uaf_leak, whose menu
+# option 3 with index 0 dumps the flag out of a LIVE chunk, purely because
+# option 4 ("exit") came first in the stream.
+CONTROL_MENU_PROBES = tuple(b"%d\n0\n" % i for i in range(1, 7))
 
 
 @dataclass(frozen=True)
@@ -152,7 +204,14 @@ class Corpus:
     def binary_name(slug: str) -> str:
         # corpus dirs are "<NN>_<name>"; the built binary is named "<name>"
         # (matches build_all.sh's own `slug="${slug#[0-9][0-9]_}"` stripping).
-        return slug.split("_", 1)[1]
+        # A slug with no "_" is a manifest error, not a target: say so rather
+        # than dying with an IndexError halfway through a run.
+        head, _, tail = slug.partition("_")
+        if not tail:
+            raise ValueError(
+                f"corpus slug {slug!r} is malformed: expected '<NN>_<name>'"
+            )
+        return tail
 
     def target_dir(self, slug: str) -> Path:
         return self.root / slug
@@ -185,25 +244,34 @@ def corpus_lock(corpus: Corpus):
     Distinct corpora (benchmark/corpus vs benchmark/corpus_r2) and distinct
     worktrees are unaffected: the lock lives in the corpus root."""
     lock = corpus.root / ".run_bench.lock"
+    # flock, not O_EXCL: the kernel releases it when the process dies for ANY
+    # reason, including SIGKILL. An O_EXCL lock file survives a kill and wedges
+    # every later run until a human deletes it -- the wrong failure mode for a
+    # tree several agents share.
+    fd = os.open(str(lock), os.O_CREAT | os.O_RDWR, 0o644)
     try:
-        fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        print(
-            f"error: {lock} exists -- another run_bench.py is using this corpus.\n"
-            f"       Because each run rebuilds the targets with a fresh secret "
-            f"flag, concurrent runs corrupt each other's results.\n"
-            f"       If no run is active, remove the lock file and retry.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            print(
+                f"error: another run_bench.py holds {lock}.\n"
+                f"       Each run rebuilds the targets with a fresh secret flag, so "
+                f"concurrent runs over one corpus corrupt each other's results.\n"
+                f"       Wait for it to finish, or use a separate --corpus-root.",
+                file=sys.stderr,
+            )
+            os.close(fd)
+            sys.exit(1)
+        os.truncate(fd, 0)
         os.write(fd, f"pid={os.getpid()} started={datetime.now(timezone.utc).isoformat()}\n".encode())
-        os.close(fd)
         yield
     finally:
+        # Closing the fd drops the flock. The file itself is left behind
+        # deliberately: an empty lock file holds no lock, so it is harmless,
+        # and unlinking it would race another waiter's open().
         try:
-            lock.unlink()
-        except FileNotFoundError:
+            os.close(fd)
+        except OSError:
             pass
 
 
@@ -225,7 +293,13 @@ MAX_SAFE_FLAG_LEN = 63
 def mint_secret_flag() -> str:
     """A fresh, unguessable per-run flag."""
     flag = "FLAG{" + secrets.token_hex(16) + "}"
-    assert len(flag) == SECRET_FLAG_LEN <= MAX_SAFE_FLAG_LEN
+    # A real check, not an `assert`: asserts vanish under `python -O`, and this
+    # bound protects the corpus from being corrupted by its own flag.
+    if not MIN_FLAG_LEN <= len(flag) <= MAX_SAFE_FLAG_LEN:
+        raise RuntimeError(
+            f"minted flag length {len(flag)} outside the corpus contract "
+            f"[{MIN_FLAG_LEN}, {MAX_SAFE_FLAG_LEN}] -- see SECRET_FLAG_LEN"
+        )
     return flag
 
 
@@ -269,12 +343,24 @@ def build_with_secret(corpus: Corpus, slug: str, secret: str) -> None:
     # those the secret must be compiled in, or a genuine win() would print a
     # stale literal and be scored FAILED.
     src = corpus.source(slug)
-    if src.is_file() and "#define FLAG" in src.read_text():
-        if secret.encode() not in bp.read_bytes():
+    image = bp.read_bytes()
+    if src.is_file() and re.search(r"#\s*define\s+FLAG\b", src.read_text()):
+        if secret.encode() not in image:
             raise ProvisionError(
                 f"{slug} defines its own FLAG but the built binary does not "
                 f"contain this run's secret -- -DFLAG did not take effect"
             )
+
+    # The mirror-image check, and the more direct proof of what this is for:
+    # the OLD public constant must be gone. Catches a second flag use-site, a
+    # partially-applied -DFLAG, or a stale object file that the
+    # secret-is-present test alone would happily pass.
+    if b"FLAG{supwngo_bench" in image:
+        raise ProvisionError(
+            f"{slug}'s built binary still contains the legacy public flag "
+            f"constant 'FLAG{{supwngo_bench...}}' -- the predictable flag was "
+            f"not fully displaced by this run's secret"
+        )
 
 
 def run_supwngo(binary_abs: Path, timeout: float, extra_args: list[str]):
@@ -376,10 +462,52 @@ def negative_control(corpus: Corpus, slug: str, expected_flag: str, timeout: flo
             "excerpt": _excerpt(text, 600),
         }
 
+    # Menu probes: one fresh process each, so an "exit" option cannot mask the
+    # options after it. Records which probe won, since that is what a corpus
+    # author needs in order to find the missing gate.
+    menu_hits: list[str] = []
+    menu_excerpt = ""
+    menu_timed_out = False
+    for stdin_bytes in CONTROL_MENU_PROBES:
+        out_b, err_b, timed_out = _run_capture(
+            [str(bp)], tdir, stdin_bytes, wall_timeout
+        )
+        text = (out_b + err_b).decode("utf-8", "replace")
+        menu_timed_out = menu_timed_out or timed_out
+        if expected_flag in text:
+            menu_hits.append(stdin_bytes.decode().replace("\n", "\\n"))
+            if not menu_excerpt:
+                menu_excerpt = _excerpt(text, 600)
+    controls["bare_run_menu_walk"] = {
+        "flag_found": bool(menu_hits),
+        "winning_probes": menu_hits,
+        "timed_out": menu_timed_out,
+        "excerpt": menu_excerpt,
+    }
+
+    # Third control, and the one that matters most for win()-style targets:
+    # actually perform the scrape a recon step would perform, rather than
+    # reasoning about whether it would work. `strings <bin> | grep FLAG{` is
+    # routine first-step recon for an exploitation framework, so this channel
+    # can be walked into without anyone intending to cheat.
+    scrape_hits: list[str] = []
+    image = bp.read_bytes()
+    if expected_flag.encode() in image:
+        scrape_hits.append("elf_image_substring")
+    strings_bin = shutil.which("strings")
+    if strings_bin:
+        out_b, _e, _t = _run_capture([strings_bin, str(bp)], tdir, b"", wall_timeout)
+        if expected_flag.encode() in out_b:
+            scrape_hits.append("strings_output")
+
     leaked = sorted(n for n, c in controls.items() if c["flag_found"])
     return {
         "controls": controls,
         "flag_leaked_without_exploit": leaked,
+        # Measured, not assumed: which scrape channels actually yield this
+        # run's secret. Reported as WEAK ATTRIBUTION (see classify) and, under
+        # --strict-attribution, promoted to VOID.
+        "flag_scrapeable_without_exploit": scrape_hits,
         # Documented residual limitation, not a pass/fail gate. win()-style
         # targets print a compiled-in flag, so the secret is inside the
         # binary image and a script could scrape it with `strings` instead of
@@ -391,40 +519,117 @@ def negative_control(corpus: Corpus, slug: str, expected_flag: str, timeout: flo
     }
 
 
-# Anti-gaming static checks on the generated script. A script that already
-# holds the flag, or that reads it out of an artifact on disk, did not have to
-# exploit anything.
+# What a VOID means. Four very different causes, kept distinct because they
+# call for opposite responses (fix the corpus / fix supwngo / fix the build).
+VOID_CAUSES = {
+    "harness_stdin_solves_target": "instrument fault -- the harness's own stdin reached the flag",
+    "corpus_trivially_solvable": "corpus fault -- structure-free filler reached the flag",
+    "corpus_missing_liveness_gate": "corpus fault -- a benign menu walk reached the flag",
+    "corpus_flag_is_scrapeable": "corpus fault -- the flag is readable from the binary image",
+    "script_gamed_the_check": "supwngo finding -- the script obtained the flag without exploiting",
+    "provisioning_failed": "BUILD/INFRA FAULT -- the flag could not be made a real secret",
+}
+# Causes that mean "the whole run is untrustworthy", not "skip this target".
+FATAL_VOID_CAUSES = {"provisioning_failed"}
+
+
+# Anti-gaming static checks on the generated script.
 #
-# Deliberately narrow so legitimate exploit shapes are never caught:
-#   - Python-side reads of flag.txt only. `io.sendline(b"cat flag.txt")` --
-#     sending that command *to a shell the exploit obtained* -- is the
-#     intended solve path for the shell targets and must NOT match, so `cat`
-#     is not part of this pattern.
-#   - external binary-inspection tooling invoked at exploit runtime. A real
-#     pwntools exploit resolves symbols via `ELF()`; it has no reason to shell
-#     out to strings/objdump/readelf/xxd at runtime.
+# IMPORTANT, AND A KNOWN WEAKNESS: this is a BYPASSABLE HEURISTIC, not a
+# guarantee. Verification is not sandboxed, so the script runs as the same user
+# and can read flag.txt and the target binary by any means it likes. An
+# independent review defeated an earlier version of these checks with several
+# two-line scripts (`subprocess.run(['cat','flag.txt'])`, `open('flag'+'.txt')`,
+# `glob.glob('*.txt')`, `Path('.').iterdir()`, `ELF(bin).search(b'FLAG{')`).
+# The patterns below close the ones we know about; string-built or
+# directory-walked paths remain out of reach of any regex.
+#
+# The only robust fix is behavioural attribution -- assert that the TARGET
+# process did the thing (win() entered, or execve("/bin/sh") in a target
+# descendant) rather than that a flag string appeared in some output. That is
+# the recommended next step; see
+# docs/reports/HARNESS-SOUNDNESS-AUDIT-23SEP2026.md.
+#
+# Kept narrow enough not to catch legitimate exploit shapes:
+#   - `io.sendline(b"cat flag.txt")` and `shellcraft.cat("flag.txt")` send that
+#     command *to a shell the exploit obtained* -- the intended solve path for
+#     the shell targets -- so a bare `cat flag.txt` string must NOT match. Only
+#     a local *process spawn* that cats it does.
+#   - `hexdump` is deliberately absent: pwntools' own `hexdump()` is
+#     re-exported by supwngo.utils, and a real exploit printing a leaked
+#     buffer with it is entirely legitimate.
 _READS_FLAG_FILE_RE = re.compile(
     r"""(open|Path|read_text|read_bytes|readlines|getenv)\s*\([^\n]{0,80}flag\.txt""",
     re.I)
-_SCRAPES_BINARY_RE = re.compile(r"""\b(strings|objdump|readelf|xxd|hexdump)\b""")
+# A local subprocess that reads the flag file (as opposed to bytes SENT to a
+# tube). Matches the shell-out forms, e.g. subprocess.run(['cat','flag.txt']).
+#
+# The spawn construct must be explicit -- no bare `run`/`cat` alternatives --
+# because `io.sendline(b"cat flag.txt")` is the legitimate solve path for the
+# six shell targets and must never match. Newlines are not crossed, so a
+# `process()` call on an earlier line cannot combine with a later `cat`.
+_SPAWNS_READER_RE = re.compile(
+    r"""(subprocess\.(run|call|check_output|check_call|Popen)"""
+    r"""|os\.(system|popen|exec\w+|spawn\w+)"""
+    r"""|\bPopen\s*\()"""
+    r"""[^\n]{0,120}\b(cat|head|tail|od|base64|grep|less|more|strings|xxd)\b""",
+    re.I)
+# External binary-inspection tooling at exploit runtime, or pwntools-level
+# scraping of the target image for the flag. A real exploit resolves symbols
+# via ELF(); it does not search the binary for FLAG{.
+_SCRAPES_BINARY_RE = re.compile(
+    r"""\b(strings|objdump|readelf|xxd)\b|\.(search|string)\s*\([^\n]{0,40}FLAG""")
 
 
 def inspect_generated_script(script_path: Path, expected_flag: str) -> dict:
-    """Look at what the generated script *is*, not just what it printed."""
+    """Look at what the generated script *is*, not just what it printed.
+
+    Only executable code is scanned: comments and docstrings are stripped
+    first, because supwngo interpolates executor notes and failure reasons into
+    the generated artifact's docstring, and a note mentioning "objdump" would
+    otherwise disqualify an honest result.
+    """
     if not script_path.is_file():
         return {"present": False}
     try:
         text = script_path.read_text(errors="replace")
     except OSError:
         return {"present": False}
+
+    code = _strip_comments_and_docstrings(text)
     return {
         "present": True,
         # Decisive: supwngo is never handed the flag, so a literal match means
         # the script read it off disk (or was hand-doctored).
-        "contains_flag_literal": expected_flag in text,
-        "reads_flag_file_directly": bool(_READS_FLAG_FILE_RE.search(text)),
-        "scrapes_binary_with_tooling": bool(_SCRAPES_BINARY_RE.search(text)),
+        "contains_flag_literal": expected_flag in code,
+        "reads_flag_file_directly": bool(_READS_FLAG_FILE_RE.search(code)),
+        "spawns_local_flag_reader": bool(_SPAWNS_READER_RE.search(code)),
+        "scrapes_binary_with_tooling": bool(_SCRAPES_BINARY_RE.search(code)),
     }
+
+
+def _strip_comments_and_docstrings(text: str) -> str:
+    """Best-effort reduction of a script to just its executable code."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        # Not parseable (a template with placeholders, say): fall back to
+        # dropping `#` comments only, and accept the extra noise.
+        return "\n".join(line.split("#")[0] for line in text.splitlines())
+
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            body = getattr(node, "body", None) or []
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                docstrings.add(id(body[0]))
+    kept = [n for n in tree.body if id(n) not in docstrings]
+    try:
+        return ast.unparse(ast.Module(body=kept, type_ignores=[]))
+    except Exception:
+        return text
 
 
 def script_cheat_reason(script_audit: dict) -> str | None:
@@ -435,6 +640,9 @@ def script_cheat_reason(script_audit: dict) -> str | None:
     if script_audit.get("reads_flag_file_directly"):
         return ("the generated script reads flag.txt itself in Python rather "
                 "than through a shell it obtained")
+    if script_audit.get("spawns_local_flag_reader"):
+        return ("the generated script spawns a local process to read the flag "
+                "file instead of exploiting the target")
     if script_audit.get("scrapes_binary_with_tooling"):
         return ("the generated script shells out to binary-inspection tooling "
                 "(strings/objdump/readelf/xxd) at runtime, which can scrape a "
@@ -472,48 +680,119 @@ def independent_verify(script_path: Path, target_dir: Path, expected_flag: str, 
     }
 
 
+def scrape_channels(control: dict) -> list[str]:
+    """Which no-exploit scrape channels actually yielded this run's secret.
+
+    Behavioural (`strings` was really run) with the plain image substring test
+    as a floor, so a missing `strings` binary cannot silently downgrade the
+    check to "no exposure found".
+    """
+    hits = list(control.get("flag_scrapeable_without_exploit") or [])
+    if not hits and control.get("flag_statically_extractable_from_binary"):
+        hits = ["elf_image_substring"]
+    return hits
+
+
 def classify(supwngo_json: dict | None, verify: dict, control: dict,
-             script_audit: dict) -> tuple[str, str]:
-    # Checked first: if the flag is obtainable with no exploit at all, the
-    # target simply cannot be scored, however the generated script behaved.
+             script_audit: dict, strict_attribution: bool = False
+             ) -> tuple[str, str, str | None]:
+    """Returns (status, reason, void_cause).
+
+    void_cause is machine-readable and distinguishes the four very different
+    things a VOID can mean; see VOID_CAUSES. Collapsing them into one bucket
+    would let an infra regression (the secret stopping being injected, say)
+    read as an improved score, because it shrinks the denominator.
+    """
+    # Checked first: the harness's own injected stdin reached the flag, so the
+    # instrument is solving the target. Nothing a script does is attributable.
     leaked = control.get("flag_leaked_without_exploit") or []
-    if leaked:
+    if "bare_run_verify_stdin" in leaked:
         return "VOID", (
-            "negative control produced the flag with NO exploit at all "
-            f"({', '.join(leaked)}) -- this target cannot distinguish a working "
-            "exploit from a no-op script, so it is not scored"
-        )
+            "the harness's own injected verification stdin produced the flag with "
+            "NO exploit at all -- the instrument is solving this target, so it "
+            "cannot be scored"
+        ), "harness_stdin_solves_target"
 
-    cheat = script_cheat_reason(script_audit)
-    if cheat:
-        return "VOID", f"{cheat}, so this result is not scored"
+    if "bare_run_filler" in leaked:
+        return "VOID", (
+            "512 bytes of structure-free filler produced the flag with no offset, "
+            "address or gadget involved -- this target does not discriminate a "
+            "reasoned exploit from a blind blob, so it is not scored"
+        ), "corpus_trivially_solvable"
 
+    if "bare_run_menu_walk" in leaked:
+        return "VOID", (
+            "walking the menu with small integers produced the flag -- the read "
+            "path has no liveness or authorization gate, so the flag is reachable "
+            "without the vulnerability this target is supposed to require, and it "
+            "is not scored"
+        ), "corpus_missing_liveness_gate"
+
+    # Only cheating if it actually produced the flag. Otherwise the target just
+    # FAILED and must stay in the denominator -- voiding a failure would
+    # silently inflate the success rate.
     if verify["flag_found"]:
-        how = "via a shell the exploit obtained" if verify.get("shell_proven") else "from the target's own output"
-        return "SUCCESS", (
+        cheat = script_cheat_reason(script_audit)
+        if cheat:
+            return "VOID", f"{cheat}, so this result is not scored", "script_gamed_the_check"
+
+        how = ("via a shell the exploit obtained" if verify.get("shell_proven")
+               else "from the target's own output")
+        reason = (
             "independent re-execution of the generated exploit script produced "
             f"this run's secret flag string ({how}), and the negative controls "
             "did not"
         )
+        # Attribution strength is NOT uniform across targets and the difference
+        # has to travel with the result. If the secret is sitting in the
+        # binary's image -- unavoidable for win()-style targets, which must
+        # puts() it -- then "produced the flag" is only evidence of exploitation
+        # as far as the script audit is trustworthy, and the script audit is a
+        # bypassable heuristic (see the module docstring). Where the image holds
+        # no flag, the flag can only have come from the target's runtime, which
+        # is a structural argument rather than a heuristic one.
+        channels = scrape_channels(control)
+        if channels:
+            if strict_attribution:
+                return "VOID", (
+                    "this run's secret is obtainable with no exploit at all via "
+                    f"{', '.join(channels)} (e.g. `strings` recon, which an "
+                    "exploitation framework performs routinely), so a flag match "
+                    "does not attribute to exploitation and --strict-attribution "
+                    "refuses to score it"
+                ), "corpus_flag_is_scrapeable"
+            reason += (
+                " [WEAK ATTRIBUTION: this run's secret is readable with no exploit "
+                f"via {', '.join(channels)}, so this SUCCESS rests on the bypassable "
+                "script audit, not on a structural guarantee]"
+            )
+        return "SUCCESS", reason, None
 
     claimed_success = bool(supwngo_json and supwngo_json.get("success"))
+    # AttemptRecord.to_dict() emits {"outcome": Outcome.name}, i.e. "SUCCESS" --
+    # there is no "result" key (see supwngo/exploit/pipeline/contracts.py).
+    # Reading the wrong key here made this branch dead code, so a run where a
+    # technique verified but engine.successful was False scored FAILED instead
+    # of PARTIAL.
     any_attempt_success = bool(
         supwngo_json
-        and any(a.get("result") == "success" for a in supwngo_json.get("attempts", []) or [])
+        and any(str(a.get("outcome", "")).upper() == "SUCCESS"
+                for a in supwngo_json.get("attempts", []) or [])
     )
     if claimed_success or any_attempt_success:
         return "PARTIAL", (
             "autopwn self-reported success (or a successful intermediate attempt), "
             "but independently re-running the generated script did not reproduce "
             "the flag"
-        )
+        ), None
     return "FAILED", (
         "no successful attempt reported by autopwn, and independent re-execution "
         "did not produce the flag"
-    )
+    ), None
 
 
-def run_one(corpus: Corpus, target: dict, timeout: float, results_dir: Path) -> dict:
+def run_one(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
+            strict_attribution: bool = False) -> dict:
     slug = target["slug"]
     print(f"=== {slug}  [{target['technique']}, {target['difficulty']}] ===", flush=True)
 
@@ -535,6 +814,7 @@ def run_one(corpus: Corpus, target: dict, timeout: float, results_dir: Path) -> 
             "elapsed_sec": round(time.time() - t0, 1),
             "status": "VOID",
             "reason": f"target could not be provisioned with a secret flag: {e}",
+            "void_cause": "provisioning_failed",
         }
 
     expected_flag = corpus.flag_file(slug).read_text().strip()
@@ -545,7 +825,8 @@ def run_one(corpus: Corpus, target: dict, timeout: float, results_dir: Path) -> 
         )
         print(f"    -> VOID: {reason}", flush=True)
         return {**base, "elapsed_sec": round(time.time() - t0, 1),
-                "status": "VOID", "reason": reason}
+                "status": "VOID", "reason": reason,
+                "void_cause": "provisioning_failed"}
 
     bp = corpus.binary(slug).resolve()
     target_dir = bp.parent
@@ -567,7 +848,8 @@ def run_one(corpus: Corpus, target: dict, timeout: float, results_dir: Path) -> 
     verify = independent_verify(script_path, target_dir, expected_flag, timeout)
 
     elapsed = time.time() - t0
-    status, reason = classify(supwngo_json, verify, control, script_audit)
+    status, reason, void_cause = classify(supwngo_json, verify, control, script_audit,
+                                          strict_attribution=strict_attribution)
 
     print(f"    -> {status}: {reason}", flush=True)
 
@@ -592,6 +874,7 @@ def run_one(corpus: Corpus, target: dict, timeout: float, results_dir: Path) -> 
         "verification": verify,
         "status": status,
         "reason": reason,
+        "void_cause": void_cause,
     }
 
 
@@ -616,13 +899,100 @@ def write_summary(results: list[dict], out_path: Path, timeout: float, corpus: C
     lines.append(f"manifest: {corpus.manifest}")
     lines.append(f"per-attempt timeout passed to autopwn: {timeout}s")
     lines.append("")
+    voids = [r for r in results if r["status"] == "VOID"]
+    fatal = [r for r in voids if r.get("void_cause") in FATAL_VOID_CAUSES]
     pct = (counts["SUCCESS"] / scored * 100) if scored else 0.0
-    lines.append(
-        f"OVERALL: {counts['SUCCESS']}/{scored} SUCCESS ({pct:.1f}%) of scorable targets, "
-        f"{counts['PARTIAL']} PARTIAL, {counts['FAILED']} FAILED, "
-        f"{counts['VOID']} VOID (not scorable) -- {total} targets run"
-    )
+
+    if fatal:
+        # A build/infra fault shrinks the denominator, which makes the RATE GO
+        # UP. Refuse to publish a rate at all rather than let a regression read
+        # as an improvement.
+        lines.append("!! RUN NOT TRUSTWORTHY -- NO SCORE PUBLISHED !!")
+        lines.append(
+            f"   {len(fatal)} target(s) could not be provisioned with a real secret "
+            f"flag, which is a build/infra fault, not a result:")
+        for r in fatal:
+            lines.append(f"     - {r['slug']}: {r['reason']}")
+        lines.append("   Excluding these would shrink the denominator and inflate the")
+        lines.append("   success rate, so the rate is withheld. Fix the build and re-run.")
+        lines.append("")
+        # Withheld means withheld: print the raw counts a reader needs to debug
+        # the build, but never a rate. A printed rate gets quoted downstream no
+        # matter what banner sits above it.
+        lines.append(
+            f"OVERALL: RATE WITHHELD -- raw counts only: {counts['SUCCESS']} SUCCESS, "
+            f"{counts['PARTIAL']} PARTIAL, {counts['FAILED']} FAILED, "
+            f"{counts['VOID']} VOID out of {total} run."
+        )
+    elif scored == 0:
+        lines.append("OVERALL: no scorable targets -- no success rate can be computed.")
+    else:
+        lines.append(
+            f"OVERALL: {counts['SUCCESS']}/{scored} SUCCESS ({pct:.1f}%), "
+            f"{counts['PARTIAL']} PARTIAL, {counts['FAILED']} FAILED"
+        )
+        # Both denominators, always. /scored is the honest rate; /total keeps it
+        # comparable across runs even as the VOID set changes.
+        lines.append(
+            f"         also {counts['SUCCESS']}/{total} of ALL targets run "
+            f"({counts['SUCCESS'] / total * 100:.1f}%) -- the {counts['SUCCESS']}/{scored} "
+            f"denominator EXCLUDES {counts['VOID']} VOID target(s)."
+        )
     lines.append("")
+
+    # Spelled out here, not just in a doc: a VOID target counts as neither a
+    # success nor a failure, so the denominator shrinks. Without this block a
+    # later reader could see "1/14" against a 15-target corpus and assume a
+    # target silently vanished.
+    if voids:
+        lines.append(f"EXCLUDED FROM SCORING -- {len(voids)} VOID target(s), "
+                     f"counted as NEITHER success NOR failure:")
+        for r in voids:
+            cause = r.get("void_cause") or "unknown"
+            lines.append(f"  - {r['slug']}  [{cause}: {VOID_CAUSES.get(cause, '?')}]")
+            lines.append(f"      {r['reason']}")
+        lines.append("")
+        lines.append("  VOID is detected per run from the negative controls, the script")
+        lines.append("  audit and the provisioning checks -- there is NO hardcoded")
+        lines.append("  exclusion list, so a target that becomes benign-input-solvable in")
+        lines.append("  any future corpus is caught automatically. The four causes mean")
+        lines.append("  different things and need different responses:")
+        for cause, meaning in VOID_CAUSES.items():
+            lines.append(f"    {cause:<30} {meaning}")
+        lines.append("    -> corpus_* causes: fix or retire the target; never 'improve' its score.")
+        lines.append("    -> script_gamed_the_check: a finding about supwngo, not the corpus.")
+        lines.append("    -> provisioning_failed: a build fault; the whole run is void.")
+        lines.append("")
+    else:
+        lines.append("No VOID targets: every target run was scorable.")
+        lines.append("")
+
+    # Not all SUCCESSes are equally well attributed, and the summary must not
+    # present them as if they were. See classify()'s WEAK ATTRIBUTION note.
+    weak = [r for r in results
+            if r["status"] == "SUCCESS"
+            and scrape_channels(r.get("negative_control") or {})]
+    strong = [r for r in results if r["status"] == "SUCCESS" and r not in weak]
+    if weak:
+        lines.append(f"ATTRIBUTION -- {len(weak)} of {counts['SUCCESS']} SUCCESS(es) are "
+                     f"WEAKLY attributed:")
+        for r in weak:
+            lines.append(f"  - {r['slug']}: this run's secret is readable directly out "
+                         f"of the binary image.")
+        lines.append("    For these targets the flag MUST be compiled in (win() has to")
+        lines.append("    print it), so an unsandboxed script could read it instead of")
+        lines.append("    exploiting. Only the script audit stands in the way, and that")
+        lines.append("    is a bypassable heuristic, not a proof. Treat these as 'not")
+        lines.append("    disproven' rather than 'proven'. The corpus-side fix is to have")
+        lines.append("    win() print the CONTENTS OF flag.txt instead of a baked-in")
+        lines.append("    literal; the harness-side fix is behavioural attribution")
+        lines.append("    (assert win() was entered / execve of a shell occurred).")
+        if strong:
+            lines.append(f"    Strongly attributed (no flag in the image, so it can only "
+                         f"have come from the running target): "
+                         f"{', '.join(r['slug'] for r in strong)}")
+        lines.append("")
+
     lines.append(f"{'slug':<26} {'difficulty':<10} {'status':<9} reason")
     lines.append("-" * 100)
     for r in sorted(results, key=lambda r: r["slug"]):
@@ -679,6 +1049,15 @@ def main():
                      help=f"Per-attempt timeout passed to `supwngo autopwn --timeout` (default {DEFAULT_TIMEOUT})")
     ap.add_argument("--corpus-root", type=Path, default=DEFAULT_CORPUS_DIR,
                      help=f"Corpus directory of <NN>_<slug>/ targets (default {DEFAULT_CORPUS_DIR})")
+    ap.add_argument(
+        "--strict-attribution", action="store_true",
+        help="VOID any target whose flag can be scraped from the binary image "
+             "with no exploit (measured per run, see negative_control). Default "
+             "OFF: that exposure is inherent to win()-style targets, which must "
+             "print a compiled-in flag, so enabling this excludes them rather "
+             "than failing them. Prefer fixing the corpus so win() reads "
+             "flag.txt at runtime; use this flag to measure how much of a score "
+             "depends on the script audit.")
     ap.add_argument("--manifest", type=Path, default=DEFAULT_CORPUS_YAML,
                      help=f"Corpus manifest YAML (default {DEFAULT_CORPUS_YAML})")
     args = ap.parse_args()
@@ -709,7 +1088,8 @@ def main():
     results = []
     with corpus_lock(corpus):
         for t in targets:
-            results.append(run_one(corpus, t, args.timeout, results_dir))
+            results.append(run_one(corpus, t, args.timeout, results_dir,
+                                   strict_attribution=args.strict_attribution))
 
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),

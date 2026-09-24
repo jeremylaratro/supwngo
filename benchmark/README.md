@@ -154,15 +154,43 @@ shows up as a loud `VOID`, never as a quiet mis-measurement.
 
 ### R7 — Every new target MUST fail its negative controls
 
-This is the acceptance test for a target, not an afterthought. The harness
-runs each target with **no exploit at all** — once with its injected stdin,
-once with 512 bytes of `'A'` — and `VOID`s the target if the flag appears. A
-target solvable by arbitrary benign input measures nothing.
+This is the acceptance test for a target, not an afterthought. The harness runs
+each target with **no exploit at all** and `VOID`s it if the flag appears. Three
+controls, all standard, all run for every target on every round:
 
-R1's `13_off_by_one` fails this and is permanently `VOID`: its
-`read(0, s.buf, 32)` returns 32 for *any* input of ≥32 bytes, and the bug
-then fires unconditionally, so garbage solves it. Verify a candidate target
-before adding it:
+| control | input | what a leak proves |
+| --- | --- | --- |
+| `bare_run_verify_stdin` | the harness's own 27-byte injected stdin | **instrument fault** — the harness is solving the target |
+| `bare_run_filler` | 512 bytes of `'A'` | the target cannot discriminate a reasoned exploit from a blind blob |
+| `bare_run_menu_walk` | `<n>\n0\n` for n in 1..6, **each in a fresh process** | the read path has no liveness/authorization gate |
+
+Two R1 targets fail this and are `VOID`. Both are *detected*, not hardcoded:
+
+- **`13_off_by_one`** — leaks to `bare_run_filler`. `read(0, s.buf, 32)` returns
+  32 for *any* input of ≥32 bytes and the bug then fires unconditionally, so
+  garbage solves it.
+- **`11_heap_uaf_leak`** — leaks to `bare_run_menu_walk`. `show_note()` gates
+  only on `chunks[idx]` being non-NULL and in range, never on liveness, and
+  index 0 is pre-populated with the flag. So menu `3` / index `0` dumps it out
+  of a **live** chunk: no delete, no dangling pointer, no use-after-free. The
+  technique the target claims to require is never exercised.
+
+That makes the R1 scoring denominator **13**: 01–10, 12, 14, 15.
+
+Two methodological caveats, so these controls are not over-read:
+
+- 512 bytes of `'A'` is *also* the shape of a blind stack-overflow payload, so a
+  `bare_run_filler` leak strictly means "the canonical structure-free first
+  payload wins, with no offset, address or gadget computed" rather than "any
+  garbage wins". Either way the target does not discriminate, which is what
+  disqualifies it.
+- The menu probes **must** each run in a fresh process. A single concatenated
+  stream is unsound: one menu option is invariably "exit", and once the walk
+  selects it every later option goes untried. An earlier single-stream version
+  of this control gave `11_heap_uaf_leak` a clean bill of health for exactly
+  that reason.
+
+Verify a candidate target before adding it:
 
 ```bash
 python3 benchmark/run_bench.py --corpus-root benchmark/corpus_r2 \
@@ -181,8 +209,58 @@ python3 benchmark/soundness_probes/negative_control_sweep.py \
     --corpus-root benchmark/corpus_r2 --manifest benchmark/corpus_r2.yaml
 ```
 
-For R1 it reports `13_off_by_one` as the only unmeasurable target; the other
-14 are clean.
+For R1 it reports `13_off_by_one` and `11_heap_uaf_leak` as unmeasurable and
+flags the 9 scrapeable targets (R8); the other 13 are clean.
+
+### R8 — A target's flag SHOULD NOT be readable from its binary image
+
+`strings <binary> | grep FLAG{` is routine first-step recon for an exploitation
+framework, so this is not a hypothetical channel — a tool could score on it
+without anyone intending to cheat. **Per-build randomisation does not close it:**
+it changes *which* string is embedded, not whether one is. The harness measures
+the channel behaviourally (it really runs `strings`) for every target every run
+and records it as `flag_scrapeable_without_exploit`.
+
+On R1 this is true for 9 targets — 04, 05, 06, 10, 11, 12, 13, 14, 15 — each of
+which has a `win()` that `puts()` a compiled-in `FLAG` literal. The six
+shell-based targets (01, 02, 03, 07, 08, 09) are clean: their binaries contain
+no flag at all, so a flag in their output can only have come from the running
+target. That is a *structural* argument. For the other nine, only
+`run_bench.py`'s bypassable script audit stands in the way.
+
+The harness therefore does **not** silently equate the two. A `SUCCESS` on a
+scrapeable target is labelled `[WEAK ATTRIBUTION]` in its reason and broken out
+in `summary.txt`; `--strict-attribution` `VOID`s them outright, which is how to
+measure how much of a score rests on the script audit.
+
+**The real fix is corpus-side: have `win()` print the CONTENTS OF `flag.txt` at
+runtime** instead of embedding the literal, the way the six shell-based targets
+already do. New corpora should do this from the start. (The R1 sources were left
+untouched by the soundness audit — they are the fixed measurement instrument and
+the audit's remit was the harness; changing them is a maintainer decision.) A
+target whose `win()` reads `flag.txt` must be run with that file present in the
+process's cwd: `run_bench.py` always writes it into the target directory and
+runs both the target and the generated script with `cwd` set there, for the
+controls and the verification alike.
+
+### R9 — An alternate corpus MUST declare its protection flags
+
+`build_all.sh` keys per-target protection flags off a `case` on the directory
+name, which only knows the 15 R1 targets. Per-target protections **are** the
+measurement, so for a directory it does not recognise the builder refuses to
+guess and **fails closed**. Declare them in a `cflags` file beside the source,
+one gcc flag per line (blank lines and `#` comments ignored):
+
+```
+benchmark/corpus_r2/03_your_target/cflags
+    # canary=OFF nx=ON pie=OFF
+    -fno-stack-protector
+    -no-pie
+```
+
+Without that file the build fails with a message naming the missing path, so a
+new corpus round cannot quietly be built with default protections — which would
+measure a different challenge than its manifest claims.
 
 ## Run the harness
 

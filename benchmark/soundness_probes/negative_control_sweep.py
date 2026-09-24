@@ -20,9 +20,18 @@ Columns:
                 own injected stdin           -> target is unmeasurable
   filler512     the flag appeared when the bare target was fed 512 'A's
                                              -> target is unmeasurable
-  in_binary     this run's secret is present in the built image; such a target
-                can be scraped rather than exploited (documented limitation,
-                not a failure) -- prefer targets that print flag.txt instead
+  menu_walk     the flag appeared when the bare target was fed small integers,
+                i.e. an ordinary menu walk with no address/offset/gadget. Catches
+                a read path with no liveness or authorization gate -- a "UAF"
+                target that never needs the free, say.
+                                             -> target is unmeasurable
+  scrapeable    channels by which this run's secret can be read with NO exploit
+                at all (`strings` output / raw image substring). Not a failure by
+                default -- win()-style targets must compile the flag in -- but a
+                SUCCESS on such a target rests on the bypassable script audit
+                rather than a structural guarantee. Prefer targets whose win()
+                prints the CONTENTS OF flag.txt at runtime; run_bench.py
+                --strict-attribution VOIDs these instead of scoring them.
 """
 import argparse
 import sys
@@ -45,10 +54,11 @@ def main() -> int:
                        manifest=args.manifest.resolve())
 
     print(f"corpus: {corpus.root}\n")
-    print(f"{'target':<24} {'verify_stdin':<14} {'filler512':<11} in_binary")
-    print("-" * 66)
+    print(f"{'target':<24} {'verify_stdin':<13} {'filler512':<10} "
+          f"{'menu_walk':<10} scrapeable")
+    print("-" * 78)
 
-    unmeasurable, failed = [], []
+    unmeasurable, failed, scrapeable = [], [], []
     for t in corpus.targets():
         slug = t["slug"]
         try:
@@ -61,10 +71,14 @@ def main() -> int:
         nc = rb.negative_control(corpus, slug, flag, args.timeout)
         a = nc["controls"]["bare_run_verify_stdin"]["flag_found"]
         b = nc["controls"]["bare_run_filler"]["flag_found"]
-        if a or b:
+        c = nc["controls"]["bare_run_menu_walk"]["flag_found"]
+        if a or b or c:
             unmeasurable.append(slug)
-        print(f"{slug:<24} {str(a):<14} {str(b):<11} "
-              f"{nc['flag_statically_extractable_from_binary']}")
+        chans = rb.scrape_channels(nc)
+        if chans:
+            scrapeable.append(slug)
+        print(f"{slug:<24} {str(a):<13} {str(b):<10} {str(c):<10} "
+              f"{','.join(chans) or '-'}")
 
     print()
     if failed:
@@ -75,6 +89,14 @@ def main() -> int:
         print("run_bench.py scores them VOID. Fix the targets.")
     else:
         print("OK: no target leaks its flag to benign input.")
+    if scrapeable:
+        print()
+        print(f"SCRAPEABLE -- secret readable with no exploit ({len(scrapeable)}): "
+              f"{scrapeable}")
+        print("Not counted as unmeasurable here: a win()-style target MUST compile")
+        print("the flag in. But a SUCCESS on these rests on run_bench.py's")
+        print("bypassable script audit, not on a structural guarantee. The corpus")
+        print("fix is to have win() print the CONTENTS OF flag.txt at runtime.")
     return 1 if (unmeasurable or failed) else 0
 
 
