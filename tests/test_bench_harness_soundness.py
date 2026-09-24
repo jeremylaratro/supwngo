@@ -749,6 +749,34 @@ class TestRepsAndReliability:
                     if not lines[i].strip()), len(lines))
         return "\n".join(lines[start:end])
 
+    def test_every_rep_records_its_own_secret_so_verdicts_stay_checkable(
+            self, monkeypatch, tmp_path):
+        """Each rep rebuilds the target with a FRESH secret, and the aggregate
+        can carry only one of them.
+
+        Without a per-rep secret, the verdict for rep 3 cannot be re-derived from
+        rep 3's own archived strace.log -- an auditor would not know which string
+        to search for, so a wrong verdict in a later rep would be permanently
+        unfalsifiable. That is the one property this harness exists to provide.
+        """
+        calls = []
+
+        def fake(corpus, target, timeout, results_dir, strict_attribution=False,
+                 tmpdir=None, echo=True):
+            calls.append(results_dir)
+            n = len(calls)
+            return {"slug": target["slug"], "difficulty": target["difficulty"],
+                    "status": "SUCCESS", "reason": "r", "elapsed_sec": 1.0,
+                    "secret_flag": f"FLAG{{rep{n}}}"}
+
+        monkeypatch.setattr(rb, "run_one", fake)
+        res = rb.run_reps(None, self.TARGET, 1.0, tmp_path, False, 3, echo=False)
+
+        secrets = [a["secret_flag"] for a in res["attempts"]]
+        assert secrets == ["FLAG{rep1}", "FLAG{rep2}", "FLAG{rep3}"], (
+            f"each rep must record the secret it actually used; got {secrets}")
+        assert len(set(secrets)) == 3, "per-rep secrets must not be collapsed"
+
     def test_multi_rep_record_reports_the_targets_real_cost(
             self, monkeypatch, tmp_path):
         """`elapsed_sec` on an aggregate is inherited from ONE attempt, so

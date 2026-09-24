@@ -56,6 +56,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subdirectory so an intermittent target's evidence is not overwritten.
 
 ### Fixed
+- **`benchmark/run_bench.py` recorded only one rep's secret flag, making the
+  other reps' verdicts unfalsifiable.** Every rep rebuilds the target with a
+  fresh secret, but the rep-aggregated record can carry only one of them, so for
+  a 5-rep target the verdicts for reps 2-5 could not be re-derived from their own
+  archived `strace.log` — an auditor would not know which string to search for,
+  and a wrong verdict in a later rep would have been permanently undetectable.
+  Independent re-checkability is the one property this harness exists to provide.
+  Found when a cross-check over all 17 archived traces reported reps 2-5 as
+  `no_flag` purely because it was matching rep 1's secret against their traces.
+  `attempts[]` now records each rep's own `secret_flag`.
 - `benchmark/run_bench.py`'s multi-rep records now carry `elapsed_sec_total`.
   A rep-aggregated result inherits `elapsed_sec` from one representative attempt,
   so summing that field across a `--reps 5` report understated the run's real

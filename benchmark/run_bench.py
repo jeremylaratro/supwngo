@@ -1081,8 +1081,17 @@ def run_reps(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
     credited = sum(1 for a in attempts if a["status"] == "SUCCESS")
     ran = len(attempts)
 
+    # secret_flag per rep is NOT optional detail. Every rep rebuilds the target
+    # with a FRESH secret, and the aggregate can only carry one of them, so
+    # without this the verdicts for reps 2..N cannot be re-checked against their
+    # own archived strace.log -- an auditor holding rep3's trace would not know
+    # which string to look for, and a wrong verdict there would be undetectable
+    # after the fact. Observed for real: a cross-check of all 17 archived traces
+    # reported reps 2-5 as "no_flag" purely because it was matching rep1's
+    # secret against rep2-5's traces.
     trimmed = [{"rep": i + 1, "status": a["status"], "reason": a["reason"],
                 "void_cause": a.get("void_cause"),
+                "secret_flag": a.get("secret_flag"),
                 "elapsed_sec": a.get("elapsed_sec")}
                for i, a in enumerate(attempts)]
 
