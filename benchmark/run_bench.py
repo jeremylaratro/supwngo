@@ -1100,6 +1100,12 @@ def run_reps(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
         "reps": ran,
         "reps_requested": reps,
         "reps_credited": credited,
+        # agg inherits elapsed_sec from ONE representative attempt, so summing
+        # elapsed_sec across a multi-rep report understates the run's real cost
+        # by roughly the rep count -- which is exactly the mistake it invites.
+        # Record what the target actually cost; per-rep times stay in attempts[].
+        "elapsed_sec_total": round(
+            sum(a.get("elapsed_sec") or 0 for a in attempts), 1),
         # None rather than 0.0 when a VOID cut the reps short: a target we
         # stopped measuring has no reliability figure, and printing 0/1 would
         # read as "tried and failed".

@@ -56,6 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subdirectory so an intermittent target's evidence is not overwritten.
 
 ### Fixed
+- `benchmark/run_bench.py`'s multi-rep records now carry `elapsed_sec_total`.
+  A rep-aggregated result inherits `elapsed_sec` from one representative attempt,
+  so summing that field across a `--reps 5` report understated the run's real
+  cost by about 5x — a 5-rep run appeared to cost the same as a 1-rep run
+  (1685s vs 1659s). `elapsed_sec` keeps its old meaning for comparability with
+  single-rep reports, and per-rep times were already in `attempts[]`.
 - **`benchmark/run_bench.py`'s headline success rate did not admit it was a
   best-of-N figure.** With `--reps 5`, `OVERALL: 2/3 SUCCESS (66.7%)` counted a
   target that succeeded once in five attempts identically to one that succeeded

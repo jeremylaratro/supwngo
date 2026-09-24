@@ -749,6 +749,22 @@ class TestRepsAndReliability:
                     if not lines[i].strip()), len(lines))
         return "\n".join(lines[start:end])
 
+    def test_multi_rep_record_reports_the_targets_real_cost(
+            self, monkeypatch, tmp_path):
+        """`elapsed_sec` on an aggregate is inherited from ONE attempt, so
+        summing it across a multi-rep report understates the run's cost by about
+        the rep count. That is not hypothetical -- it produced a 5-rep run that
+        appeared to cost the same as a 1-rep run. elapsed_sec_total is the real
+        figure; per-rep times stay in attempts[].
+        """
+        res, _ = self._run(monkeypatch, tmp_path, ["FAILED"] * 4, 4)
+        assert res["elapsed_sec_total"] == 4.0, (
+            f"expected 4 reps x 1.0s; got {res['elapsed_sec_total']}")
+        assert res["elapsed_sec"] == 1.0, (
+            "elapsed_sec stays the representative attempt, for comparability "
+            "with single-rep reports")
+        assert sum(a["elapsed_sec"] for a in res["attempts"]) == 4.0
+
     def test_overall_headline_admits_it_is_best_of_n(self, tmp_path):
         """The headline rate is the number that gets quoted downstream.
 
