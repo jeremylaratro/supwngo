@@ -89,6 +89,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   address rather than inside the buffer — shellcode that lands in the buffer is corrupted
   by its own `push` instructions once `rsp` is pointing into it — and sweeps NOP-sled
   sizes, landing mid-sled for slack.
+- `benchmark/fixtures/positive-controls/` — two supwngo-generated exploit scripts that
+  genuinely obtain an interactive shell (`01_shellcode_stack`, `02_ret2plt_system`), checked
+  in unmodified as positive controls for changes to `run_bench.py`. Six corpus binaries
+  contain no flag at all, so their only route to one is `cat flag.txt` inside a shell the
+  exploit obtained; that makes them silently sensitive to what the harness writes to the
+  exploit's stdin, and a harness change can turn a working shell into a `FAILED`. These
+  fixtures make that regression cheap to detect. See the directory's README.
 - `docs/plans/2026-09-23-phase5-reliability-hardening.md` — the Phase 5 plan, recording
   the five root causes found before any fix was written (single-blob delivery,
   payload-only verification, attempt ordering, label-driven leak parsing, missing
@@ -418,6 +425,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rebuilds the targets with a fresh secret flag, two concurrent runs over one
   corpus would clobber each other's binaries and `flag.txt` files and produce
   spurious `FAILED`s rather than an obvious crash.
+- **Phase 5 — generated exploit scripts are now portable.** The script hardcoded the
+  target's absolute path as it was at generation time, so the artifact broke as soon as it
+  was copied anywhere (handed to a teammate, checked in as a fixture). It now falls back to
+  a binary of the same name sitting next to the script.
 - **Phase 5 — a generated script's process factory could be shadowed by the exploit body**
   (`pipeline/script_builder.py`). The factory was named `start()`, and exploit bodies
   routinely bind short local names; a multi-stage body that assigned e.g.
