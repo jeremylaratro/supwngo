@@ -468,6 +468,78 @@ output channel. That requires real effort rather than a shortcut, and
 but it is not structurally prevented. Witnessing the target's control flow
 directly (a breakpoint on `win()`) would close it.
 
+#### Did defect C inflate any score already reported? No — checked, not assumed
+
+C was a false-SUCCESS defect, so the obvious question is whether any number this
+branch has already published was wrong. That cannot be answered by reasoning
+about it, so it was measured: both the pre-fix and post-fix `attribute()` were
+run over **every `strace.log` archived under `benchmark/results/`** (7 traces).
+
+- **0 verdict changes** between the two implementations.
+- **0 occurrences of the C shape** — no trace contains a pid that wrote the flag
+  and only later `execve`d the target.
+
+So C was a real hole in the instrument but it never fired, and no previously
+reported figure is inflated by it. This is worth stating explicitly because
+"we fixed a false-SUCCESS bug" invites the reader to discount past numbers; here
+the evidence says they do not need discounting. It also cuts the other way: the
+absence of the shape in 7 traces is *not* evidence that the hole was harmless,
+only that nothing exercised it.
+
+### A delivery race made a working exploit look like a capability limit
+
+Found while validating the reference probes, and it is a false **negative**
+rather than a false positive — the direction that quietly *understates* a score.
+
+`02_ret2plt_system` does a single `printf("Input: "); read(0, buf, 300)`. `read()`
+returns as soon as *any* data is available, so an unsynchronised exploit script
+races it two ways: the payload can be consumed before it has fully arrived, or —
+because `sendline()` is a separate pipe write — the same `read()` can swallow the
+payload *together with* the follow-up shell commands, spawning a shell whose
+stdin is already at EOF.
+
+The signature is the confusing pair `shell_proven=True, flag_found=False`: the
+exploit demonstrably worked, and the flag was still not captured.
+
+Rate, measured rather than estimated (this matters — the first estimate made here
+was wrong by an order of magnitude and was corrected):
+
+| condition | failures |
+|---|---|
+| standalone, unloaded | 0/40 |
+| under `strace` | 0/20 |
+| under 24-way contention | **4/96 (4.2%)** |
+| after the fix, 24-way contention | **0/96** |
+
+Raising the `recvall` deadline alone only halved it (2/96), so the deadline was a
+contributing factor and the synchronisation is the actual fix: wait for the
+prompt, send the payload, let that `read()` consume it *alone*, then send the
+commands.
+
+**Generalisation worth carrying to the other three corpora:** any target with one
+large `read()` will punish a fire-and-forget delivery layer, the failure is
+load-dependent (so it appears when the box is busy — i.e. when a benchmark is
+most likely to be running), and it presents as a capability boundary rather than
+a race. A harness that reports one attempt per target will therefore drift
+*downwards* under load, and the drift is invisible.
+
+#### Consequence for the harness: two numbers, not one
+
+`--reps N` (default 5) now reports both:
+
+| | meaning |
+|---|---|
+| `solved` | credited in **at least one** rep — exploitable at all? |
+| `reliability` | **k/N** reps credited — how dependably? |
+
+Neither is the score alone. `solved` without `reliability` is best-of-N
+cherry-picking; a single rep understates. `summary.txt` states this, names the
+targets solved intermittently, and prints how many targets have **no**
+reliability figure so a shrunken denominator cannot pass unnoticed. A single-rep
+run reports no reliability rather than a misleading `1/1`, a `VOID` settles a
+target instead of being re-rolled (the controls are deterministic), and each rep
+gets its own results directory so an intermittent target's evidence survives.
+
 ## Residual limitation (superseded in part — read the section above first)
 
 Verification is **not sandboxed**: the generated script runs as the same user,
