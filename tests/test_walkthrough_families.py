@@ -436,6 +436,85 @@ def test_unknown_offset_is_named_not_faked():
     assert "_unknown(" in text
 
 
+def test_the_step_that_resolves_an_unknown_is_not_blocked_by_it():
+    """The resolver step must still run; guarding it is self-defeating.
+
+    Regression guard: the UNKNOWN guard is generated for any step whose code
+    names an unmeasured value, which caught the offset step itself -- so
+    `python3 wt.py 2`, "measure the offset", refused to measure the offset.
+    """
+    facts = base_facts(
+        offset=MeasuredOffset(
+            value=None,
+            confidence=Confidence.UNKNOWN,
+            evidence=Evidence(method="not measured"),
+            plausible="16 or 24",
+            failure_reason="the probe could not fault the process",
+        )
+    )
+    wt = generate_walkthrough(facts)
+    offset_fact = next(f for f in wt.unknowns if f.name == "OFFSET")
+    resolver = wt.step(offset_fact.resolved_by)
+    text = render_script(wt)
+
+    body = text.split(f"def {resolver.function_name}():", 1)[1]
+    body = body.split("\ndef ", 1)[0]
+    assert "OFFSET is UNKNOWN" not in body, (
+        "the resolver step was guarded against the value it exists to measure"
+    )
+
+    # Other steps that use the value SHOULD be guarded, and say what to run.
+    guarded = [
+        step
+        for step in wt.steps
+        if step.id != resolver.id and "OFFSET" in step.code
+    ]
+    for step in guarded:
+        chunk = text.split(f"def {step.function_name}():", 1)[1].split("\ndef ", 1)[0]
+        assert "OFFSET is UNKNOWN" in chunk, f"{step.id} uses OFFSET unguarded"
+
+
+def test_a_win_function_alone_does_not_justify_a_stack_route():
+    """A failed crash probe is evidence, not merely a missing value.
+
+    A heap menu program with a `win`-ish symbol used to be handed a confident
+    ret2win walkthrough whose very first measurement step could not succeed.
+    """
+    facts = ret2win_facts(
+        offset=MeasuredOffset(
+            value=None,
+            confidence=Confidence.UNKNOWN,
+            evidence=Evidence(method="not measured"),
+            plausible="16 or 24",
+            failure_reason="the pattern did not reach the return address",
+            probe_failed=True,
+        )
+    )
+    wt = generate_walkthrough(facts)
+    assert wt.family == "triage", "a stack route was taught with no observed crash"
+
+    ret2win = next(r for r in wt.routes if "ret2win" in r.name)
+    assert not ret2win.applicable
+    assert ret2win.becomes_viable_if, "must say what would make it viable again"
+
+
+def test_no_probe_does_not_count_as_evidence_against_a_stack_route():
+    """`--no-probe` says nothing either way, so the route stays available."""
+    facts = ret2win_facts(
+        offset=MeasuredOffset(
+            value=None,
+            confidence=Confidence.UNKNOWN,
+            evidence=Evidence(method="not measured"),
+            plausible="16 or 24",
+            failure_reason="the dynamic cyclic probe was disabled (--no-probe).",
+            probe_failed=False,
+        )
+    )
+    wt = generate_walkthrough(facts)
+    assert wt.family == "stack_bof"
+    assert "ret2win" in wt.taught_route
+
+
 def test_no_route_still_produces_the_discovery_workflow():
     """A walkthrough that says "I don't know" and stops is the stub again."""
     wt = generate_walkthrough(base_facts())
