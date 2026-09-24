@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `CanonicalAutopwnEngine`'s verified-`SUCCESS` path could leave
+  `engine.exploit_script` empty: only the template/`PARTIAL`-only executors
+  (`srop`, `format_string`, `ret2libc`) ever populated
+  `AttemptRecord.partial_artifacts["exploit_script"]`; the native
+  stack/shellcode executors (`ret2win`, `direct_shellcode`,
+  `variable_overwrite`, `negative_size_bypass`, `stack_shellcode`,
+  `scanf_canary_bypass`, `uaf`, `double_free`) verify a raw payload
+  in-process and stop, so a fully verified run of any of those techniques
+  wrote an *empty* file when `autopwn -o <path>` (or the new `solve`
+  command) tried to save the exploit script — directly undermining the
+  "one command produces a usable artifact" goal. Added
+  `templates.generate_success_script()` (packages an
+  already-verified-working payload into a standalone pwntools script — not
+  new exploitation logic) as a fallback in `orchestrator.py`'s success
+  branch whenever an executor didn't produce its own script. Found while
+  building the `solve` command's success-path smoke test.
+
+### Added
+- `CanonicalAutopwnEngine.run(known_facts=...)` / `_apply_known_facts()` —
+  a small resume hook that pre-seeds one user-supplied fact (`offset`,
+  `canary_value`, `libc_base`, or `pie_base`) onto `ExploitContext` before
+  the technique-attempt loop runs, so an executor that would otherwise do
+  a blind search for that fact (e.g. `Ret2WinExecutor`'s GDB/common-offset
+  search) can skip it. This is the pipeline-layer foundation for the new
+  `solve --interactive` guided-fallback mode (Phase 6) — a simplified
+  "re-run with the fact pre-seeded" resume, not true mid-pipeline
+  resumption; documented as such in `run()`'s docstring.
+  `handoff.BLOCKING_UNKNOWN_FACT_KEYS` maps each `blocking_unknowns`
+  description to the matching `known_facts` key.
 - `supwngo/exploit/verification.py`'s `ExploitVerifier.verify_payload()` only fell back to
   real interactive (pwntools-based) shell verification when the initial `subprocess.run()`
   raised `TimeoutExpired`. A shell spawned via `system()`/`execve()` given piped,
