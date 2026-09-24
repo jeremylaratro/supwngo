@@ -726,3 +726,471 @@ All of it is fixable in place, and none of it requires a new document — a revi
 §§1, 4.1, 5, 6 and 7 against the findings above should clear it.
 
 **NOT-APPROVED**
+
+---
+---
+
+# Round 2 — re-review of revision 2 (`2729940`)
+
+**Reviewed commit:** `2729940` (`docs(plans): revise instrumentation pass against review 31196d2`)
+**Prior review:** round 1 above, committed `31196d2`, NOT-APPROVED on B1/B2/B3 + M1-M7.
+**Code tree:** `git diff --stat b3a40b4 2729940 -- supwngo/` is **empty** — `supwngo/`
+genuinely untouched, so round-1 line citations remain valid without re-derivation.
+**Artifacts:** same two `report.json` files as round 1.
+**Method:** each of the six new claims re-derived from code; both author push-backs
+adjudicated against the source; the three coordinator risks (R1/R2/R3) examined
+independently of my own findings. Nothing accepted as "addressed".
+
+## 11. Verdict first, then the work
+
+The three blockers are **genuinely fixed**, and I checked the fixes rather than the
+disposition table. B3 in particular is fixed the right way: the header parsing is deleted
+rather than taught a second format, the gate reads `parsed.technique`, the §2.1 map matches
+my independently extracted table row for row, and both gate traps I flagged are pinned by
+name. B1's re-scope is the strongest edit in the revision — §5 now *mandates* the I4 proof
+at a sweep-abandoning site with window-1-of-*n* versus *n*-of-*n*, which is precisely the
+assertion that makes the old failure impossible to reproduce.
+
+The six new claims are almost all exactly right, including the two most checkable ones
+(21 sites; single generic origin). **Both push-backs against me are correct** — I was wrong
+that the script-audit hazard was live, and the author's sharpening of M3 is better than my
+original. §4.0's "inventory before proposing" rule is a real structural addition, and it
+already paid for itself by converting I1 from a new hook into a migration.
+
+Five MAJOR defects remain. None invalidates an instrument's design, none changes the
+sequencing, and all five are text or gate-specification fixes. The most consequential —
+I1's risk stated in one direction when it is bidirectional — is caught in practice by the
+per-target gate landing at step 1 and running after each conversion. **No blocking
+findings. Approved, with the five MAJORs binding before their corresponding step lands.**
+
+## 12. The six new claims
+
+| # | claim | verdict |
+|---|---|---|
+| 1 | I4 collector reaches all 9 sites; per-window recording | **CONFIRMED with one gap** (m9) |
+| 2 | 21 specific-skip sites; generic string from one place | **CONFIRMED exactly** |
+| 3 | per-target timing already exists; I2's contribution narrowed | **CONFIRMED** |
+| 4 | the 13-row map and its two gate traps | **CONFIRMED exactly** |
+| 5 | `templates.py:145` renders `record.notes` | **CONFIRMED** |
+| 6 | only 1 of 17 executors lacks `is_applicable` | **CONFIRMED** |
+
+### 12.1 Claim 2 — CONFIRMED exactly, and it is the revision's best work
+
+`grep -rn "AttemptOutcome.SKIPPED" supwngo/exploit/pipeline/executors/` returns **exactly
+21**. I checked the line after each of the 21 and **all 21 set a specific
+`failure_reason`** — e.g. `rop_techniques.py:217` `"no '/bin/sh' string in the binary
+image"`, `:227` `"no 'pop rdi; ret' gadget to load system()'s argument"`, `:847`
+`"Full RELRO: the GOT is resolved at startup, so there is no lazy resolver to abuse"`,
+`shellcode_techniques.py:79` `"target leaks no stack address to aim the return at"`. Not
+one is generic or absent.
+
+The generic string originates from **exactly one place** in `supwngo/`:
+`orchestrator.py:212`, inside the `:203-213` branch, which also swallows an
+`is_applicable` exception into it via `:205-207`. The only other occurrences anywhere are
+`tests/test_pipeline_handoff.py:69` (a fixture) and generated artifacts under
+`benchmark/results/`. Both claims hold.
+
+This inventory earns its place: it is what turns I1 from "add an optional hook to 17
+classes" into "use the idiom 21 sites already use", and that is a genuine reduction in
+scope and risk. Minor citation drift only: the plan cites `rop_techniques.py:216` and
+`:226` for the quoted strings, which are the `record.outcome` lines; the strings are at
+`:217` and `:227`.
+
+### 12.2 Claim 4 — CONFIRMED exactly
+
+§2.1's 13 rows match the table I extracted in round 1 from `parsed.technique` row for row,
+including `05_fmtstr_arbread → canary_leak_ret2win`. R2's four match positionally. Both
+gate traps are correctly stated and correctly attributed: `13_off_by_one` is VOID
+(`corpus_trivially_solvable`) yet still reports `technique == "ret2win"`, so an unfiltered
+count yields 14; and `05`'s off-intent credit is pinned. §8 now carries the correction
+rather than leaving the old phase-1a argument standing — I checked that specifically,
+because a fix landing in §2 while §8 kept the old assumption is exactly the failure mode
+I was asked to watch for. It does not happen here.
+
+§6 step 1 also adds the right positive control: "swap two targets' expected techniques and
+confirm failure — a multiset gate cannot catch that". That is a gate proven red before it
+is trusted.
+
+### 12.3 Claims 3, 5, 6 — CONFIRMED
+
+Claim 3: `elapsed_sec` and `elapsed_sec_total` per target, per-rep `elapsed_sec` in
+`attempts[]` (R2 `01` = `[139.9, 137.1, 136.9, 136.6, 135.9]` — the exact values I
+measured), `VerificationReceipt.verified_at` at `contracts.py:134`. The narrowed
+contribution — per-*technique* attribution — is the correct residue, and §4 I2 now states
+the inventory before the proposal rather than asserting absence. M5's framing half is
+fixed.
+
+Claim 5: `templates.py:145` is
+`notes_block = "\n".join(f"# - {n}" for n in record.notes) if record.notes else ""`,
+rendered at `:157`. And `input_shape_techniques.py:241-242` does append
+`"candidate gate values from the binary's own cmp insns: ..."` to `notes`, so prose
+provenance already reaches generated scripts today. The design constraint the plan draws
+from this — provenance must be a structured field, not `notes`, because a gate cannot
+assert prose and prose is the half that lands in audited script text — is correct and is
+the right conclusion. (The append is at `:241-242`; the plan cites `:240-241`, where `:240`
+is the `comparison_immediates(binary)` call.)
+
+Claim 6: confirmed in round 1 §1.1 and unchanged — `VariableOverwriteExecutor`
+(`stack_techniques.py:67`) is the only one of 17 with no `is_applicable`, inheriting
+`contracts.py:181`'s `return True`.
+
+### 12.4 Claim 1 — CONFIRMED, with one gap and one wrong number
+
+**The collector design is sound.** `ExploitContext` is constructed at
+`orchestrator.py:137`, in `__init__` — earlier even than the `:204`/`:217` ordering the
+plan cites — so the channel genuinely predates every probe, and `_probe_stack_leak`'s
+pre-record case is covered. All 9 sites are in scope, none is declared out of scope, and
+per-window recording does distinguish the two cases: at `fmtstr_techniques.py:141-142` and
+`canary_leak_techniques.py:157-159` abandonment happens only when `start == 1`, later
+windows `continue`, so 1 record versus *n* records is exactly the discriminator needed.
+`timed_out` also separates a genuine no-hex target from a stalled probe, which is the
+whole point.
+
+**MINOR (m9) — 4 of the 9 sites have no `context` either.** The plan's Design paragraph
+argues from "the context predates the `AttemptRecord`", which solves reachability only
+where `context` is in scope. It is not, at four sites:
+
+| site | signature | has `context`? |
+|---|---|---|
+| `heap_techniques.py:70` | `discover_menu(binary_path, cwd, timeout)` — module-level | **no** |
+| `fmtstr_techniques.py:138` | `_find_buffer_arg_index(self, binary_path, binary_dir)` | **no** |
+| `canary_leak_techniques.py:154` | `_probe_fmtstr_indices(self, binary_path, binary_dir)` | **no** |
+| `canary_leak_techniques.py:180` | `_probe_echo_sizes(self, binary_path, binary_dir)` | **no** |
+
+`_probe_stack_leak`, `_probe_pie_leak` and `_write_targets` do take `context`; the two
+`attempt()` sites have both. So the collector reaches 5 of 9 without a signature change.
+Critically, **the two sites §5 mandates the proof at — `_find_buffer_arg_index` and
+`_probe_fmtstr_indices` — are both in the context-less set**, so threading `context` (or a
+collector handle) into them is not optional work that can be deferred. The plan's risk
+note ("seven helpers each need a signature or return-type decision") does cover this
+generically and the risk is honestly re-rated to medium-high, which is why this is MINOR
+rather than a repeat of B1 — but the Design paragraph reads as though the context channel
+settles reachability, and it does not. `discover_menu` has one caller
+(`heap_techniques.py:213`) and no test callers, so its signature change is contained.
+
+**MINOR (m10) — "completes 40 windows" is wrong; it is 8.** `_find_buffer_arg_index`
+iterates `range(1, MAX_ARG_INDEX + 1, ARG_WINDOW)` with `MAX_ARG_INDEX = 40` and
+`ARG_WINDOW = 5` (`fmtstr_techniques.py:50-51`) — **8 windows**.
+`_probe_fmtstr_indices` iterates `range(1, FMTSTR_MAX_INDEX + 1, FMTSTR_WINDOW)` with
+`48` and `6` (`canary_leak_techniques.py:48/51`) — also **8 windows**.
+`_probe_echo_sizes` iterates `ECHO_FILL_SIZES`, 13 entries
+(`canary_leak_techniques.py:45`). 40 is the maximum *argument index*, not the window
+count, and no site has 40 windows. The design is unaffected — 1-of-8 versus 8-of-8 is
+still the right discriminator — but this is a number asserted about code that the code
+contradicts, in text written to fix a blocker, which is the one error class this document
+exists to eliminate. Worth fixing precisely because it is small.
+
+## 13. The two push-backs, adjudicated
+
+### 13.1 The `objdump` hazard — **the author is right; I was wrong**
+
+`input_shape_techniques.py:101` is
+`logger.debug(f"comparison_immediates: objdump pass failed: {e}")` — a logger call, not a
+`failure_reason`. It never reaches `templates.py:38`. My round-1 §4.2 cited it as evidence
+that "the repo already produces such strings", which is true of the string and misleading
+about the path, and it implied a live hazard.
+
+I checked the stronger form of the author's claim too: scanning every
+`failure_reason = ...` string literal in `supwngo/` for `\b(strings|objdump|readelf|xxd)\b`
+returns **zero hits**. So no current `failure_reason` contains an audited word and the
+hazard is **prospective, not live**. Conceded in full.
+
+The author's use of the correction is better than mine: it matters *because* I5 and I3 are
+about to write new reason and provenance strings, and a provenance string naming its
+extraction method is exactly the text that would trip it. That reframes m8 from "already
+handled, nothing to do" into a live design constraint on I3 — which §4.3 then draws
+correctly. This is the revision arguing with the review and improving the result, which is
+what a review is for.
+
+### 13.2 The `shellcode_techniques.py:61` short-circuit — **the author is right, and it strengthens M3**
+
+`:60-61` is `if context.leaks.get("stack"): return True`, so the 1.5 s spawn at `:62`→`:66`
+happens only when the profiling stage missed the leak's phrasing. The author is right that
+this *strengthens* the point: the predicate's cost **and its answer** depend on upstream
+pipeline state, so it is not merely impure, it is non-deterministic with respect to
+history. A companion reason hook re-running it could legitimately disagree with the
+verdict it was explaining. Agreed.
+
+One bound to add in the plan's favour: the short-circuit also means that on every target
+where `profile_stage` did recognise the leak, there is **no spawn at all**, so the
+migration is fully inert for those targets. The exposure is confined to the fallback path.
+
+**And a correction in the plan's favour that changes I1's cost story.**
+`LeakedStackShellcodeExecutor.attempt()` at `:76` is
+`leak = context.leaks.get("stack") or self._probe_stack_leak(context)` — it **already
+re-checks the same condition** and already returns `SKIPPED` with the specific reason at
+`:78-79`. So today, when `leaks["stack"]` is empty and the probe succeeds, the target is
+spawned **twice**: once in `is_applicable` (`:62`) and again in `attempt()` (`:76`).
+Enumerating the three cases:
+
+| case | today | after deleting `is_applicable` |
+|---|---|---|
+| `leaks["stack"]` populated | 0 spawns | 0 spawns — identical |
+| leaks empty, probe finds an address | **2 spawns** | 1 spawn — **one fewer** |
+| leaks empty, probe finds nothing | 1 spawn, generic reason | 1 spawn, specific reason |
+
+So the plan's "it *moves* a process spawn rather than adding one" understates it: for this
+executor the migration is a **deletion** of `is_applicable`, and it **removes a duplicate
+spawn**. Runtime cannot increase. `context` is never mutated on the skip path — the only
+write is `context.offset = offset` at `:109`, reached on SUCCESS only, which already
+happens today. The executor the plan fears most and schedules last is in fact its safest
+and cheapest conversion, for the leak half of the predicate. (Not for the whole predicate
+— see §14.1.)
+
+I also checked whether the removed spawn could perturb attribution. It cannot:
+`attribution_witness` traces the *verification* run (`run_bench.py:936-947`), a separate
+invocation from the `autopwn_json_probe` at `:916` where these spawns occur. Attribution
+input is unaffected.
+
+## 14. The three coordinator risks
+
+### 14.1 R1 — **I1's risk is real and stated in the wrong direction. MAJOR (M8).**
+
+The plan says I1 "is the only instrument that can silently **lower** a score" and that
+"for cheap pure predicates this is inert". Both are wrong.
+
+**Inertness has nothing to do with predicate purity.** It depends on whether `attempt()`
+already reproduces the predicate's condition. I checked all 16 predicates against their
+`attempt()` bodies. 15 of 16 predicates are pure reads — `context.protections`,
+`context.win_function`, `binary.plt`, `binary.symbols`, `context.profile_has_menu`,
+`context.profile_is_shellcode_runner`, plus pure helpers — confirming the plan's purity
+claim. But four executors have **no guard at all** in `attempt()`, because the 21 SKIPPED
+sites include no `input_shape_techniques.py` entries and only one `stack_techniques.py`
+entry (`:111`, `Ret2WinExecutor`):
+
+- **`IntTruncationBypassExecutor`** — predicate at `input_shape_techniques.py:136-147`
+  excludes menu-driven heap targets *deliberately* (`:142-144`: "skip them so they don't
+  pay for a sweep that cannot apply"). `attempt()` at `:235-256` goes straight from
+  `comparison_immediates()` into the `INDICES × values` delivery sweep with no guard, and
+  reaches `verify_script` on a `_looks_like_win` match. **This one can SUCCEED where it
+  previously was skipped.**
+- **`NegativeIndexWriteExecutor`** — predicate `:227-233`, same shape, no guard.
+- **`DirectShellcodeExecutor`** — predicate `stack_techniques.py:155-156` is maximally
+  pure (`not context.protections.nx or context.profile_is_shellcode_runner`), yet
+  `attempt()` at `:158-183` spawns the target and calls `verifier.verify_shell` with no NX
+  check, and can set SUCCESS at `:179`. **The purest predicate has the least inert
+  migration** — which is the counter-example to the plan's stated rule.
+- **`FormatStringExecutor`** — predicate `stack:198-199`, no guard (PARTIAL-only, so
+  lower impact).
+
+Plus `LeakedStackShellcodeExecutor`, which re-checks the leak at `:76` but **not** the
+`nx_off or profile_is_shellcode_runner` half at `:53-55`.
+
+So the risk is **bidirectional**: an incomplete migration can credit a technique that was
+previously skipped, or change which technique wins, not only turn one off. And for
+essentially every executor except `Ret2WinExecutor` (whose `attempt():110-112` reproduces
+its predicate exactly), migration requires **adding** guard code, not moving it — a larger
+edit than "a migration into an existing idiom" conveys.
+
+**Is this a capability change wearing an instrumentation label?** No — *given* the
+sequencing. The per-target §2.1 gate lands at step 1, the diagnostic baseline at step 3
+precedes I1 at step 5, and the gate runs after each single-executor conversion, so a
+changed winner is both detected and unambiguously attributable. The before-and-after
+coverage the coordinator asked about is therefore already satisfied. But an implementer
+following the current text would treat 15 of 16 migrations as inert and omit the guards,
+and four of those are not inert. Required corrections: state the risk bidirectionally;
+replace "for cheap pure predicates this is inert" with the correct invariant — *inert iff
+`attempt()` already reproduces the full predicate*; and enumerate which of the 16 are pure
+deletions versus which need a new guard.
+
+### 14.2 R2 — **the narrowing is broader than the field it was written for. MAJOR (M9).**
+
+Two questions, two answers.
+
+**Does `duration_sec` touch verification, attribution, classification or scoring? No —
+verified.** `classify()` is called at `run_bench.py:950` with
+`(supwngo_json, verify, control, script_audit, strict_attribution, attribution)`, where
+`supwngo_json = parse_json_result(out1)` (`:917`) — the *parsed* payload. The
+`autopwn_json_probe` wrapper that would carry `duration_sec` is assembled separately at
+`:963-968`, in the return dict, for reporting only. It is never passed to `classify`. I2b
+is genuinely out of all four categories.
+
+**Can the new wording license something it should not? Yes.** "verification, attribution,
+classification or scoring logic" omits two cheat-detection subsystems that are *generated*
+separately and only *consumed* by `classify`:
+
+- **negative-control generation** — `negative_control()` builds `controls` at
+  `run_bench.py:494-530`, including `bare_run_verify_stdin`, `bare_run_filler` and the
+  `bare_run_menu_walk` probe set. `classify` reads the *result* at `:755`. Dropping a menu
+  probe weakens cheat detection and makes targets pass without touching `classify` at all.
+- **script-audit generation** — `inspect_generated_script` at `:630-654` and
+  `script_cheat_reason` at `:681-695`. Same structure: weaken the audit, `classify` is
+  untouched, targets pass.
+
+Given the standing constraint that the harness's verification logic is never weakened to
+make targets pass, a denylist that omits both cheat-detection generators is the wrong
+shape. **Recommended fix: invert to an allowlist** — "the only harness changes in this
+pass are an additive `duration_sec` on the probe object and the R1 per-target gate
+assertion; nothing else under `benchmark/` is touched." An allowlist cannot be read as
+licence for anything, which is the property wanted from a clause that will outlive this
+pass and govern the per-phase plans that follow.
+
+### 14.3 R3 — sequencing is consistent. No finding.
+
+I checked the dependency the coordinator named. `VariableOverwriteExecutor` is the one
+executor with **no** `is_applicable` (§12.3), so I1 never touches it. I3's first conversion
+is that executor, at step 2; I1 begins at step 5. So I3 covering `variable_overwrite` — the
+§7 precondition for R5 *measurement* — is satisfied three steps before I1 touches any
+applicability predicate. Consistent, and the R5 gate does not depend on I1 at all.
+
+The rest of the order also holds: the gate (step 1) precedes every conversion; I2/I2b/I3/I5
+are write-only and correctly grouped at step 2; I1 and I4, the only two with control-flow
+surface, land at steps 5 and 6 after the step-3 baseline, so any movement has one candidate
+cause. Both `benchmark/run_bench.py` edits (gate at step 1, I2b at step 2) are in the same
+file with no conflict. This is a correct reordering and it fixes what round 1 objected to.
+
+## 15. Remaining gate and sufficiency defects
+
+### 15.1 I3's required-provenance gate cannot be proven red on any available data. MAJOR (M10).
+
+Two coupled problems with §4 I3 + §5.
+
+**No positive instance exists.** I3 records "the **winning** candidate and its source", so
+provenance is populated only when an attempt produces a payload. `variable_overwrite` wins
+on **zero** of 17 credited targets across both runs and returns FAILED on all 12
+target-runs where it executes. So on R1 and R2 there is no run in which the required
+provenance should be present — and §5's proof, "delete provenance from a required executor
+and assert the gate goes red on **missing**", has nothing to delete.
+
+**As worded, the gate would red every R1 run.** "Fails when a required provenance is
+missing" is unconditional. `variable_overwrite` is on the required list and produces no
+provenance on any of the 13 R1 targets, so the gate fails on all of them. The specification
+needs the missing-provenance failure conditioned on the attempt having produced a payload
+or reached SUCCESS — otherwise the only two available readings are "always red" or "skip
+when absent", and the second is the vacuous assertion-of-absence the gate exists to
+prevent.
+
+This matters more than its size because §7 gates **R5 measurement** on I3 covering
+`variable_overwrite`, and R5 is single-use. The fix the document already contains is
+attached to the wrong item: §7's third row specifies "a fixture with an undisclosed
+constant" for the `comparison_immediates()` sourcing work, which §7 explicitly makes *not*
+a precondition. That fixture — a binary whose gate constant is in `MAGIC_VALUES`, so
+`variable_overwrite` genuinely wins — is what I3's gate needs. **Condition: the fixture and
+a red-proven gate exist before §7's R5-measurement gate is treated as satisfied.**
+
+### 15.2 One `duration_sec` does not settle row 2. MAJOR (M11).
+
+`elapsed = time.time() - t0` at `run_bench.py:949` spans everything from
+`negative_control()` at `:913` through `attribution_witness` at `:937`. Inside that span
+the pipeline runs **twice**: `run_supwngo(... ["--json"])` at `:916` (the probe) and
+`run_supwngo(... ["-o", script_path])` at `:922` (script generation). Subtracting only the
+probe duration from `elapsed_sec` therefore attributes a second complete pipeline
+invocation to "harness overhead", overstating it by roughly a full pipeline run — on R1
+`01`, within a 35.8 s target budget.
+
+So I2b as specified yields probe-versus-everything-else, not the pipeline-versus-harness
+split row 2 names. The fix is one more field: `autopwn_script_generation` at `:969-972` has
+the identical wrapper shape, so add `duration_sec` there too. Otherwise row 2 remains
+unsettled — the same failure shape as B2, narrower. Cheap to fix; must be fixed, since
+row 2 is the reason I2b was added.
+
+### 15.3 Carried-forward A / B / C against the revised text
+
+**A — can the five proofs fail?** Substantially fixed. The two structural upgrades are the
+right ones: mutation to *wrong-but-present* across all five, and artifact-level assertions.
+I2's new two-executor differential specifically kills the vacuity I found — a whole-run
+duration stamped on every record gives both executors the same value and fails the
+differential, and so does a constant, so the differential and the new mutation reinforce
+each other. I4's proof is now the strongest in the set because it names the site class the
+proof must be written at. I1's and I5's were already sound. I2b's is new and falsifiable
+(`duration_sec` present, non-zero, and less than `elapsed_sec` — which holds by
+construction given `:949`). Residual: I3's, per §15.1.
+
+**B — sufficiency for §1's six rows.** Improved from 1 of 6 to 4 of 6. Row 1 is now
+sufficient, because I2 adds the three prologue stages at `orchestrator.py:186-188` that my
+M5 identified. Rows 4, 5 and 6 are sufficient (row 5 subject to m9's signature work). Row 2
+is insufficient by one field (M11). Row 3 is designed correctly but its gate is
+unimplementable as worded (M10).
+
+**C — does "no capability change" hold?** For I2, I2b, I3, I4 and I5, yes, and I verified
+the two that could plausibly have failed: nothing in the codebase branches on
+`failure_reason` (every consumer at `cli.py:2420`, `orchestrator.py:353`,
+`handoff.py:53/108/292`, `templates.py:38`, `contracts.py:101` is display or
+serialisation), and the probe wrapper never reaches `classify`. For I1 the non-goal is
+honestly *declared* — the plan states the behaviour delta explicitly — but inaccurately
+*bounded*, per M8. The `handoff.py:292` meaning change is now pre-declared, which closes
+m4.
+
+## 16. Round-2 findings index
+
+**BLOCKING** — none.
+
+**MAJOR**
+
+- **M8** — I1's risk is stated as "can silently lower a score" and "for cheap pure
+  predicates this is inert". Both wrong. `IntTruncationBypassExecutor.attempt()`
+  (`input_shape_techniques.py:235-256`) and `DirectShellcodeExecutor.attempt()`
+  (`stack_techniques.py:158-183`) carry no applicability guard and can reach SUCCESS where
+  previously skipped; `NegativeIndexWriteExecutor` and `FormatStringExecutor` are likewise
+  unguarded; `LeakedStackShellcodeExecutor` re-checks the leak at `:76` but not
+  `:53-55`. `DirectShellcodeExecutor` has the purest predicate and the least inert
+  migration, so purity is the wrong test. Failure: an implementer treats the migration as
+  inert, omits a guard, and the R1 map changes. Mitigated by the step-1 gate and
+  single-executor conversion, so not blocking. Fix: state the risk bidirectionally, adopt
+  the invariant *inert iff `attempt()` already reproduces the full predicate*, and
+  enumerate deletions versus new guards.
+- **M9** — §9's narrowing to "verification, attribution, classification or scoring logic"
+  omits negative-control generation (`run_bench.py:494-530`) and script-audit generation
+  (`:630-654`, `:681-695`), both cheat-detection that `classify` only consumes. Failure:
+  a later plan weakens a control or the audit and passes targets without touching any
+  named category. Fix: invert to an allowlist naming the probe `duration_sec` and the R1
+  gate as the only harness changes.
+- **M10** — I3's required-provenance gate has no positive instance
+  (`variable_overwrite` wins 0 of 17) and, as worded, fails unconditionally on missing
+  provenance, so it would red all 13 R1 targets. Failure: implemented as "skip when
+  absent" it is vacuous, and §7 gates single-use R5 measurement on it. Fix: condition the
+  failure on an attempt having produced a payload, and build the `MAGIC_VALUES`-hit
+  fixture — §7 already specifies that fixture, but attaches it to the one item it calls
+  *not* a precondition.
+- **M11** — one `duration_sec` cannot settle row 2: `elapsed_sec` (`run_bench.py:949`)
+  spans two full pipeline invocations (`:916` probe, `:922` script generation), so the
+  subtraction overstates harness overhead by a whole pipeline run. Fix: add the same field
+  to `autopwn_script_generation` (`:969-972`, identical shape).
+- **M12** — round-1 M1's lesson is owned in §2.2 but the *practice* is not yet a rule
+  anywhere in §5 or §6: nothing in the plan requires that a claim about artifacts be
+  derived over **all** archived runs. §4.0's inventory rule covers "does it already
+  exist"; it does not cover "did my search cover what my sentence claims". Given that this
+  is the specific error that produced both M1 and the rev-2 map defect, add it to §4.0 as
+  a second clause. Fix: one sentence.
+
+**MINOR**
+
+- **m9** — 4 of the 9 `deliver_parts` sites have no `context` either (`discover_menu`,
+  `_find_buffer_arg_index`, `_probe_fmtstr_indices`, `_probe_echo_sizes`), and the two
+  that §5 mandates the I4 proof at are both in that set. The Design paragraph's argument
+  from "the context predates the `AttemptRecord`" settles reachability only where
+  `context` is in scope. Disclosed generically by the seven-helper risk note, so minor.
+- **m10** — "completes 40 windows" is wrong: `_find_buffer_arg_index` and
+  `_probe_fmtstr_indices` each run **8** windows (`fmtstr_techniques.py:50-51`;
+  `canary_leak_techniques.py:48/51`); `_probe_echo_sizes` runs 13
+  (`canary_leak_techniques.py:45`). 40 is `MAX_ARG_INDEX`, not a window count. Design
+  unaffected.
+- **m11** — citation drift: `rop_techniques.py:216`/`:226` are the `record.outcome` lines,
+  the quoted strings are `:217`/`:227`; the `notes` append is
+  `input_shape_techniques.py:241-242`, not `:240-241`. Negligible individually.
+- **m12** — §4 I1's declared delta, "for `LeakedStackShellcodeExecutor` it *moves* a
+  process spawn rather than adding one", is wrong in the plan's favour: `attempt():76`
+  already re-probes, so today's fallback path spawns **twice** and the migration is a
+  deletion that **removes** a spawn. Worth correcting because it makes the executor
+  scheduled last the safest conversion for the leak half of its predicate.
+
+## 17. Round-2 verdict
+
+The three blockers are fixed, and fixed the right way rather than papered over — I checked
+§8 specifically for a stale assumption surviving §2.1's rewrite and found none. Both
+push-backs against my round-1 review are correct, and one of them (the `objdump` path)
+improves the analysis rather than merely correcting it. §4.0's inventory rule is a real
+structural addition that already produced the revision's best finding, the 21-site
+inventory, which I confirmed exactly. The sequencing is now correct and the gate is proven
+red before it is trusted.
+
+Five MAJOR defects remain. None invalidates an instrument, changes the sequencing, or
+touches the design; four are text corrections and one (M10) is a gate specification that
+needs a fixture. The one with real teeth, M8, is contained by a sequencing decision the
+plan has already made correctly. That is not the profile of a document that should be held.
+
+Binding before implementation: **M8** before step 5, **M9** and **M12** before any step,
+**M11** before step 2, and **M10** before §7's R5-measurement gate is treated as
+satisfied.
+
+**APPROVED**
