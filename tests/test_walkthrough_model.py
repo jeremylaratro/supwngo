@@ -591,3 +591,41 @@ class TestHelpers:
             resolved_by="offset",
         )
         assert "no fault. Plausible: 72 or 88." in fact.unknown_detail
+
+
+class TestGadgetConstantReferences:
+    """Step code may not name a ``G_*`` constant the walkthrough never declares.
+
+    Regression guard for a bug that produced a syntactically perfect file which
+    raised ``NameError: name 'G_RET' is not defined`` on the reader's first
+    command: a shared step builder emitted checks for every gadget found in the
+    binary, while each family declared constants only for the gadgets its own
+    route used.
+    """
+
+    def test_step_referencing_an_undeclared_gadget_is_rejected(self):
+        with pytest.raises(WalkthroughError, match="G_RET"):
+            make_walkthrough(
+                steps=(make_step(code="log.info('%#x', G_RET)"),),
+            )
+
+    def test_final_exploit_referencing_an_undeclared_gadget_is_rejected(self):
+        with pytest.raises(WalkthroughError, match="G_POP_RDI"):
+            make_walkthrough(final_exploit="rop = [G_POP_RDI, 0x1234]")
+
+    def test_declared_gadget_constant_is_accepted(self):
+        wt = make_walkthrough(
+            constants=(make_fact(name="G_RET", value=0x40101A),),
+            steps=(make_step(code="log.info('%#x', G_RET)"),),
+        )
+        assert wt.steps[0].code
+
+    def test_a_gadget_produced_by_an_earlier_step_also_counts(self):
+        produced = make_fact(name="G_POP_RDI", value=0x4011FA)
+        wt = make_walkthrough(
+            steps=(
+                make_step(step_id="find", produces=(produced,)),
+                make_step(step_id="use", code="rop = [G_POP_RDI]"),
+            ),
+        )
+        assert len(wt.steps) == 2

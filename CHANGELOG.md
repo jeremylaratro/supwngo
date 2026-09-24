@@ -56,8 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gadget-vs-symbol (`endbr64`), `movaps` alignment and pointer-vs-string traps, derive
   the reader's own libc via `ELF(BINARY).libc` instead of baking in the generating
   machine's path, and never present flag scraping as a route. Validated by following
-  the generated walkthroughs literally, step by step, to a shell on benchmark targets
-  `02_ret2plt_system`, `07_ret2libc_leak` and `09_srop`.
+  the generated walkthroughs literally, step by step, to a shell or a win-function
+  effect on benchmark targets `01_shellcode_stack`, `02_ret2plt_system`,
+  `07_ret2libc_leak`, `09_srop` and `15_win_function` — one per shipped route.
 - `supwngo explain BINARY` — new CLI command that emits a walkthrough without running
   the exploitation pipeline (`-o/--output`, `--family`, `--offset`, `--no-probe`,
   `--libc`, `--remote`, `--markdown`, `--json`), and `supwngo solve --walkthrough`,

