@@ -56,6 +56,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subdirectory so an intermittent target's evidence is not overwritten.
 
 ### Fixed
+- **`benchmark/run_bench.py`'s headline success rate did not admit it was a
+  best-of-N figure.** With `--reps 5`, `OVERALL: 2/3 SUCCESS (66.7%)` counted a
+  target that succeeded once in five attempts identically to one that succeeded
+  five times out of five — and the headline is the number that gets quoted
+  downstream, so deferring the disclosure to the `SOLVED vs RELIABILITY` block
+  further down the file did not help. Same failure mode as a silently shrunken
+  VOID denominator: a true-but-incomplete number that reads as better than
+  reality. The headline now states that SUCCESS means credited in at least 1 of N
+  reps, and splits the successes into fully-reliable versus intermittent. A
+  single-rep run makes no best-of-N claim.
 - `benchmark/run_bench.py`'s serial multi-rep progress output did not say which
   target it was reporting on. Suppressing `run_one`'s per-step chatter for
   `--reps > 1` is right — five copies per target buries the result — but it left

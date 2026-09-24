@@ -729,6 +729,66 @@ class TestRepsAndReliability:
         assert len(calls) == 3
         assert len(set(map(str, calls))) == 3, f"reps shared a dir: {calls}"
 
+    def _summary(self, tmp_path, results):
+        return rb.write_summary(results, tmp_path / "s.txt", 10.0,
+                                rb.Corpus(root=rb.DEFAULT_CORPUS_DIR,
+                                          manifest=rb.DEFAULT_CORPUS_YAML))
+
+    @staticmethod
+    def _headline(text):
+        """Just the OVERALL paragraph -- from `OVERALL:` to the blank line.
+
+        Deliberately NOT "the first half of the file": the disclosure has to be
+        attached to the quoted number, and a looser slice would pass on text
+        found anywhere in the summary.
+        """
+        lines = text.splitlines()
+        start = next(i for i, ln in enumerate(lines)
+                     if ln.startswith("OVERALL:"))
+        end = next((i for i in range(start + 1, len(lines))
+                    if not lines[i].strip()), len(lines))
+        return "\n".join(lines[start:end])
+
+    def test_overall_headline_admits_it_is_best_of_n(self, tmp_path):
+        """The headline rate is the number that gets quoted downstream.
+
+        With reps > 1, `OVERALL: 1/2 SUCCESS (50.0%)` is a BEST-OF-5 figure. If
+        the headline does not say so, the disclosure further down the file does
+        not help -- nobody who quotes the percentage reads that far. This is the
+        same failure mode as a shrunken VOID denominator: a true-but-incomplete
+        number that reads as better than reality.
+        """
+        results = [
+            {"slug": "01_a", "difficulty": "easy", "status": "SUCCESS",
+             "reason": "r", "reps": 5, "reps_requested": 5,
+             "reps_credited": 5, "reliability": 1.0},
+            {"slug": "02_b", "difficulty": "easy", "status": "SUCCESS",
+             "reason": "r", "reps": 5, "reps_requested": 5,
+             "reps_credited": 1, "reliability": 0.2},
+            {"slug": "03_c", "difficulty": "hard", "status": "FAILED",
+             "reason": "r", "reps": 5, "reps_requested": 5,
+             "reps_credited": 0, "reliability": 0.0},
+        ]
+        head = self._headline(self._summary(tmp_path, results))
+
+        assert "BEST-OF-5" in head.upper(), (
+            f"headline must disclose best-of-N; got:\n{head}")
+        assert "1 fully reliable" in head and "1 INTERMITTENT" in head, (
+            "the headline must split reliable from intermittent successes, "
+            f"since 5/5 and 1/5 are different claims; got:\n{head}")
+
+    def test_single_rep_headline_makes_no_best_of_n_claim(self, tmp_path):
+        """The converse: with one rep there is no best-of-N, and saying so would
+        be noise that trains readers to skip the disclosure."""
+        results = [
+            {"slug": "01_a", "difficulty": "easy", "status": "SUCCESS",
+             "reason": "r", "reps": 1, "reps_requested": 1,
+             "reps_credited": 1, "reliability": None},
+        ]
+        head = self._headline(self._summary(tmp_path, results))
+        assert "BEST-OF" not in head.upper(), (
+            f"no best-of-N claim belongs in a single-rep run; got:\n{head}")
+
     def test_serial_multi_rep_progress_names_the_target(
             self, monkeypatch, tmp_path, capsys):
         """With reps > 1 the per-rep chatter from run_one is suppressed, so the

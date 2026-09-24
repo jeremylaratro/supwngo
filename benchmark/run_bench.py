@@ -1263,6 +1263,30 @@ def write_summary(results: list[dict], out_path: Path, timeout: float, corpus: C
             f"OVERALL: {counts['SUCCESS']}/{scored} SUCCESS ({pct:.1f}%), "
             f"{counts['PARTIAL']} PARTIAL, {counts['FAILED']} FAILED"
         )
+        # With reps > 1 this headline is a BEST-OF-N figure, and the headline is
+        # the number that gets quoted downstream -- so it has to say so itself.
+        # Deferring the disclosure to the SOLVED vs RELIABILITY block below is
+        # not enough: nobody who quotes "7.7%" reads that far.
+        n_reps = max((r.get("reps_requested") or r.get("reps") or 1)
+                     for r in results)
+        if n_reps > 1:
+            wins = [r for r in results if r["status"] == "SUCCESS"]
+            solid = sum(1 for r in wins
+                        if r.get("reliability") is not None
+                        and r["reps_credited"] == r["reps"])
+            flaky = sum(1 for r in wins
+                        if r.get("reliability") is not None
+                        and 0 < r["reps_credited"] < r["reps"])
+            lines.append(
+                f"         SUCCESS = credited in AT LEAST 1 of {n_reps} reps, i.e. "
+                f"this rate is BEST-OF-{n_reps}, not a per-attempt rate.")
+            lines.append(
+                f"         Of those {len(wins)} success(es): {solid} fully "
+                f"reliable ({n_reps}/{n_reps}), {flaky} INTERMITTENT. A "
+                f"best-of-{n_reps} rate quoted")
+            lines.append(
+                "         without that split overstates what the framework does "
+                "per attempt.")
         # Both denominators, always. /scored is the honest rate; /total keeps it
         # comparable across runs even as the VOID set changes.
         lines.append(
