@@ -468,6 +468,33 @@ output channel. That requires real effort rather than a shortcut, and
 but it is not structurally prevented. Witnessing the target's control flow
 directly (a breakpoint on `win()`) would close it.
 
+#### Open item: the `11/13` hardening figure was measured with the defective attribution
+
+`integration/phases-0-4-7-20260923` contains `8ac3295` (attribution introduced)
+but **not** `88aa470` (the three defect fixes). The hardening branch's
+`74224af feat(exploit): round-1 hardening -- 11/13 credited, zero genuine
+failures` was therefore scored by a module with all three defects live.
+
+The errors do **not** point the same way, so the figure cannot simply be adjusted:
+
+| Defect | Direction | Why it plausibly applies to that run |
+|---|---|---|
+| A — in-place `execve` read as "target never ran" | **understates** (false `VOID`, shrinking both numerator and denominator) | That branch added exactly the affected techniques: `feat(exploit): add SROP, ret2dlresolve, and tcache-poisoning executors` and `add leaked-stack shellcode executor`. Shellcode/SROP solves end via in-place `execve`. |
+| B — split `write` records blamed the relay thread | **understates**, non-deterministically (false `script_gamed_the_check`) | Fires whenever the kernel interleaves another pid's line mid-`write`; two identical runs disagreed minutes apart. |
+| C — scrape-then-`execve` credited | **overstates** (false `SUCCESS`) | Unknown for that run. See below. |
+
+`benchmark/results/*` is gitignored, so that run's `strace` logs are not in git
+and the pre/post comparison below **cannot** be extended to them. The "C never
+fired" evidence covers the 7 traces on this branch only. Nothing here says the
+`11/13` is wrong; it says it is **not yet measured by a sound instrument**, and
+that "zero genuine failures" is the specific claim most exposed — B manufactures
+a cheating verdict, so a real one could equally have been dismissed as noise.
+
+**Recommendation:** re-run that branch's corpus after `88aa470` lands, and quote
+the post-fix number. Until then the two figures are not comparable, and neither
+is this branch's `1/13` — which measures *unhardened* `autopwn`, since none of
+the 12 hardening commits are in this worktree.
+
 #### Did defect C inflate any score already reported? No — checked, not assumed
 
 C was a false-SUCCESS defect, so the obvious question is whether any number this
