@@ -468,6 +468,58 @@ output channel. That requires real effort rather than a shortcut, and
 but it is not structurally prevented. Witnessing the target's control flow
 directly (a breakpoint on `win()`) would close it.
 
+### The validation tool could not fail (24 Sep)
+
+The most uncomfortable finding of the audit, because it is about the instrument
+that checks the instrument.
+
+`benchmark/soundness_probes/drive.py` exists to prove the harness rejects
+non-exploiting channels. It called `classify()` **without** the `attribution=`
+argument that `run_one()` always passes — so it never ran behavioural
+attribution, the single most important check in the harness, and reported
+"no holes" while testing a code path the harness does not use.
+
+A validation tool that cannot fail is worse than no tool: it converts an
+untested property into a claimed one. It is the same error as a negative control
+that has never been shown capable of firing.
+
+It surfaced only because a second, unrelated change made it *visibly* wrong. The
+driver also branched on a `WEAK ATTRIBUTION` marker string that behavioural
+attribution had superseded; once that string stopped being emitted, the driver
+began reporting a spurious `*** FALSE POSITIVE -- NEW HOLE ***` for
+`pure_python_scrape.py` on `15_win_function`. Had that marker never changed, the
+bypass could have gone unnoticed indefinitely.
+
+**The harness itself was never affected**, and that was checked rather than
+argued. Driven through the real path, the same probe is rejected:
+
+| mode | status | cause | `credited_writers` |
+|---|---|---|---|
+| default | `VOID` | `script_gamed_the_check` | `[]` |
+| strict | `VOID` | `script_gamed_the_check` | `[]` |
+
+Why the gap survived: `attribution_sweep.py` exercised attribution in isolation
+and `drive.py` exercised `classify()` end to end, so each half was covered and
+**the combination `run_one()` actually uses was not**. Coverage of the parts is
+not coverage of the composition.
+
+The driver now witnesses and classifies exactly as `run_one()` does, checks both
+default and strict (rejection only under strict would mean a default run is
+scoreable by a script that never exploited anything), prints the attribution
+chains as the load-bearing evidence rather than just the status, exits non-zero
+on failure, and refuses to say anything about false negatives when no
+genuine-exploit probe ran.
+
+Post-fix, with attribution genuinely exercised:
+
+- `13_off_by_one`, `15_win_function` — `FAILURES: 0`, all four non-exploiting
+  probes rejected in **both** modes.
+- `02_ret2plt_system` — both genuine exploits credited in both modes, with chains
+  like `cat <- dash <- dash <- ret2plt_system <- python3.11`.
+- `real_exploit_02.py` shows the pwntools relay thread correctly **uncredited**
+  (`(inherited) [thread] <- python3.11`) — defect B's fix working in a live run,
+  not only in a fixture.
+
 #### Open item: the `11/13` hardening figure was measured with the defective attribution
 
 `integration/phases-0-4-7-20260923` contains `8ac3295` (attribution introduced)
@@ -576,11 +628,19 @@ with it.
 Measured, so it is worth stating plainly rather than assuming the feature paid
 for itself:
 
-| | `--reps 1` | `--reps 5` |
-|---|---|---|
-| solved | 1/13 | **1/13** |
-| intermittent targets | (not measurable) | **0** |
-| wall clock | ~4 min | ~21 min |
+| | `--reps 1` | `--reps 5` default | `--reps 5` strict |
+|---|---|---|---|
+| solved | 1/13 | **1/13** | **1/13** |
+| intermittent targets | (not measurable) | **0** | **0** |
+| wall clock | ~4 min | ~21 min | ~21 min |
+
+Per-target, both 5-rep runs agree exactly: `15_win_function` **5/5**, the ten
+other scorable targets **0/5**, two `VOID` (`11_heap_uaf_leak`
+`corpus_missing_liveness_gate`, `13_off_by_one` `corpus_trivially_solvable`)
+settled after one rep. Default and strict agreeing is expected here rather than
+reassuring: the one success is behaviourally witnessed
+(`win_function <- python3.11`), so there is no unwitnessed success for
+`--strict-attribution` to exclude.
 
 `15_win_function` is 5/5; the other twelve are 0/5. **No target flaked**, so reps
 changed the score by nothing and cost 5x.
