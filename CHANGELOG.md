@@ -61,6 +61,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hardcoded list of nine CTF-folklore constants. The constants are in the binary's own
   `cmp`/`test` instructions, so they are extracted from `objdump` output (most-plausible
   first) with the old list kept only as a fallback.
+- **Phase 5 — `canary_leak_ret2win` technique executor**
+  (`supwngo/exploit/pipeline/executors/canary_leak_techniques.py`). A canary-protected
+  target that *hands you the canary* (an echo that over-reads past the filler, or a
+  format-string `%N$p`) is a two-stage exploit: leak, then overflow with the canary
+  replaced. Nothing in the pipeline could express that — `scanf_canary_bypass` assumed the
+  canary could be skipped over, and the single-blob verifier could not run two stages at
+  all. The new executor finds the leak source generically (windowed `%N$p` probing, or
+  sweeping echo fill sizes), identifies which leaked stack word is the canary by structure
+  rather than by position (glibc's canary always has a zero low byte and otherwise ≥56
+  random bits), and locates the canary's frame offset with an *abort-threshold oracle*:
+  the smallest filler that provokes `*** stack smashing detected ***` is the first byte of
+  the canary, which turns a 25-deep blind offset sweep into two probes.
+- **Phase 5 — `fmtstr_write_gate` technique executor**
+  (`supwngo/exploit/pipeline/executors/fmtstr_techniques.py`): format-string arbitrary
+  write (`%n`) against a gate variable, for the common shape where the target prints a
+  writable address and only checks the variable for non-zero. Locates the user buffer's own
+  `printf` argument index by probing for a marker, restricts write targets to genuinely
+  writable sections, and — the detail that makes `%n` work at all here — emits the `%N$n`
+  directive *before* the target address with the padding ahead of it, because a 64-bit
+  pointer's embedded NUL bytes terminate `printf`'s format parsing if the address comes
+  first.
+- **Phase 5 — `stack_shellcode` technique executor**
+  (`supwngo/exploit/pipeline/executors/shellcode_techniques.py`): NX-off stack shellcode
+  that uses a *leaked* stack address instead of guessing one, re-reading the leak at run
+  time so the script works under ASLR. Places the shellcode *after* the overwritten return
+  address rather than inside the buffer — shellcode that lands in the buffer is corrupted
+  by its own `push` instructions once `rsp` is pointing into it — and sweeps NOP-sled
+  sizes, landing mid-sled for slack.
 - `docs/plans/2026-09-23-phase5-reliability-hardening.md` — the Phase 5 plan, recording
   the five root causes found before any fix was written (single-blob delivery,
   payload-only verification, attempt ordering, label-driven leak parsing, missing
