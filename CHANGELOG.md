@@ -340,7 +340,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   target. Replaced the errno **denylist with a success allowlist** (the syscall
   result must be exactly `= 0`), verified against a real trace. A strict
   tightening: it can only remove credit, never add it. Found by independent
-  review of the walkthrough scorer.
+  review of the walkthrough scorer. **Retroactively cleared against every
+  published number** (`docs/reports/2026-09-24-execve-denylist-retrocheck.md`,
+  tool `benchmark/soundness_probes/execve_denylist_retrocheck.py`): all 214
+  credited reps across R1's three authoritative runs and R2's cold run were
+  re-derived under the fixed parser and none rested on a failed `execve`; a wider
+  sweep of all 217 archived traces found the same. The *guarantee* was weaker than
+  documented for that period; the *measurements* — R1 13/13, R2 cold 4/15 — are
+  unaffected. The only `execve` failures these workloads produce are the
+  `ENOENT`/`EACCES` of PATH and library-path probing, which the old denylist
+  already rejected; the dangerous errnos have to be constructed deliberately.
 - **Walkthrough scorer — hardening from independent implementation review**
   (`docs/plans/reviews/2026-09-24-walkthrough-scorer-implementation-review-codex.md`,
   12 BLOCKING findings). Each of these could have manufactured a walkthrough
