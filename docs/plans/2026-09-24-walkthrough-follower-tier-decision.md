@@ -18,39 +18,62 @@ Agent follower: `claude -p`, model alias `sonnet` (Tier 3, the project's stated
 floor), tools `Bash/Read/Write/Edit/Glob/Grep`, web denied, $2.00 budget, 900 s
 wall, `--strict-attribution`, variant `verbatim`.
 
-| target | difficulty | walkthrough template works? | bare arm | verdict |
-| --- | --- | --- | --- | --- |
-| `02_ret2plt_system` | easy | yes | **CREDITED** 113.6 s | `UNINFORMATIVE` |
-| `04_canary_leak_bypass` | medium | no (abstains) | **CREDITED 2/2** | `UNINFORMATIVE` |
-| `08_ret2dlresolve` | **hard** | no (abstains) | **CREDITED 2/2** | `UNINFORMATIVE` |
-| `09_srop` | **hard** | yes | **CREDITED 2/2** | `UNINFORMATIVE` |
+| target | difficulty | template arm | walkthrough arm | bare arm | verdict |
+| --- | --- | --- | --- | --- | --- |
+| `02_ret2plt_system` | easy | `TEMPLATE_OK` | CREDITED 34.5 s | **CREDITED** 113.6 s | `UNINFORMATIVE` |
+| `04_canary_leak_bypass` | medium | `TEMPLATE_BROKEN` | CREDITED 2/2 | **CREDITED 2/2** | `UNINFORMATIVE` |
+| `08_ret2dlresolve` | **hard** | `TEMPLATE_BROKEN` | CREDITED 2/2 | **CREDITED 2/2** | `UNINFORMATIVE` |
+| `09_srop` | **hard** | `TEMPLATE_OK` | CREDITED 2/2 | **CREDITED 2/2** | `UNINFORMATIVE` |
+| `12_heap_tcache_poison` | **hard** | `TEMPLATE_BROKEN` | CREDITED 2/2 | 1/2 + **one 900 s timeout** | `NOT_MEASURABLE` |
 
-Four attempted, four `UNINFORMATIVE`, including **both** `hard` targets at 2/2.
-The bare arm has not failed once.
+Informative denominator: **0 of 4 eligible** (`rate_strict` 0/4, `rate_informative`
+withheld — 100% of the eligible set dropped out, far past the 20% ceiling).
 
-## 2. The decisive fact, which is worse than "the denominator shrinks"
+The bare arm has not lost a single **valid** trial. It did, once, fail to finish
+one: on `12_heap_tcache_poison` its rep-1 trial hit the 900 s wall. The scorer
+scored that `FOLLOWER_INVALID` and the target `NOT_MEASURABLE` rather than reading
+a timeout as "the bare arm failed" — which is the asymmetric-validity rule doing
+exactly the job it exists for, since a bare failure is what *grants* the
+walkthrough credit. It is also the single most informative number here: see §2b.
 
-The walkthrough arm has a ceiling independent of the follower. From the template
-arm over all 15 round-1 targets, only **5** walkthroughs ship a template that
-captures a flag at all: `01_shellcode_stack` (easy), `02_ret2plt_system` (easy),
-`07_ret2libc_leak` (medium), `09_srop` (hard), `15_win_function` (easy). The other
-8 either abstain (7, `family=triage`, declaring the offset unknown) or teach a
-route that does not work (1, `03_pie_leak_ret2libc`).
+## 2a. Correction: the walkthrough arm's ceiling is NOT the template arm's ceiling
 
-Intersect that with the bare arm:
+An earlier draft of this document argued that the informative denominator heads to
+0 because only **5** of 15 walkthroughs ship a template that captures a flag
+(`01`, `02`, `07`, `09`, `15` — the other 8 abstain or teach a route that does not
+work), and all 5 are at or below a difficulty the bare follower clears unaided.
 
-- Of those 5, **`02` and `09` are already proven `UNINFORMATIVE`.**
-- The remaining 3 are `easy`, `easy`, `medium` — every one **strictly easier than
-  `09_srop`**, which the bare follower solved 2/2 unaided.
+**That argument is wrong, and the `12_heap_tcache_poison` measurement is what
+refutes it.** `12` is `hard` and its template is `TEMPLATE_BROKEN` — the
+walkthrough's own embedded template captured nothing in 3/3 reps. The *agent*
+follower given that same walkthrough was credited **2/2**, on a behaviourally
+attributed GOT-overwrite route. A reader can repair a broken template from the
+prose around it; the template arm cannot. So
 
-So the informative denominator on round-1 at this tier is not "near zero". The
-expected value is **0 or 1**: the set `{walkthrough works} ∩ {bare fails}` is
-plausibly empty. An 85% gate over a denominator of 2 measures nothing; over a
-denominator of 0 it is not defined.
+```
+{walkthrough arm succeeds}  ⊋  {template arm succeeds}
+```
 
-This reframes the problem. It is not that a strong follower trims the long tail.
-It is that **the walkthroughs that work only cover targets the follower can
-already do**, so the necessity test has nothing to bite on.
+and any bound on the informative denominator derived from `TEMPLATE_OK` counts is
+too pessimistic. The corrected claim is narrower and rests only on measurements:
+**the bare arm won every valid trial on 4 targets spanning `medium` and `hard`,
+including two `hard` at 2/2.** That is enough to make the denominator 0 on this
+subset. It is *not* enough to prove the denominator is 0 corpus-wide, and this
+document no longer claims it is.
+
+## 2b. What the `12` timeout actually says
+
+`12_heap_tcache_poison` is the only target where the arms visibly differ in cost
+rather than in outcome, and the difference is large: the walkthrough arm finished
+and was credited in both reps, while the bare arm exceeded a 900 s wall in one of
+two. Together with `02_ret2plt_system` (34.5 s with, 113.6 s without — 3.3×), the
+two measurements that carry timing both point the same way:
+
+> The walkthrough changes what the follower's attempt **costs**, not what it can
+> **do**.
+
+That is the finding the pass/fail metric is structurally unable to express, and
+it is why option C below is put to the maintainer rather than dismissed.
 
 ## 3. The options, weighed
 
@@ -71,20 +94,23 @@ Three reasons the data does not support it.
    failure. The denominator can collapse from the other end — every target
    `NOT_FOLLOWABLE` because the follower could not follow anything — and that is
    just as uninformative while looking like a damning result.
-3. **The measured effect is on effort, not on possibility.** On the one target
-   where both arms succeeded and timings exist, the walkthrough arm took 34.5 s
-   and the bare arm 113.6 s. The walkthrough made the work **3.3× faster**; it did
-   not make possible something otherwise impossible. If that is the true shape of
-   the effect, then *no* choice of model tier separates the arms, because the
-   walkthrough is not changing what the follower can do. Tuning the tier would be
-   searching for a capability band in which a speed effect masquerades as a
-   possibility effect — and any band narrow enough to produce that is a band the
-   result is an artifact of.
+3. **The measured effect is on effort, not on possibility** (§2b). Both timed
+   comparisons — 3.3× on `02_ret2plt_system`, and a credited walkthrough arm
+   against a 900 s bare timeout on `12_heap_tcache_poison` — show the walkthrough
+   shortening the attempt rather than enabling it. If that is the shape of the
+   effect, then *no* choice of model tier separates the arms on a pass/fail
+   measure, because the walkthrough is not changing what the follower can do.
+   Tuning the tier would be searching for a capability band narrow enough that a
+   cost effect reads as a possibility effect — and any band narrow enough to
+   produce that is a band the result is an artifact of.
 
 **What would flip this:** a measured run at a lower tier showing a non-empty
 `{walkthrough works} ∩ {bare fails}` set of at least
 `MIN_INFORMATIVE_TARGETS` (7) **and** a walkthrough arm that is not itself mostly
-failing. Both halves are required; either alone is a collapse.
+failing. Both halves are required; either alone is a collapse. Note that §2a makes
+this *more* plausible than the first draft allowed: the walkthrough arm succeeds on
+targets whose template is broken, so it has more headroom above a weakened bare arm
+than a `TEMPLATE_OK` count suggests.
 
 ### B. Bound the bare arm — **rejected as specified, adopted in a symmetric form**
 
@@ -119,8 +145,10 @@ a profile cannot tighten one arm and not the other.
 
 **This is UNMEASURED.** No figure in the repository was produced with it. It is
 committed so the choice can be settled by measurement instead of argument, and
-the honest next step is to run the 4-target subset under `--affordance read-only`
-and compare.
+the honest next step is to re-run the subset under `--affordance read-only` and
+compare — `12_heap_tcache_poison` first, because it is the one target where the
+bare arm was already at the edge of its budget (§2b) and so the one where removing
+the test loop is most likely to change an outcome rather than a duration.
 
 **What would flip it:** if `read-only` drives the *walkthrough* arm to fail too,
 it is a worse instrument than `shell`, not a better one, and should be abandoned
@@ -129,8 +157,9 @@ rather than tuned.
 ### C. Change the measure to speedup — **proposed, not adopted**
 
 Steps or wall-time to solution with versus without the walkthrough. Every target
-stays informative; the denominator never collapses; and it measures the effect
-the data actually shows (3.3× on `02`).
+stays informative; the denominator never collapses; and it measures the effect the
+data actually shows — 3.3× on `02_ret2plt_system`, and on `12_heap_tcache_poison` a
+credited walkthrough arm against a bare arm that blew a 900 s wall.
 
 Not adopted because the user asked for a `>= 85%` pass-rate gate, and silently
 replacing a pass/fail gate with an effect size is exactly the "invent a friendlier
@@ -171,18 +200,23 @@ instead of going undefined. **What it costs:** it is not a gate. Nothing about
 ## 5. Escalated to the maintainer
 
 **The `>= 85%` necessity-controlled pass-rate gate may not be measurable on
-round-1 at any follower tier, and that is a finding about the corpus and the
-engine, not about the scorer.** The engine attempts a flag-reaching route on 6 of
-13 scored targets; 5 succeed; all 5 are at or below a difficulty the follower
-clears unaided. Three consequences:
+round-1 at this follower tier, and if so that is a finding about the corpus and the
+follower, not about the scorer.** Measured: 5 targets attempted with the agent
+follower, informative denominator **0**. The bare arm won every valid trial across
+`medium` and `hard`. Four consequences:
 
-- A `NOT MEASURABLE` gate result on R5 is the likely honest outcome unless
-  walkthrough coverage improves on targets that are *hard for the follower*. The
-  families work in flight (`fmtstr`/`integer`/`heap`) is therefore on the critical
-  path for the gate, not merely for coverage.
+- A `NOT MEASURABLE` gate result on R5 is a live possibility, and the gate now
+  says so instead of emitting a number. Whether it happens depends on targets that
+  are hard *for the follower*, which is not the same axis as the corpus's own
+  `difficulty` label — `12_heap_tcache_poison` is the only target measured so far
+  that stressed the bare arm at all.
 - Neither a PASS nor a FAIL should be accepted from a denominator below 7. A FAIL
-  for "the follower was too good" is as misleading as a PASS for a lenient metric,
+  for "the follower was too good" is as misleading as a PASS from a lenient metric,
   and the gate now refuses both.
-- If the maintainer wants a number from R5 regardless, option C (speedup as a
+- **Do not draw the denominator bound from template-arm coverage.** §2a records the
+  measurement that refutes it: the agent follower is credited 2/2 on a `hard`
+  target whose walkthrough template is broken. "7 of 13 walkthroughs abstain" is a
+  statement about the template arm and does not bound the agent arm.
+- If the maintainer wants a number from R5 regardless, option C (cost/speedup as a
   companion) is the only one of the three that survives a collapsed denominator,
   and it needs deciding **before** the measurement, not after seeing it.
