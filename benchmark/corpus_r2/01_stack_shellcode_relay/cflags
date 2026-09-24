@@ -1,0 +1,5 @@
+# canary=OFF nx=OFF pie=OFF relro=partial dynamic
+-fno-stack-protector
+-no-pie
+-z
+execstack

@@ -4,5 +4,11 @@
 corpus/*/*
 !corpus/*/*.c
 
+# Round-2 held-out corpus: same rule (see build_all_r2.sh).
+corpus_r2/*/*
+!corpus_r2/*/*.c
+!corpus_r2/*/cflags
+!corpus_r2/README.md
+
 # Benchmark run output (timestamped) is generated, not committed.
 results/*/

@@ -1,0 +1,4 @@
+# canary=OFF nx=ON pie=ON relro=full (toolchain default for PIE) dynamic
+-fno-stack-protector
+-pie
+-fPIE
