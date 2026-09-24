@@ -155,6 +155,13 @@ DEFAULT_CORPUS_YAML = HERE / "corpus.yaml"
 
 DEFAULT_TIMEOUT = 10.0
 
+# Reps per target. >1 by default because exploit delivery is not deterministic:
+# a synchronisation race in a generated chain makes a working exploit fail some
+# fraction of the time, and that fraction rises with machine load -- exactly
+# when a benchmark is most likely to be running. See run_reps() for the measured
+# numbers and for why the answer is two figures rather than one.
+DEFAULT_REPS = 5
+
 # A flag shorter than this is treated as a build/provisioning fault rather
 # than a secret. Guards the degenerate `"" in output` case, which would
 # otherwise score every target SUCCESS.
@@ -996,8 +1003,105 @@ def effective_jobs(requested: int, n_targets: int) -> int:
     return max(1, min(want, n_targets or 1))
 
 
+def run_reps(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
+             strict_attribution: bool, reps: int, tmpdir: Path | None = None,
+             echo: bool = True) -> dict:
+    """Run one target `reps` times and report BOTH solved and reliability.
+
+    WHY REPS ARE NOT OPTIONAL
+    -------------------------
+    Exploit delivery is not deterministic. A synchronisation race in the
+    generated script -- a send landing before the target is ready, a recv that
+    sometimes misses its prompt -- makes a chain that genuinely works fail some
+    fraction of the time, for reasons that have nothing to do with whether the
+    framework can exploit the target.
+
+    Be careful with the size of that fraction -- it is load-dependent, not a
+    constant, and the first estimate made here was wrong. One probe's genuine
+    ret2plt exploit was measured at 0/40 failures unloaded and 0/20 under
+    strace, but 4/96 (4.2%) under 24-way contention. Assuming per-target
+    independence at that rate, 13 targets give roughly a 1-in-2 chance that at
+    least one flakes on a loaded box and much less on an idle one. That does not
+    justify claiming a single rep usually understates the score, and it is more
+    than enough to justify not betting a corpus-wide figure on one roll -- a
+    benchmark tends to be run exactly when the machine is busy.
+
+    Two numbers are therefore reported and neither is "the score" alone:
+
+      solved       credited in AT LEAST ONE rep -- can this be exploited at all
+      reliability  k/N reps credited            -- how dependably
+
+    Reporting best-of-N without reliability would be gaming the metric.
+    Reporting a single rep understates real capability. Together they are
+    honest, and the pair is genuinely more informative: 5/5 and 1/5 are
+    different claims about a target, and real exploitation is probabilistic
+    anyway under ASLR and heap layout.
+
+    Reps run SEQUENTIALLY for one target even under parallelism, because each
+    rep rebuilds the binary with a fresh secret in the target's own directory --
+    two concurrent reps of the same target would race on that rebuild.
+    """
+    attempts: list[dict] = []
+    for i in range(1, reps + 1):
+        rep_dir = results_dir if reps == 1 else results_dir / f"rep{i}"
+        rep_dir.mkdir(parents=True, exist_ok=True)
+        r = run_one(corpus, target, timeout, rep_dir,
+                    strict_attribution=strict_attribution,
+                    tmpdir=tmpdir, echo=echo and reps == 1)
+        attempts.append(r)
+        # A VOID is a property of the corpus or the instrument, not a dice
+        # roll: the negative controls and provisioning checks are
+        # deterministic. So one VOID settles the target and further reps would
+        # only burn time re-proving it.
+        if r["status"] == "VOID":
+            break
+
+    if reps == 1:
+        only = dict(attempts[0])
+        only["reps"] = 1
+        only["reps_credited"] = 1 if only["status"] == "SUCCESS" else 0
+        only["reliability"] = None      # not measured with a single rep
+        return only
+
+    last = attempts[-1]
+    void = next((a for a in attempts if a["status"] == "VOID"), None)
+    credited = sum(1 for a in attempts if a["status"] == "SUCCESS")
+    ran = len(attempts)
+
+    trimmed = [{"rep": i + 1, "status": a["status"], "reason": a["reason"],
+                "void_cause": a.get("void_cause"),
+                "elapsed_sec": a.get("elapsed_sec")}
+               for i, a in enumerate(attempts)]
+
+    if void is not None:
+        agg = dict(void)
+    elif credited:
+        agg = dict(next(a for a in attempts if a["status"] == "SUCCESS"))
+        agg["reason"] = f"{agg['reason']} [reliability {credited}/{ran} reps]"
+    elif any(a["status"] == "PARTIAL" for a in attempts):
+        agg = dict(next(a for a in attempts if a["status"] == "PARTIAL"))
+    else:
+        agg = dict(last)
+
+    agg.update({
+        "reps": ran,
+        "reps_requested": reps,
+        "reps_credited": credited,
+        # None rather than 0.0 when a VOID cut the reps short: a target we
+        # stopped measuring has no reliability figure, and printing 0/1 would
+        # read as "tried and failed".
+        "reliability": (credited / ran) if void is None else None,
+        "attempts": trimmed,
+    })
+    if echo:
+        print(f"    -> {agg['status']}: solved={bool(credited)} "
+              f"reliability={credited}/{ran}", flush=True)
+    return agg
+
+
 def run_targets(corpus: Corpus, targets: list[dict], timeout: float,
-                results_dir: Path, strict_attribution: bool, jobs: int) -> list[dict]:
+                results_dir: Path, strict_attribution: bool, jobs: int,
+                reps: int = 1) -> list[dict]:
     """Run targets, optionally in parallel, and return results in MANIFEST
     ORDER regardless of completion order.
 
@@ -1019,17 +1123,17 @@ def run_targets(corpus: Corpus, targets: list[dict], timeout: float,
     """
     if jobs <= 1 or len(targets) <= 1:
         return [_run_one_isolated(corpus, t, timeout, results_dir,
-                                  strict_attribution, echo=True)
+                                  strict_attribution, echo=True, reps=reps)
                 for t in targets]
 
-    print(f"running {len(targets)} targets with {jobs} parallel workers "
-          f"(per-target isolation: private cwd + TMPDIR)", flush=True)
+    print(f"running {len(targets)} targets x {reps} rep(s) with {jobs} parallel "
+          f"workers (per-target isolation: private cwd + TMPDIR)", flush=True)
 
     by_slug: dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         futures = {
             pool.submit(_run_one_isolated, corpus, t, timeout, results_dir,
-                        strict_attribution, False): t
+                        strict_attribution, False, reps): t
             for t in targets
         }
         done = 0
@@ -1038,15 +1142,23 @@ def run_targets(corpus: Corpus, targets: list[dict], timeout: float,
             res = fut.result()          # never raises; see _run_one_isolated
             by_slug[t["slug"]] = res
             done += 1
-            print(f"[{done}/{len(targets)}] {t['slug']:<24} {res['status']}: "
-                  f"{res['reason'][:160]}", flush=True)
+            rel = _reliability_str(res)
+            print(f"[{done}/{len(targets)}] {t['slug']:<24} {res['status']}"
+                  f"{rel}: {res['reason'][:150]}", flush=True)
 
     return [by_slug[t["slug"]] for t in targets]
 
 
+def _reliability_str(res: dict) -> str:
+    """` (k/N reps)` when reliability was measured, else empty."""
+    if res.get("reliability") is None:
+        return ""
+    return f" ({res['reps_credited']}/{res['reps']} reps)"
+
+
 def _run_one_isolated(corpus: Corpus, target: dict, timeout: float,
                       results_dir: Path, strict_attribution: bool,
-                      echo: bool) -> dict:
+                      echo: bool, reps: int = 1) -> dict:
     """run_one() with a private TMPDIR and no way to take the run down.
 
     A crash or hang in one target must never alter another target's verdict --
@@ -1063,9 +1175,9 @@ def _run_one_isolated(corpus: Corpus, target: dict, timeout: float,
     tmpdir = results_dir / f"{slug}_tmp"
     tmpdir.mkdir(parents=True, exist_ok=True)
     try:
-        return run_one(corpus, target, timeout, results_dir,
-                       strict_attribution=strict_attribution,
-                       tmpdir=tmpdir, echo=echo)
+        return run_reps(corpus, target, timeout, results_dir,
+                        strict_attribution=strict_attribution, reps=reps,
+                        tmpdir=tmpdir, echo=echo)
     except Exception as e:  # noqa: BLE001 -- deliberately total
         reason = (f"the HARNESS itself failed on this target "
                   f"({type(e).__name__}: {e}); this is an instrument fault, "
@@ -1203,6 +1315,45 @@ def write_summary(results: list[dict], out_path: Path, timeout: float, corpus: C
             lines.append("    could be witnessed. Install it before quoting this figure.")
         lines.append("")
 
+    measured = [r for r in results if r.get("reliability") is not None]
+    if measured:
+        lines.append(
+            "SOLVED vs RELIABILITY -- both are reported because neither is the "
+            "score alone.")
+        lines.append(
+            "  solved      = credited in AT LEAST ONE rep; can it be exploited at all.")
+        lines.append(
+            "  reliability = k/N reps credited; how dependably. 5/5 and 1/5 are")
+        lines.append(
+            "                different claims, and delivery is genuinely probabilistic.")
+        lines.append(
+            "  Quoting solved WITHOUT reliability overstates the result; quoting a")
+        lines.append(
+            "  single rep understates it. Cite the pair.")
+        lines.append("")
+        lines.append(f"{'slug':<26} {'solved':<7} reliability")
+        lines.append("-" * 52)
+        for r in sorted(measured, key=lambda r: r["slug"]):
+            solved = "yes" if r["status"] == "SUCCESS" else "no"
+            lines.append(f"{r['slug']:<26} {solved:<7} "
+                         f"{r['reps_credited']}/{r['reps']}")
+        flaky = [r for r in measured
+                 if 0 < r["reps_credited"] < r["reps"]]
+        if flaky:
+            lines.append("")
+            lines.append(
+                f"  {len(flaky)} target(s) solved INTERMITTENTLY -- a delivery or "
+                f"layout race, not a capability boundary:")
+            for r in sorted(flaky, key=lambda r: r["slug"]):
+                lines.append(f"    {r['slug']}: {r['reps_credited']}/{r['reps']}")
+        unmeasured = [r for r in results if r.get("reliability") is None]
+        if unmeasured:
+            lines.append("")
+            lines.append(
+                f"  {len(unmeasured)} target(s) have NO reliability figure "
+                f"(single rep, or reps cut short by a VOID).")
+        lines.append("")
+
     lines.append(f"{'slug':<26} {'difficulty':<10} {'status':<9} reason")
     lines.append("-" * 100)
     for r in sorted(results, key=lambda r: r["slug"]):
@@ -1274,9 +1425,21 @@ def main():
              "at 8; use 1 to force serial). Each target is isolated to its own "
              "directory and TMPDIR, and results are always reported in manifest "
              "order regardless of completion order.")
+    ap.add_argument(
+        "--reps", type=int, default=DEFAULT_REPS,
+        help=f"Reps per target (default {DEFAULT_REPS}). Exploit delivery is "
+             "not deterministic and flakes more under load (measured 4/96 on one "
+             "probe under heavy contention, 0/40 idle), so a single rep can "
+             "understate the score. With >1 rep the summary "
+             "reports BOTH `solved` (credited in at least one rep) and "
+             "`reliability` (k/N) -- neither is the score on its own. Use 1 for "
+             "a quick check, accepting that no reliability is measured.")
     ap.add_argument("--manifest", type=Path, default=DEFAULT_CORPUS_YAML,
                      help=f"Corpus manifest YAML (default {DEFAULT_CORPUS_YAML})")
     args = ap.parse_args()
+    if args.reps < 1:
+        print("error: --reps must be at least 1", file=sys.stderr)
+        sys.exit(1)
 
     corpus = Corpus(root=args.corpus_root.resolve(), manifest=args.manifest.resolve())
     if not corpus.root.is_dir():
@@ -1305,7 +1468,7 @@ def main():
     with corpus_lock(corpus):
         results = run_targets(corpus, targets, args.timeout, results_dir,
                               strict_attribution=args.strict_attribution,
-                              jobs=jobs)
+                              jobs=jobs, reps=args.reps)
 
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1317,6 +1480,7 @@ def main():
         # strict_attribution decides whether an unwitnessed success scores at
         # all, and jobs is the scheduling shape the run actually used.
         "jobs": jobs,
+        "reps": args.reps,
         "strict_attribution": bool(args.strict_attribution),
         "targets_run": [t["slug"] for t in targets],
         "results": results,

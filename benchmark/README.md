@@ -425,6 +425,36 @@ produce the same report. A crash or hang in one target cannot alter another's
 verdict: it becomes a `harness_error` `VOID`, which is *fatal* and withholds
 the whole run's rate rather than quietly shrinking the denominator.
 
+### Reps: `solved` and `reliability` are both the answer
+
+Exploit delivery is **not deterministic**, and the failure does not look like a
+race — it looks like a capability limit. A target whose intended chain works can
+still fail some fraction of runs because of a stdin synchronisation race, heap
+layout, or ASLR. One measured example: a genuine ret2plt exploit failed 4/96
+times under 24-way contention and 0/40 unloaded, presenting as
+`shell_proven=True, flag_found=False` — a shell was obtained but its commands
+were swallowed by the target's single `read()`.
+
+So the harness runs **`--reps N` (default 5)** and reports two numbers:
+
+| | meaning |
+|---|---|
+| `solved` | credited in **at least one** rep — can this be exploited at all |
+| `reliability` | **k/N** reps credited — how dependably |
+
+**Neither is the score on its own.** Quoting `solved` without `reliability` is
+best-of-N cherry-picking; quoting a single rep understates real capability. Cite
+the pair — and note that the pair is more informative than either, because 5/5
+and 1/5 are genuinely different claims about a target.
+
+Details that keep this honest: reps run **sequentially within a target** (each
+rebuilds the binary with a fresh secret, so concurrent reps would race on that
+rebuild), a `VOID` **settles** a target rather than being re-rolled (the controls
+and provisioning checks are deterministic, so re-rolling would only burn time),
+a single-rep run reports **no** reliability rather than a misleading `1/1`, and
+each rep gets its own results subdirectory so an intermittent target's evidence
+survives. `reps` is recorded in `report.json`.
+
 Builds are deliberately **not** cached. `gcc` on a single small C file is
 milliseconds against ~2 minutes of `autopwn` per target, so caching would save
 under 1% while risking the thing that matters most: for the win()-style targets

@@ -247,8 +247,8 @@ class TestCorpusParameterisation:
                     keys = got
                     break
         assert keys, "could not find main()'s report dict"
-        for required in ("jobs", "strict_attribution", "corpus_root", "manifest",
-                         "timeout", "targets_run"):
+        for required in ("jobs", "reps", "strict_attribution", "corpus_root",
+                         "manifest", "timeout", "targets_run"):
             assert required in keys, (
                 f"report.json omits {required!r}; a run artifact must record the "
                 f"settings that change what its verdicts mean"
@@ -652,3 +652,94 @@ class TestExcerpt:
         assert got.startswith("FLAGSTART")
         assert got.endswith("ENDWARNING")
         assert "omitted" in got
+
+
+class TestRepsAndReliability:
+    """A single rep under-reports capability, and best-of-N without a
+    reliability figure overstates it. Both numbers, or neither is honest."""
+
+    TARGET = {"slug": "07_t", "technique": "x", "difficulty": "medium"}
+
+    def _fake_run_one(self, monkeypatch, statuses):
+        """Each call returns the next status in `statuses`."""
+        calls = []
+
+        def fake(corpus, target, timeout, results_dir, strict_attribution=False,
+                 tmpdir=None, echo=True):
+            st = statuses[len(calls)]
+            calls.append(results_dir)
+            rec = {"slug": target["slug"], "difficulty": target["difficulty"],
+                   "status": st, "reason": f"reason-{st}", "elapsed_sec": 1.0}
+            if st == "VOID":
+                rec["void_cause"] = "corpus_trivially_solvable"
+            return rec
+
+        monkeypatch.setattr(rb, "run_one", fake)
+        return calls
+
+    def _run(self, monkeypatch, tmp_path, statuses, reps):
+        calls = self._fake_run_one(monkeypatch, statuses)
+        res = rb.run_reps(None, self.TARGET, 1.0, tmp_path, False, reps,
+                          echo=False)
+        return res, calls
+
+    def test_intermittent_target_is_solved_but_not_fully_reliable(
+            self, monkeypatch, tmp_path):
+        res, _ = self._run(monkeypatch, tmp_path,
+                           ["FAILED", "SUCCESS", "FAILED", "SUCCESS", "FAILED"], 5)
+        assert res["status"] == "SUCCESS", "one credited rep means it IS solvable"
+        assert res["reps_credited"] == 2
+        assert res["reps"] == 5
+        assert res["reliability"] == 2 / 5
+        assert "reliability 2/5" in res["reason"], (
+            "the reliability must travel WITH the verdict, not only in a table")
+
+    def test_fully_reliable_and_never_solved_are_distinguished(
+            self, monkeypatch, tmp_path):
+        good, _ = self._run(monkeypatch, tmp_path, ["SUCCESS"] * 5, 5)
+        assert good["status"] == "SUCCESS" and good["reliability"] == 1.0
+        bad, _ = self._run(monkeypatch, tmp_path, ["FAILED"] * 5, 5)
+        assert bad["status"] == "FAILED" and bad["reliability"] == 0.0
+
+    def test_a_void_settles_the_target_and_stops_further_reps(
+            self, monkeypatch, tmp_path):
+        """VOID comes from deterministic checks (controls, provisioning), so
+        re-rolling it would only burn time -- and a reliability figure over a
+        truncated rep count would misdescribe what happened."""
+        res, calls = self._run(monkeypatch, tmp_path,
+                               ["VOID", "SUCCESS", "SUCCESS", "SUCCESS", "SUCCESS"], 5)
+        assert res["status"] == "VOID"
+        assert res["void_cause"] == "corpus_trivially_solvable"
+        assert len(calls) == 1, "must not keep repping a VOID target"
+        assert res["reliability"] is None, (
+            "no reliability figure for a target we stopped measuring")
+
+    def test_single_rep_reports_no_reliability_rather_than_a_fake_one(
+            self, monkeypatch, tmp_path):
+        res, _ = self._run(monkeypatch, tmp_path, ["SUCCESS"], 1)
+        assert res["status"] == "SUCCESS"
+        assert res["reliability"] is None, (
+            "1/1 would read as 100% reliable, which one rep cannot establish")
+        assert res["reps"] == 1
+
+    def test_each_rep_gets_its_own_results_dir(self, monkeypatch, tmp_path):
+        """Otherwise rep N overwrites rep N-1's script and strace log, and the
+        evidence for an intermittent target is lost."""
+        _res, calls = self._run(monkeypatch, tmp_path, ["FAILED"] * 3, 3)
+        assert len(calls) == 3
+        assert len(set(map(str, calls))) == 3, f"reps shared a dir: {calls}"
+
+    def test_reliability_line_renders_both_numbers(self, monkeypatch, tmp_path):
+        results = [
+            {"slug": "01_a", "difficulty": "easy", "status": "SUCCESS",
+             "reason": "r", "reps": 5, "reps_credited": 5, "reliability": 1.0},
+            {"slug": "02_b", "difficulty": "easy", "status": "SUCCESS",
+             "reason": "r", "reps": 5, "reps_credited": 2, "reliability": 0.4},
+        ]
+        text = rb.write_summary(results, tmp_path / "s.txt", 10.0,
+                                rb.Corpus(root=rb.DEFAULT_CORPUS_DIR,
+                                          manifest=rb.DEFAULT_CORPUS_YAML))
+        assert "5/5" in text and "2/5" in text
+        assert "reliability" in text.lower()
+        assert "INTERMITTENTLY" in text, (
+            "a partially-reliable target must be called out, not averaged away")

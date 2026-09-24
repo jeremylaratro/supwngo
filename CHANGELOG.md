@@ -38,6 +38,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   why four earlier runs were discarded as stale (benchmarked the pre-consolidation
   `EnhancedAutoExploiter` before this branch was rebased onto
   `integration/phases-0-4-7-20260923`).
+- **`benchmark/run_bench.py` now runs N reps per target (`--reps`, default 5) and
+  reports BOTH `solved` and `reliability`.** Exploit delivery is not
+  deterministic, so a single rep can understate capability for reasons unrelated
+  to whether the framework can exploit the target — measured 4/96 delivery
+  failures on one probe under 24-way contention against 0/40 unloaded, i.e. the
+  flake rate rises with load, which is exactly when a benchmark tends to run.
+  `solved` is "credited in at least one rep"; `reliability` is k/N. Neither is
+  the score alone — quoting best-of-N without reliability overstates the result,
+  quoting one rep understates it — and `summary.txt` says so, calls out
+  intermittently-solved targets explicitly, and reports how many targets have no
+  reliability figure. `reps` is recorded in `report.json` beside `jobs` and
+  `strict_attribution`. Reps run sequentially within a target (each rebuilds the
+  binary with a fresh secret, so concurrent reps would race), and a `VOID`
+  settles a target immediately rather than being re-rolled, since the controls
+  and provisioning checks are deterministic. Each rep gets its own results
+  subdirectory so an intermittent target's evidence is not overwritten.
 
 ### Fixed
 - **A stdin delivery race in `benchmark/soundness_probes/real_exploit_02_explicit.py`
