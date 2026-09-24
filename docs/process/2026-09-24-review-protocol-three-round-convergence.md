@@ -258,6 +258,41 @@ Three consequences, all cheap:
   that nobody later writes a gate asserting "dangling entries are skipped" and
   collects a vacuous pass out of code that cannot execute.
 
+#### 6.1c A masking defect makes every green result collected during its lifetime uninformative
+
+The most expensive discovery of the session, and it is a *counting* rule, not a
+debugging tip. A single pre-existing defect — one failed `import pwn` under
+`click.testing.CliRunner` poisoning `sys.modules` for the rest of the process —
+made an entire family of tests fail for a reason unrelated to what they tested, and
+simultaneously **hid a regression somebody introduced on top of it.** Two `fmtstr`
+tests caught a wrong tie-break only *after* the import fix stopped masking them.
+
+So the rule:
+
+> **Once a masking defect is identified, every green result collected while it was
+> live is uninformative — not "probably fine". Re-run them; do not re-read them.**
+
+And its corollary for the round budget: such a round's counts cannot be compared to
+the next round's. Label it, do not average it, and do not let a recurrence hide
+inside it.
+
+Two secondary lessons from the same diagnosis, both cheap and both general:
+
+- **Diagnose the mechanism, not the correlation.** The first hypothesis — a shared
+  pwntools gadget cache — was supported by a clean sample under an isolated
+  `XDG_CACHE_HOME`, verified by reading `context.cache_dir`. That verified the
+  *redirect was installed*; it never tested whether the redirect *explained the
+  symptom*. Confirming an intervention is in place is not evidence it is causal, and
+  the discriminating experiment (re-induce the symptom with the intervention live)
+  is the one that got skipped. The real variable was import order. See
+  [[validation-that-cannot-fail]] instance 14.
+- **A broad `except` that renames a failure into a legitimate-looking observation is
+  why this cost days instead of minutes.** `Binary._load_with_pwntools` converted
+  "pwntools failed to load this ELF" into "this binary has no symbols" — a plausible,
+  actionable, wrong fact. Prefer a loud distinct state over a plausible one; an
+  exception handler that can produce a *normal-looking* result is the absence-collapse
+  pattern with a friendly face.
+
 ### 6.2 Remediation is a defect source, and new tests are its riskiest output
 
 Of those 7 introduced defects, **5 were inside the 8 properties the remediation
