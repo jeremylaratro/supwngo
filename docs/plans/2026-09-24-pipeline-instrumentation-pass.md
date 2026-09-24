@@ -2,9 +2,9 @@
 
 **Date:** 24 Sep 2026
 **Branch:** `bench/round2-cold-and-dev-20260924`
-**Revision:** 2 — addresses the independent review at `31196d2`
-(`docs/reviews/2026-09-24-instrumentation-pass-review.md`), which was NOT-APPROVED on
-B1/B2/B3 + M1-M7.
+**Revision:** 3 — **APPROVED** at `3005733`, subject to M8-M12 at the stated gates, which
+this revision records. Round 1 (`31196d2`) was NOT-APPROVED on B1/B2/B3 + M1-M7.
+Review file: `docs/reviews/2026-09-24-instrumentation-pass-review.md`.
 **Supersedes as the active document:** `2026-09-24-r2-step3-primitive-acquisition.md`
 (rev 1 and rev 2 both NOT-APPROVED; no rev 3 of *that* document will be written)
 **Scope:** instrumentation only. **No capability change.**
@@ -32,6 +32,19 @@ B1/B2/B3 + M1-M7.
 | **m4** `handoff.py:292` precedence | **Accepted and pre-declared** (§4 I5) |
 | **m8** script-audit hazard already closed | **Accepted and claimed** (§4.3) |
 | §9 R5 block, §7 reasoning | Concurred by the reviewer; §7 now carries the coordinator's decision (§7) |
+
+**Round 2 — APPROVED at `3005733`, subject to five MAJORs at the gates the reviewer set.**
+
+| finding | disposition |
+|---|---|
+| **M8** I1's risk stated in the wrong direction; inertness is not about purity | **Accepted.** Risk restated bidirectionally; correct invariant adopted; the five executors needing a **new guard** enumerated (§4 I1). Gate: before step 5. |
+| **M9** §9's narrowing is a denylist omitting two cheat-detection generators | **Accepted.** Inverted to an allowlist (§9.1). Gate: before any step. |
+| **M10** I3's required-provenance gate cannot be proven red on any available data | **Accepted — the defect is mine.** Two fixtures moved onto the I3 gate; missing-provenance failure conditioned on an attempt having occurred (§4 I3, §7). Gate: before §7's R5 precondition counts as met. |
+| **M11** one `duration_sec` cannot settle row 2 — `elapsed_sec` spans two pipeline invocations | **Accepted.** Second field on `autopwn_script_generation` (§4 I2b). Gate: before step 2. |
+| **M12** the all-runs search rule was owned by prose | **Accepted.** Codified as a rule (§9.2). Gate: before any step. |
+| **m9** 4 of 9 sites have no `context` either | **Accepted — carrier changed, not chosen again.** I4 now instruments the `deliver_parts` chokepoint; full 9-site enumeration recorded (§4 I4). |
+| **m10** "40 windows" is wrong; it is 8 | **Accepted** (§4 I4). |
+| Reviewer **withdrew** its `objdump` finding; `attempt():76` correction in my favour | **Banked** (§4.3, §4 I1). |
 
 ---
 
@@ -192,13 +205,47 @@ contradicting the decision it explains. Migrating the probe into
 as the verdict — never recomputed. The coordinator's constraint and the fix are the same
 change.
 
-**Declared behaviour delta:** after migration the orchestrator calls `attempt()` where it
-previously skipped. The recorded outcome is `SKIPPED` either way, but the executor's code
-now runs. For cheap pure predicates this is inert; for `LeakedStackShellcodeExecutor` it
-*moves* a process spawn rather than adding one. Conversion order is cheapest-and-purest
-first — `ScanfCanaryBypassExecutor` (`heap_and_bypass.py:50-53`, reads
-`context.protections.canary` and `binary.plt` only) — with `LeakedStackShellcodeExecutor`
-**last**, and the R1 per-target gate run after each.
+**Declared behaviour delta, corrected (M8).** After migration the orchestrator calls
+`attempt()` where it previously skipped. My previous statement of the risk was wrong in
+direction and wrong in its criterion:
+
+- **The risk is bidirectional, not "can only lower a score".** An incomplete migration can
+  *credit* a technique that was previously skipped, or change which technique wins, as well
+  as turn one off.
+- **Inertness has nothing to do with predicate purity.** The correct invariant is: a
+  migration is inert **iff `attempt()` already reproduces the full predicate.** 15 of 16
+  predicates are pure reads, so my purity claim was true and irrelevant.
+
+`DirectShellcodeExecutor` is the counter-example that kills the old rule: its predicate
+(`stack_techniques.py:155-156`) is the purest in the tree, yet `attempt()` (`:158-183`)
+spawns the target and calls `verify_shell` with **no NX check**, and can set SUCCESS at
+`:179`. The purest predicate has the *least* inert migration.
+
+**Which migrations are pure deletions and which need a new guard:**
+
+| executor | `attempt()` reproduces predicate? | migration |
+|---|---|---|
+| `Ret2WinExecutor` (`stack:111`) | yes, exactly (`:110-112`) | pure deletion |
+| the other 11 with SKIPPED guards | yes | pure deletion |
+| **`IntTruncationBypassExecutor`** (`input_shape:136-147`) | **no guard at all** (`:235-256`) — deliberately excludes menu-driven heap targets; **can SUCCEED where previously skipped** | **must add guard** |
+| **`NegativeIndexWriteExecutor`** (`input_shape:227-233`) | no guard | **must add guard** |
+| **`DirectShellcodeExecutor`** (`stack:155-156`) | no guard, can set SUCCESS | **must add guard** |
+| **`FormatStringExecutor`** (`stack:198-199`) | no guard (PARTIAL-only, lower impact) | **must add guard** |
+| **`LeakedStackShellcodeExecutor`** | re-checks the leak at `:76` but **not** the `nx_off or profile_is_shellcode_runner` half (`:53-55`) | **partial guard** |
+
+So for these five, migration means **adding** guard code, not moving it — a larger edit than
+"a migration into an existing idiom" conveys. Any executor whose `attempt()` does not
+reproduce its predicate is a **score-change risk**: convert it last, individually, with the
+R1 gate run either side.
+
+Conversion order: pure deletions first, cheapest predicate first
+(`ScanfCanaryBypassExecutor`, `heap_and_bypass.py:50-53`, reads `context.protections.canary`
+and `binary.plt` only); then the five above individually;
+`LeakedStackShellcodeExecutor` **last**.
+
+**A correction in my favour, banked:** `attempt():76` already re-probes the stack leak, so
+today's fallback path spawns the target **twice**. The I1 migration is a *deletion* that
+removes a spawn, not an addition.
 
 ### I2 — per-attempt duration, and the profiling prologue
 
@@ -222,10 +269,22 @@ times those three stages — three more wall-clock pairs in the same function, n
 no duration. The neighbouring `verification` and `negative_control` objects already carry
 `timed_out`, so a duration field matches the existing shape.
 
-One additive `duration_sec` on the probe object in `benchmark/run_bench.py`. Subtracting it
-from the existing per-target `elapsed_sec` gives the pipeline-vs-harness split that row 2
-names. This touches no verification, attribution, classification or scoring logic — see the
-narrowed §9 — and its gate is that R1 still reports 13/13 with the §2.1 map unchanged.
+**Two additive `duration_sec` fields, not one (M11).** `elapsed = time.time() - t0` at
+`run_bench.py:949` spans `negative_control()` at `:913` through `attribution_witness` at
+`:937`, and **the pipeline runs twice inside that span**: `run_supwngo(... ["--json"])` at
+`:916` (the probe) and `run_supwngo(... ["-o", script_path])` at `:922` (script generation).
+Subtracting only the probe duration would attribute a whole second pipeline invocation to
+"harness overhead" — on R1 `01`, roughly a full pipeline run inside a 35.8 s budget. So one
+field yields probe-versus-everything-else, not the split row 2 names.
+
+`autopwn_script_generation` at `:969-972` has the identical wrapper shape, so `duration_sec`
+goes on **both** wrappers. Row 2 is then settleable; with one field it would have stayed
+unsettled, which is B2's failure shape at narrower scope.
+
+Verified out of all four forbidden categories: `classify()` is called at `:950` with
+`supwngo_json = parse_json_result(out1)` (`:917`) — the *parsed* payload. Both wrapper
+objects are assembled separately at `:963-972` for reporting only and never reach
+`classify`. Gate: R1 still reports 13/13 with the §2.1 map unchanged.
 
 ### I3 — candidate provenance (the R5 guard)
 
@@ -242,12 +301,36 @@ source — `recovered_immediate` (with the instruction address it was decoded fr
 is the contamination channel, so it is the highest-value instance and it gives I3 a real
 subject rather than a convenient one.
 
-**Gate (M4).** I3 supplies a field, not a verdict, and because conversion is per-executor a
-gate phrased "if provenance is present it must equal X" passes vacuously on exactly the
-unconverted executors — an assertion of absence, this project's signature defect. So the
-gate carries an explicit **required-provenance list** naming the converted executors, and
-**fails when a required provenance is missing**, not only when it mismatches. "Not yet
-converted" can never read as "no swept candidate found."
+**Gate (M4), and the fixtures it cannot work without (M10).** I3 supplies a field, not a
+verdict. A gate phrased "if provenance is present it must equal X" passes vacuously on the
+unconverted executors — an assertion of absence. But the required-provenance list I wrote to
+fix that created a worse defect, and it is mine:
+
+**`variable_overwrite` wins 0 of 17 credited targets and returns FAILED on all 12
+target-runs where it executes. So no run in R1 or R2 populates the provenance the gate
+requires.** The two available readings were "always red" (the gate fails on all 13 R1
+targets, since provenance is required and never present) or "skip when absent" (vacuous).
+I3's swept-provenance path could be entirely broken and every test would still pass. **I
+specified a gate that cannot fail, in the pass written to stop gates that cannot fail** —
+and I did it while the fixture that would have fixed it sat in §7, attached to the item I
+had just declared *not* the precondition.
+
+The gate is therefore specified as:
+
+1. **Two purpose-built fixtures**, and they live with the I3 gate, not with §7's capability
+   work:
+   - **Fixture A** — gate constant **in** `MAGIC_VALUES`, so `variable_overwrite` genuinely
+     succeeds and I3 records swept provenance on a **real success**. This is I3's positive
+     control; without it the gate is worthless.
+   - **Fixture B** — gate constant **not** in `MAGIC_VALUES`. This makes "recovered from the
+     instruction stream" and "found by sweep" *provably distinguishable* rather than merely
+     differently labelled.
+2. **Missing-provenance failure is conditioned on the attempt having produced a payload or
+   reached SUCCESS**, not asserted unconditionally across all 13 R1 targets.
+3. Red-proof: delete provenance from Fixture A's success and assert the gate reds on
+   *missing*; swap Fixture A's and B's expected sources and assert it reds on *mismatch*.
+
+**Until both fixtures pass, §7's R5-measurement precondition is NOT satisfied.**
 
 ### I4 — per-window probe-timeout capture
 
@@ -282,12 +365,48 @@ the one gap my own divergence analysis honestly left open with a false negative,
 observability pass written to stop absence conclusions being produced for free. My
 "and `continue`s" phrasing was literal at only 3 of 9 sites and understated my own case.
 
-**Design.** A mutable diagnostics collector on `ExploitContext`. The context predates the
-`AttemptRecord` (`orchestrator.py:204` precedes `:217`), so the same channel covers
-`_probe_stack_leak`'s pre-record case — **no site is declared out of scope**, and none is
-left silently uncovered. Records **per window**, so a sweep that dies on window 1 is
-distinguishable from one that completes 40 windows and finds nothing. Lands as
-**recording only**: no call site changes its control flow in this pass.
+**Scope enumeration — mandatory before choosing a mechanism.** The carrier has now failed
+scope twice: round 1 chose `AttemptRecord` (absent at 7 of 9), round 2 chose
+`ExploitContext` (absent at **4 of 9**, *including both sites this instrument's own proof
+mandates*). Twice the carrier was out of scope exactly where it mattered, so the problem is
+the approach, not the choice. This table is derived mechanically from the enclosing
+function signature of each site and is a precondition of the design below:
+
+| site | enclosing function | `self`? | `context`? |
+|---|---|---|---|
+| `fmtstr_techniques.py:102` | `attempt` | yes | **yes** |
+| `input_shape_techniques.py:252` | `attempt` | yes | **yes** |
+| `shellcode_techniques.py:66` | `_probe_stack_leak` | yes | **yes** |
+| `rop_techniques.py:359` | `_probe_pie_leak` | yes | **yes** |
+| `fmtstr_techniques.py:138` | `_find_buffer_arg_index` | yes | **no** ← proof site |
+| `canary_leak_techniques.py:154` | `_probe_fmtstr_indices` | yes | **no** ← proof site |
+| `canary_leak_techniques.py:180` | `_probe_echo_sizes` | yes | no |
+| `fmtstr_techniques.py:175` | `push` (nested closure) | no | no |
+| `heap_techniques.py:70` | `discover_menu` (module-level) | no | no |
+
+Two corrections this produced: `context` reaches only 4 of 9, and `fmtstr_techniques.py:175`
+sits in a nested closure named `push`, not in `_write_targets` as round 1's table stated —
+so it has neither `self` nor `context`.
+
+**Design — instrument the chokepoint, not the callers.** All 9 sites already call
+`deliver_parts`, and `timed_out` is already computed there, at `delivery.py:181`. The defect
+was never that the information is unavailable; it is that callers discard it. So record it
+**once, where it is already computed**, in a module-level collector in `delivery.py` that
+the orchestrator resets and drains around each `attempt()`. Consequences: **zero call-site
+changes, zero signature changes, and no site out of scope** — the enumeration above becomes
+irrelevant to the mechanism rather than a constraint on it. Verified safe: there is no
+threading anywhere in `supwngo/exploit/pipeline/`, and `--jobs` parallelism in the harness
+is process-level, so a module-level collector cannot interleave.
+
+Records **per window**, so a sweep that dies on window 1 is distinguishable from one that
+completes all **8** and finds nothing (`_find_buffer_arg_index` sweeps 8 windows, not the
+40 I wrote). Also records the third state visible at the chokepoint: `delivery.py:183-190`
+returns `DeliveryResult(error=...)` with `timed_out=False`, so a spawn failure is
+distinguishable from both a timeout and a clean non-match.
+
+Risk re-rated down from medium-high to **low-medium**: it is now one collector plus a
+reset/drain pair, not a seven-helper refactor. It still lands last, because it is the only
+instrument whose value depends on the diagnostic re-run already having a baseline.
 
 Risk re-rated from medium to **medium-high**: seven helpers each need a signature or
 return-type decision, and it is the largest edit in the pass. It therefore lands **last**
@@ -343,11 +462,12 @@ the artifact-level assertions in §5.
 
 ### 4.2 Risks
 
-- **I1 is the only instrument that can silently lower a score.** Mitigation: migration into
-  an existing idiom rather than a signature change; one executor at a time; the §2.1
-  per-target gate after each; `LeakedStackShellcodeExecutor` last.
-- **I4 is the largest edit** (7 helpers). Mitigation: recording-only, lands last, after the
-  diagnostic re-run.
+- **I1 can move a score in either direction** (M8) — credit a previously-skipped technique,
+  change which technique wins, or turn one off. Mitigation: pure deletions first; the five
+  guard-requiring executors individually with the §2.1 gate either side;
+  `LeakedStackShellcodeExecutor` last; I1 lands only after the diagnostic baseline exists.
+- **I4 is now a small edit** (one chokepoint collector, zero call-site changes) rather than
+  the 7-helper refactor of revision 2. Mitigation: recording-only; lands last.
 - **I2's timing must not perturb timing.** Wall-clock around `attempt()` and the three
   prologue stages only; nothing inside the 126-iteration sweep.
 - **I2b touches the harness.** Mitigation: additive field only; gate is R1 13/13 with the
@@ -416,20 +536,27 @@ present in a real `report.json`, not merely on an in-memory record (M6).
 Reordered per the review. The previous order ran I1 conversions against a count-only gate,
 which is the configuration that let the rev-2 error through.
 
+0. **§9.1 allowlist and §9.2 search rule land first** (M9, M12) — they govern every step
+   after them, so they cannot follow the work they constrain.
 1. **R1 per-target map gate**, read from `parsed.technique`, asserting the 13 rows of §2.1
    with the two VOID slugs excluded by name. **Delete the header parsing rather than
    teaching it a second format.** Prove it red: swap two targets' expected techniques and
    confirm failure — a multiset gate cannot catch that, which is why the map is per-target.
 2. **I2 + I2b + I3 + I5**, with proofs and artifact-level assertions. These are
-   write-only fields with no control-flow surface.
+   write-only fields with no control-flow surface. Within this step: **I2b carries both
+   `duration_sec` fields** (M11) before row 2 is claimed settled, and **I3 ships with
+   Fixture A and Fixture B** (M10) before §7's R5 precondition is treated as met.
 3. **Instrumented R1 + R2 re-run** — `--reps 5 --jobs 8 --timeout 20`, the diagnostic
    baseline.
 4. **Re-derive the failure table from artifacts.** Every row becomes *recorded*; no row may
    be *inferred* from a target source (rule 2a). Unexplained rows stay unexplained. This
    alone settles row 6 and most of row 4's motivation.
-5. **I1**, one executor at a time, cheapest predicate first (`ScanfCanaryBypassExecutor`),
-   `LeakedStackShellcodeExecutor` last, R1 gate after each.
-6. **I4**, re-scoped per §4.
+5. **I1**, one executor at a time, R1 gate after each. Pure deletions first
+   (`ScanfCanaryBypassExecutor` cheapest); then the five executors whose `attempt()` does
+   **not** reproduce their predicate, individually, with the gate either side (M8);
+   `LeakedStackShellcodeExecutor` last.
+6. **I4**, chokepoint design per §4, with the 9-site scope enumeration already recorded
+   there.
 
 I1 and I4 land *after* the re-run deliberately: they are the only two with control-flow
 surface, and landing both before the baseline would leave any movement with two candidate
@@ -458,9 +585,9 @@ low-risk.
 
 | gate | status |
 |---|---|
-| **R5 measurement** | Gated on **I3 covering `variable_overwrite`** — hence its first conversion. Once a swept credit is distinguishable in the artifacts, a sweep-credited R5 target cannot be silently counted as capability. |
+| **R5 measurement** | Gated on **I3 covering `variable_overwrite`, evidenced by Fixture A and Fixture B both passing a red-proven gate** (§4 I3). Not satisfied by I3 merely being implemented: `variable_overwrite` wins 0 of 17 credited targets, so no existing target exercises the path, and without the fixtures the gate cannot fail (M10). |
 | **R5 corpus generation and sealing** | **Not gated.** It touches nothing in the pipeline and cannot be contaminated by a sweep. Proceeds now. My earlier "no R5 access" was too broad; the precondition binds measurement only, per the R5 spec at `55a8db4`. |
-| **The `comparison_immediates()` sourcing fix** | Still happens — a genuine improvement — as its own per-phase plan against measured facts, with the provenance gate (recovered value's instruction address and decoded immediate disclosed; a fixture with an undisclosed constant). **Not a precondition for R5.** |
+| **The `comparison_immediates()` sourcing fix** | Still happens — a genuine improvement — as its own per-phase plan against measured facts, with the provenance gate (recovered value's instruction address and decoded immediate disclosed). **Not a precondition for R5.** Note the fixture that previously sat on this row has **moved to the I3 gate**, where it is load-bearing; leaving it here attached to a non-precondition is what let M10 through. |
 
 This decouples "R5 is safe to measure" from "the capability work is finished", which
 matters because the second has no bounded schedule. A third option also now exists and
@@ -494,14 +621,50 @@ uniquely lacks** (§3), which makes the 126 calls conditional rather than uncond
 
 ## 9. Non-goals, and what is actually enforceable
 
-**Non-goals.** No capability change. No new executor. No primitive layer. No change to the
-harness's **verification, attribution, classification or scoring logic**. No change to any
+**Non-goals.** No capability change. No new executor. No primitive layer. No change to any
 corpus file. No R3/R4/R5 *measurement*.
 
-The §9 non-goal is **narrowed** from "no change to the harness" to the list above, because
-I2b adds one timing field to `benchmark/run_bench.py` and the R1 gate is a harness-side
-assertion. Neither is verification, attribution, classification or scoring. Stating this
-explicitly rather than leaving a row unsettled behind an over-broad prohibition.
+### 9.1 Harness changes are an allowlist, not a denylist (M9)
+
+My previous wording — "no change to verification, attribution, classification or scoring
+logic" — is the wrong **shape**, independently of whether it is correct for I2b. It omits two
+cheat-detection subsystems that are *generated* separately and only *consumed* by
+`classify()`, so weakening either makes targets pass without `classify` being touched at all:
+
+- **negative-control generation** — `negative_control()` builds `controls` at
+  `run_bench.py:494-530`, including `bare_run_verify_stdin`, `bare_run_filler` and the
+  `bare_run_menu_walk` probe set; `classify` reads only the *result*, at `:755`. Dropping a
+  menu probe weakens cheat detection invisibly to that clause.
+- **script-audit generation** — `inspect_generated_script` (`:630-654`) and
+  `script_cheat_reason` (`:681-695`). Same structure.
+
+A denylist cannot be made safe here, because the next person adds a category nobody thought
+to forbid. So, inverted:
+
+> **The only changes to anything under `benchmark/` in this pass are: (a) an additive
+> `duration_sec` on the `autopwn_json_probe` wrapper, (b) an additive `duration_sec` on the
+> `autopwn_script_generation` wrapper, and (c) the R1 per-target map gate assertion.
+> Nothing else under `benchmark/` is touched.**
+
+An allowlist cannot be read as licence for anything, which is the property required of a
+clause that will outlive this pass and govern the per-phase plans after it. The standing
+project constraint it serves — the harness's verification and cheat-detection logic is never
+weakened to make a target pass — only survives later good-faith editing in this form.
+
+### 9.2 Codified: the all-runs search rule (M12)
+
+This was owned by prose in §2.2. It is now a rule, because it is the rule that would have
+caught the 1-instead-of-46 undercount:
+
+> **A factual claim about "both runs" / "all runs" must be produced by a search that
+> enumerates every run directory, and the enumeration must be visible in the command or
+> script that produced it. Where the fact exists as a structured field in `report.json`,
+> read the field; never text-search generated scripts for it.**
+
+Both of this round's search failures violated exactly this: an ad-hoc text search over
+generated artifacts, scoped to fewer runs than the sentence describing it claimed, for a
+fact that existed as a structured field. Third parser gap in the project, after the
+hex-text-only leak scanner and the desynchronised positional probe.
 
 **What is enforceable (M7).** R1's 13/13 **with the §2.1 per-target map** is the enforcement
 instrument: it is repeatable on a fixed corpus, so any movement is attributable and blocks
