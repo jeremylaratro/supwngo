@@ -39,7 +39,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `EnhancedAutoExploiter` before this branch was rebased onto
   `integration/phases-0-4-7-20260923`).
 
+### Security
+- **`benchmark/run_bench.py` could report `SUCCESS` without any exploitation
+  having occurred, invalidating the `2/15` Phase-1 baseline.** Two
+  independent false-positive channels were found and reproduced
+  adversarially; full audit and reproductions in
+  `docs/reports/HARNESS-SOUNDNESS-AUDIT-23SEP2026.md`.
+  - The fixed 48-byte stdin the harness piped into each re-executed exploit
+    (to give shell-obtaining exploits a chance to `cat flag.txt`) was itself
+    enough input to trigger `13_off_by_one`, whose `read(0, s.buf, 32)`
+    returns 32 for *any* input of ≥32 bytes and then writes `s.buf[32]`.
+    A "script" whose entire body was `subprocess.run(['./off_by_one'])` —
+    no payload, no offset, no address — scored `SUCCESS`. The harness was
+    solving the target itself.
+  - `build_all.sh` derived the flag by grepping `FLAG{...}` out of the
+    target's **git-committed** C source, so the "secret" was a public
+    constant, identical on every build and compiled verbatim into the
+    `.rodata` of all 9 win()-style targets. A script that printed that
+    literal, or ran `strings` over the binary, scored `SUCCESS` on 9 of 15
+    targets — including both baseline successes.
+  - Fixes: every target is now rebuilt per run with a fresh, unguessable
+    `FLAG{<32 hex>}` secret (passed to the builder via
+    `SUPWNGO_BENCH_FLAG`, compiled in via `-DFLAG` — no `.c` file changed,
+    since every win()-style source already guards its flag with
+    `#ifndef FLAG`) and the harness fails closed to `VOID` if the secret
+    did not actually land in `flag.txt` and the binary; **negative
+    controls** run each target with no exploit at all (once with the
+    injected stdin, once with 512 bytes of filler) and `VOID` the target if
+    the flag appears, which is the structural guarantee that generalises to
+    future corpora; the injected stdin is shortened to 27 bytes and its
+    marker is now shell arithmetic (`echo $((6*7))`) so a real command
+    interpreter can be distinguished from a target echoing its input; and
+    the generated script is statically audited, scoring `VOID` if it
+    contains the secret literal, reads `flag.txt` itself in Python, or
+    shells out to `strings`/`objdump`/`readelf`/`xxd` at runtime (narrow by
+    design — `sendline(b'cat flag.txt')` to an obtained shell is the
+    legitimate solve path and is not flagged).
+  - Corrected baseline: `13_off_by_one` becomes `VOID` (arbitrary garbage
+    captures its flag, so it cannot discriminate a real exploit from a
+    no-op) and `15_win_function` is re-confirmed as a **genuine** success
+    against a per-run secret. **`2/15` (13.3%) becomes `1/14` scorable
+    (7.1%).** Do not cite the superseded number.
+  - Verification remains unsandboxed, so a script could still read
+    `flag.txt` or scrape the binary; the per-target
+    `flag_statically_extractable_from_binary` field records this exposure
+    explicitly. Closing it fully needs a corpus change (have `win()` print
+    the contents of `flag.txt` rather than a compiled-in literal).
+
+### Added
+- `benchmark/run_bench.py` gained `--corpus-root` and `--manifest`, defaulting
+  to `benchmark/corpus/` and `benchmark/corpus.yaml`, so later rounds
+  following the `benchmark/corpus_r<N>/` + `benchmark/corpus_r<N>.yaml`
+  convention reuse the harness unchanged; results are written to a sibling
+  `benchmark/results_r<N>/`. `build_all.sh` correspondingly honours
+  `SUPWNGO_BENCH_CORPUS` to point at an alternate corpus tree (its per-target
+  protection flags remain a `case` statement, so a new corpus still adds its
+  own entries; an unknown target directory is refused rather than mis-built,
+  and surfaces as a `VOID` provisioning result).
+- `benchmark/run_bench.py` now reports a fourth status, `VOID`, for targets
+  that cannot be measured (negative control leaked the flag, provisioning
+  could not establish a real secret, or the generated script gamed the
+  check). `VOID` targets are excluded from the success-rate denominator
+  rather than silently counted as passes or failures.
+- **Canonical flag/build convention for every benchmark corpus** (rules R1–R7)
+  documented in `benchmark/README.md` under "Flag and build convention
+  (CANONICAL)", so the `benchmark/corpus_r<N>/` rounds adopt it identically:
+  no flag derivable from target name or committed source and no flag literal
+  ever committed; fresh `secrets.token_hex(16)` secret per target per run at a
+  fixed length (a corpus contract — a target copying its flag into a
+  fixed-size buffer bounds it); the exact `#ifndef FLAG` guard plus
+  `-DFLAG="\"$flag\""` compile-time injection form; the same secret written to
+  `flag.txt` for shell-obtaining targets; the required gitignore entries;
+  fail-closed provisioning checks; and the requirement that every new target
+  **fail** its negative controls.
+- `benchmark/soundness_probes/negative_control_sweep.py` — sweeps a whole
+  corpus for targets that leak their flag to benign input (convention rule
+  R7), rebuilding each with a fresh secret. Runs in seconds per target because
+  it never invokes `autopwn`, and exits non-zero if any target is unmeasurable
+  or mis-provisioned, so it drops into a corpus build script. Supports
+  `--corpus-root`/`--manifest`. On the R1 corpus it reports `13_off_by_one` as
+  the only unmeasurable target; the other 14 are clean.
+- `benchmark/soundness_probes/` — the committed, re-runnable adversarial
+  probes behind the audit above (three non-exploiting scripts that must never
+  score `SUCCESS`, plus two genuine hand-written ret2plt exploits, in both
+  `io.interactive()` and explicit-`sendline` shapes, that must never be lost
+  to buffering or the new anti-gaming checks), with a `README.md`.
+- `tests/test_bench_harness_soundness.py` — 24 pure-logic regression tests
+  over the harness's classification rules, anti-gaming detection,
+  secret-flag hygiene, corpus parameterisation, and output excerpting.
+
 ### Fixed
+- `benchmark/run_bench.py`'s recorded verification output was unauditable:
+  `output_tail` kept only `out[-4000:]` of `stdout + stderr` concatenated, so
+  the tail was always the *end of stderr* — in practice pwntools/unicorn
+  deprecation warnings — and the actual flag/shell evidence never reached
+  `report.json`. `stdout` and `stderr` are now recorded separately, each
+  keeping head *and* tail with an explicit omission marker.
+- `benchmark/run_bench.py` had no guard against a degenerate flag: an empty
+  `flag.txt` would make `"" in output` true and score **every** target
+  `SUCCESS`. Flags shorter than 16 characters are now a provisioning fault
+  (`VOID`).
+- `benchmark/run_bench.py` now takes a lock on the corpus root
+  (`corpus_lock()`) and fails fast if another run holds it. Because each run
+  rebuilds the targets with a fresh secret flag, two concurrent runs over one
+  corpus would clobber each other's binaries and `flag.txt` files and produce
+  spurious `FAILED`s rather than an obvious crash.
 - `CanonicalAutopwnEngine`'s verified-`SUCCESS` path could leave
   `engine.exploit_script` empty: only the template/`PARTIAL`-only executors
   (`srop`, `format_string`, `ret2libc`) ever populated

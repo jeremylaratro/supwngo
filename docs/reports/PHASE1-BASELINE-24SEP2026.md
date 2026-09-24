@@ -1,5 +1,28 @@
 # Phase-1 baseline: `supwngo autopwn` vs. the 15-target benchmark corpus
 
+> **⚠ SUPERSEDED — the `2/15 (13.3%)` headline below is not valid. Do not
+> cite it.**
+>
+> The 23 Sep 2026 harness soundness audit
+> (`docs/reports/HARNESS-SOUNDNESS-AUDIT-23SEP2026.md`) proved that
+> `benchmark/run_bench.py` could report `SUCCESS` without any exploitation
+> having occurred, and that **both** of this report's two successes were
+> affected:
+>
+> - `13_off_by_one` — the harness's own 48-byte injected stdin was enough
+>   input to trigger the target's off-by-one, so a script whose entire body
+>   was `subprocess.run(['./off_by_one'])` scored `SUCCESS`. Now **`VOID`**:
+>   the target cannot distinguish a working exploit from a no-op.
+> - `15_win_function` — the flag was a constant committed to git and compiled
+>   into the binary, so printing the literal (or `strings`-scraping it) also
+>   scored `SUCCESS`. Re-verified against a fresh per-run secret and
+>   confirmed a **genuine** success.
+>
+> Corrected: **1/14 scorable (7.1%)**. The per-target technique analysis
+> below (which techniques `autopwn` attempts, the `ret2libc` leak-gating gap
+> on `02_ret2plt_system`, the missing executors) remains accurate and useful;
+> only the score is withdrawn. Re-run the fixed harness to re-baseline.
+
 **Date:** 24 Sep 2026
 **Branch:** `feat/benchmark-corpus-20260923`, rebased onto `integration/phases-0-4-7-20260923`
 **Run:** `benchmark/results/20260924-014522Z/` (`report.json` + `summary.txt`)
