@@ -123,19 +123,71 @@ A straight percentage comparison is the wrong instrument. Two better ones:
   scrape-reachable credit, so this neutralises axis 2. The gap between the
   default-mode pairing and the strict-mode pairing **estimates the size of the
   scrape confound**.
-- **Secondary, sharper on axis 2 and 3 together: R1-strict restricted to its
-  scrape-clean targets, vs R2-strict.** R1's scrape-clean set is exactly its six
-  shell-obtaining targets — `01`, `02`, `03`, `07`, `08`, `09` — whose binaries
-  contain no flag at all, so credit could not have come through `strings` even in
-  principle. Note that **both** R1 `VOID`s (`11`, `13`) fall in its *scrapeable*
-  nine, so the scrape-clean six are also all sound: this subset is simultaneously
-  free of axes 2 and 3. It compares two populations scored on the same terms.
-  **Caveat stated plainly: n = 6 versus n = 15**, and R2's 15 span technique
-  families R1's six do not, so this is a narrower and noisier instrument. Use it
-  only if the primary pairing leaves the distinction material.
+- **Secondary, technique-class-matched: R1-strict on its shell-obtaining six vs
+  R2-strict on its shell-obtaining four.** R1: `01`, `02`, `03`, `07`, `08`, `09`.
+  R2: `01`, `02`, `03`, `07`. Both sides scrape-clean, both sides sound, both sides
+  the same exploitation style. **n = 6 vs n = 4** — very small, so it is a
+  tie-breaker, never a headline.
+
+  **Why not the obvious "R1-scrape-clean vs R2-all":** because on R1,
+  *scrape-clean* and *shell-obtaining* are **not two properties that happen to
+  coincide — they are the same property observed twice.** A target is scrape-clean
+  exactly when it obtains a shell and reads `flag.txt` at runtime instead of having
+  the flag compiled in. So subsetting on scrape-cleanliness subsets on exploitation
+  style **by construction**: R1's scrape-clean six *are* its shell-obtaining
+  targets, and the seven excluded (`04`, `05`, `06`, `10`, `12`, `14`, `15`) are
+  exactly its arbitrary-read/arbitrary-write primitive targets, which credit via an
+  in-target write with a bare process tree and no descendant shell.
+
+  `R1-scrape-clean vs R2-all` would therefore compare a **shell-obtaining-only**
+  population against a **mixed** one, and any gap would be partly a difference in
+  exploitation style rather than capability — **in an unknown direction**:
+  `ret2dlresolve` and SROP are harder in technique terms, while a canary leak or a
+  format-string write is a shorter chain with fewer places to fail. That is a
+  *systematic selection bias*, not merely reduced statistical power, and it yields
+  an instrument that cannot be interpreted. Matching on technique class is what
+  fixes it.
+
+> **Lesson, and it applies to R3/R4/R5 as well: on these corpora, flag-delivery
+> mechanism is entangled with technique class.** Compiled-in flags go with
+> win()-style/primitive targets; runtime `flag.txt` reads go with shell-obtaining
+> ones. So **any subsetting by scrape-cleanliness silently subsets by exploitation
+> style.** Obvious once stated, invisible otherwise.
+>
+> **Recommendation for future corpus generators:** vary flag delivery *within*
+> technique class — some shell-obtaining targets with a compiled-in flag, some
+> primitive targets reading `flag.txt` — so the two factors can be separated
+> instead of being confounded by design. R2 improved flag delivery uniformly
+> (0/15 scrapeable), which is strictly better for soundness but, precisely because
+> it is uniform, removes the within-corpus contrast that would let the two be
+> disentangled.
 
 None of this is offered as a reason to discount the cold number. It is a limit on
 what the R1→R2 **delta** can be attributed to.
+
+#### Disclosure: when each instrument was fixed
+
+Pre-registration is worthless if its timing is not itself honest, so:
+
+- The **primary** instrument (R1-strict vs R2-strict) and the confound analysis on
+  axes 1–3 were committed **before the cold run started** (`b19db10`, `75454fc`).
+- The **secondary** technique-class-matched instrument was revised **while the run
+  was in flight**, after `07_static_ret2syscall` had already reported
+  `SUCCESS 5/5` — and `07` is one of the four R2 members of that very subset. That
+  is disclosed rather than glossed.
+
+Why this is a weak contamination and not a fatal one: the subset's membership is
+**mechanically determined by a documented corpus property** — "does this target
+obtain a shell and read `flag.txt`", stated in `benchmark/corpus_r2/README.md` and
+in R1's `benchmark/README.md` — not chosen by inspecting scores. The revision
+*narrowed* the instrument (R2-all → R2 shell-obtaining four) to remove a selection
+bias, which cannot flatter the result: it dropped 11 targets including every one
+whose verdict was still unknown to me. Had I widened it, or picked members after
+seeing which passed, the objection would be fatal.
+
+Nonetheless, because one in-subset data point was visible when it was fixed, this
+instrument is **demoted to a tie-breaker and is never quoted as a headline.** The
+primary pairing carries the comparison.
 
 ### 1.5 Pre-registered discovery-stall triage
 
