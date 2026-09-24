@@ -83,29 +83,59 @@ corpus's difficulty notes should stay honest:
 | `13_off_by_one_retaddr_lsb` | `win_addr+1`'s LSB still reaches `print_flag()` | `win()` begins `f3 0f 1e fa` (`endbr64`); entered one byte late, `0f 1e fa` decodes as a 3-byte NOP that re-syncs to the same prologue. Every other delta tried (−1, ±0x10, ±0x40, +0x80) crashes, so a separate `wrong_lsb` case covers the real ablation |
 | `14_oob_read_flag_array` | read range shifted by one index still recovers the flag | the 38-byte flag fits whole inside the misaligned 60-byte window |
 
-### 1.4 The R1 ↔ R2 comparison is NOT like-for-like
+### 1.4 The R1 ↔ R2 comparison is NOT like-for-like — on three axes, all compounding
 
-The cold figure will be read against R1's 13/13. It must not be read as
-like-for-like, and the confound runs in a direction that is easy to get backwards:
+The cold figure will be read against R1's 13/13. **"R1 13/13 versus R2 x/15" is not
+a like-for-like comparison on any of three axes**, and all three push R2's figure
+*down* relative to R1's. They compound; none offsets another.
 
 | | R1 | R2 |
 |---|---|---|
+| was the pipeline developed against it | **yes** | no (held out until after R1 closed) |
 | flag delivery | compiled in via `-DFLAG` for win()-style targets | **read from `flag.txt` at runtime by every target** |
 | `strings \| grep 'FLAG{'` recovers the flag | **9 of 15** | **0 of 15** |
 | targets scoring only behind the bypassable script audit | 9 | 0 |
-| excluded as `VOID` | 2 | **0** |
+| excluded as `VOID` | **2** (`11_heap_uaf_leak`, `13_off_by_one`) | **0** |
+| scoring denominator | **13**, after discarding its 2 weakest members | **15**, nothing discarded |
 
-R1's 9-of-15 scrape surface means **part of its 13/13 was reachable without
-exploitation**; R2 closes that route entirely. So the confound **inflates R1 and
-deflates R2** relative to true capability — two mechanisms pointing the *same* way
-as overfitting, and this measurement cannot separate them.
+1. **Overfitting.** R1 is the corpus the pipeline was developed against. This is the
+   effect the cold measurement is *designed* to expose, and the only one of the
+   three that is about the pipeline.
+2. **Scrape surface.** R1 leaks to `strings` on 9 of 15, R2 on 0 of 15, so **part of
+   R1's 13/13 was reachable without exploitation**. The confound therefore
+   **inflates R1 and deflates R2** relative to true capability.
+3. **Denominator composition.** R1 scored **13 sound targets after discarding 2
+   unsound ones**; R2 scores **15 sound targets with nothing discarded**. R1 got to
+   drop its two weakest members — the two that could be solved without their
+   intended vulnerability. **R2 has no weak members to drop.**
 
-**R1-strict vs R2-strict is the closest available like-for-like pairing**, because
-`--strict-attribution` is what withholds scrape-reachable credit. The gap between
-the default-mode pairing and the strict-mode pairing estimates the confound's size.
+**The honest summary: R2 is strictly harder to score on than R1 was, by
+construction.** The design improvements responsible — runtime flag reads, and a
+corpus whose every member passes its own necessity ablation — are a **feature of R2,
+not a deficiency of the pipeline.** A reader who sees only the two fractions will
+draw a conclusion the measurement does not support.
 
-This is a limit on what the R1→R2 *delta* can be attributed to. It is not offered
-as a reason to discount the cold number.
+#### Instruments, in order of defensibility
+
+A straight percentage comparison is the wrong instrument. Two better ones:
+
+- **Primary: R1-strict vs R2-strict.** `--strict-attribution` is what withholds
+  scrape-reachable credit, so this neutralises axis 2. The gap between the
+  default-mode pairing and the strict-mode pairing **estimates the size of the
+  scrape confound**.
+- **Secondary, sharper on axis 2 and 3 together: R1-strict restricted to its
+  scrape-clean targets, vs R2-strict.** R1's scrape-clean set is exactly its six
+  shell-obtaining targets — `01`, `02`, `03`, `07`, `08`, `09` — whose binaries
+  contain no flag at all, so credit could not have come through `strings` even in
+  principle. Note that **both** R1 `VOID`s (`11`, `13`) fall in its *scrapeable*
+  nine, so the scrape-clean six are also all sound: this subset is simultaneously
+  free of axes 2 and 3. It compares two populations scored on the same terms.
+  **Caveat stated plainly: n = 6 versus n = 15**, and R2's 15 span technique
+  families R1's six do not, so this is a narrower and noisier instrument. Use it
+  only if the primary pairing leaves the distinction material.
+
+None of this is offered as a reason to discount the cold number. It is a limit on
+what the R1→R2 **delta** can be attributed to.
 
 ### 1.5 Pre-registered discovery-stall triage
 
@@ -159,6 +189,20 @@ conditions and a later reader cannot tell which was meant.
 | real harness processes at GO (resolved) | **0** |
 | loadavg at start of cold run | *(Part 2)* |
 | loadavg at end of cold run | *(Part 2)* |
+| continuous load profile | `benchmark/sample_load.sh`, 15 s interval, for the whole run |
+
+**A stale `.run_bench.lock` is expected and means nothing — test acquisition, never
+file presence.** `benchmark/corpus_r2/.run_bench.lock` was present at the pre-run
+gate. `corpus_lock()` uses `flock`, *deliberately* and with the reasoning in its own
+docstring: the kernel releases a `flock` when the holder dies for any reason
+including `SIGKILL`, whereas an `O_EXCL` lock file survives a kill and wedges every
+later run until a human deletes it. So the inode persists after every run and
+carries **no** information about whether the lock is held. It was verified free by
+*attempting* `LOCK_EX | LOCK_NB` and releasing. Both wrong inferences are costly and
+in opposite directions: treating presence as held waits forever on nothing; treating
+absence-of-check as free while it *is* held corrupts a concurrent run's binaries and
+`flag.txt` mid-flight, which surfaces as spurious `FAILED`s rather than an obvious
+crash. The next person to see this file will have the same question.
 
 ---
 
