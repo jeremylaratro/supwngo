@@ -214,6 +214,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as a fourth axis on which R1↔R2 is not like-for-like, and as a caveat in the opposite
   direction: 4/15 estimates performance on adversarially re-shaped variants of targets the
   pipeline already solves, not on arbitrary binaries.
+- `benchmark/rep_divergence.py` + `tests/test_rep_divergence.py` — discriminates a
+  **stalled discovery probe** from a **genuine non-match** using only archived artifacts,
+  no new measurement. The pipeline's probes are bounded by timeouts hardcoded at 8
+  `deliver_parts` call sites (1.5/2.0/3.0 s) with no retry, and `deliver_parts` collapses
+  a timeout into empty output, so "this technique does not apply" and "the probe ran out
+  of time" are reported identically — and a stalled probe's FAILED verdict is not a
+  capability limit. The two modes differ across reps: a load-sensitive stall is a race and
+  does not lose the same race five times to land on byte-identical output (exactly how R1's
+  `04_canary_leak_bypass` presented, 9 identical working exploits and one stub), whereas a
+  genuine non-match is deterministic. Hashes every rep's generated script per target,
+  normalising ASLR'd addresses, and reports three states including **CANNOT DETERMINE**
+  when too few reps were archived. Applied to the R2 cold run: **15/15 deterministic, 0
+  divergent, 0 undetermined** — so no cold FAILED verdict is a flaky-stall artefact.
+  Documents its own limit in-file and in the report: identical artifacts rule out
+  *race-type* truncation only; a probe that times out **deterministically** produces
+  identical artifacts too, so a pass means "not a flaky stall", never "not a stall".
+  Because the tool asserts an **absence** — the failure family this project has shipped
+  repeatedly — its red path is proven rather than assumed: the tests assert that a
+  functional cross-rep difference exits 1, that an address-only difference does not, that a
+  **small** differing constant is still caught (the narrowness check, since an over-broad
+  normaliser would sand away a changed offset and make this another validation that cannot
+  fail), and that insufficient reps yield CANNOT DETERMINE instead of a silent pass.
 - `benchmark/summarize_cold.py` — per-target `solved` + `reliability` k/N table with
   attribution witness class, outer-truncation check and the pre-registered
   discovery-stall triage. Reports both endpoints side by side because neither is the

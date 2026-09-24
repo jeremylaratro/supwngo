@@ -138,11 +138,25 @@ Two different things:
   could plausibly affect `05`/`06`/`12`/`08`, not just `04`.
 
 Rev 1 deprioritised this on a **scope** argument that was wrong. It is still
-deprioritised, on the **determinism** argument, which is the one the evidence supports:
-all nine are 5/5, so whatever is happening is deterministic, and a timeout that fires
-identically on every rep is not the flaky-probe story. Fixing the `timed_out` blindness
-is scheduled in **phase 0** as an observability change (it makes a deterministic timeout
-*visible*), not as a capability fix expected to move targets.
+deprioritised, on the **determinism** argument, which is the one the evidence supports —
+and that argument is now measured rather than asserted.
+
+**Cross-rep artifact analysis (cold report §2.4a, `benchmark/rep_divergence.py`): 15/15
+targets deterministic, 0 divergent, 0 undetermined.** All 11 failures produced identical
+generated artifacts across all 5 reps (`01` identical after normalising an ASLR'd stack
+address in a comment — the sole difference in all four pairwise diffs). Since a
+load-sensitive stall is a race and does not lose the same race five times identically,
+**race-type probe truncation is ruled out for every failure**, under load ranging
+2.80–8.93.
+
+This raises rather than lowers the value of phase 0, because of what it does *not* settle:
+a probe against a target that never answers inside 2.0 s times out **deterministically**
+and yields identical stubs too, which is indistinguishable from a genuine non-match
+without reading `timed_out`. So the `timed_out` work stays in **phase 0** as an
+observability change that makes a deterministic timeout *visible*, and is still **not** a
+capability fix expected to move targets. Rule 4 prediction for it: *if any stub is a
+deterministic timeout, phase 0 will say so explicitly and that target's §2.1 bucket is
+wrong.*
 
 ---
 
@@ -221,6 +235,14 @@ diagnoses were inferences from target sources, which rule 2 forbids relying on.
    enter the pipeline.** Live for phase 1: `0x1337` appears at `ablate_r2.py:471` and in
    `corpus_r2_reference/15_ret2win_arg_gate_reference.py:45`. The pipeline must *recover*
    it, never be told it.
+2a. **Inference from a target's source is diagnosis by answer key, and must be labelled
+   at the point of use — not once at the top of a document.** A claim sourced from a
+   target `.c` file, a reference exploit, or a corpus README is marked *inferred* on the
+   row, table cell, or sentence that makes it, alongside what it was inferred from.
+   Presenting inference as record is worse than being wrong openly, because it spends
+   credibility a later correct claim needs. Rev 1 violated this on three rows (§0) while
+   its own §5 carried rule 2; labelling at the top is what let that happen.
+
 3. Every fix must be expressible as "the pipeline can now do X", where X is a capability,
    **with its reliability split.**
 4. **For each fix, record the falsifiable prediction of what a later round would show if

@@ -527,6 +527,53 @@ truncation at the 20 s budget** — a technique needing 25 s of gadget search re
 remains open and is residual limit 1 in §2.8. Accordingly the figure is
 **capability at a 20 s per-technique budget**, never unbounded capability.
 
+### 2.4a Probe truncation — tested on archived artifacts, 0 of 11 failures affected
+
+The erratum (§2.0a) raises a question it does not answer: with 8 hardcoded 1.5–3.0 s
+discovery probes, no retry, `deliver_parts` collapsing a timeout into empty output, and
+a run whose load ranged 2.80–8.93, **are any of the 11 failures stalled probes rather
+than genuine non-matches?** A stalled probe's FAILED verdict is not a capability limit,
+and any diagnosis of it is unsafe.
+
+The archived artifacts settle this without a new measurement, because the two failure
+modes have different cross-rep signatures. A **load-sensitive stall is a race** — it does
+not lose the same race five times and land on byte-identical output; that is exactly how
+R1's `04_canary_leak_bypass` presented, 9 identical working exploits and one stub. A
+**genuine non-match is deterministic.** Implemented as `benchmark/rep_divergence.py`,
+which hashes every rep's generated script per target, normalising ASLR'd addresses.
+
+**Result: 15/15 deterministic. 0 divergent. 0 undetermined.**
+
+| finding | detail |
+|---|---|
+| all 11 FAILED targets | identical artifacts across all 5 reps |
+| `01_stack_shellcode_relay` | 5 distinct raw hashes, **1** after ASLR normalisation — the sole difference across all four pairwise diffs is the leaked stack address in a comment (`140732459705408` vs `140726508893760` …) |
+| other 10 failures | byte-identical, no normalisation needed |
+| 4 successes (control) | byte-identical, consistent |
+
+**So no FAILED verdict in this run is a flaky-stall artefact, and the §2.5 diagnoses are
+safe on that axis.** Note `01` incidentally shows the pipeline *did* obtain a stack leak
+and still failed to place shellcode — a capability datum, not a stall.
+
+**What this does not establish, and the distinction is load-bearing.** Identical
+artifacts rule out **race-type, load-sensitive** truncation. They do **not** rule out
+**deterministic** truncation: a probe against a target that never answers inside 2.0 s
+times out identically every rep and yields identical stubs. That case is
+indistinguishable from here and is precisely the caveat §2.5 already carries about 5/5
+uniformity. Discriminating it needs `DeliveryResult.timed_out` to have consumers — it
+currently has none outside `__repr__` — which is why that is scheduled as step-3 phase 0
+observability work rather than left to inference. **A pass from this tool means "not a
+flaky stall", never "not a stall".**
+
+**The tool's red path is proven, not assumed.** `tests/test_rep_divergence.py` (5 tests,
+all passing) asserts that a functional difference is reported DIVERGENT with exit 1, that
+an address-only difference is not, that a **small** differing constant is still caught —
+the narrowness check, because an over-broad normaliser would sand away a changed offset
+and make this another validation that cannot fail — and that too few reps yields CANNOT
+DETERMINE rather than a silent pass. This tool asserts an absence, which is the failure
+family this project has shipped repeatedly, so a green result from it was worth nothing
+until red was demonstrated.
+
 ### 2.5 Discovery-stall triage, per the §1.5 pre-registered table
 
 **9 of the 11 failures produced a stub script in all 5 reps** — `01`, `03`, `04`,
@@ -700,6 +747,32 @@ Reproduced verbatim from the plan's §11 so the caveats travel with the number.
 >    that genuinely did not apply. No second execution can settle it without
 >    confounding on the known delivery flake. Hence the cold figure is defined as
 >    *capability at a 20 s per-attempt budget*, never as unbounded capability.
+
+   **SUPERSEDED — limit 1 restated with the mechanism that actually exists** (erratum
+   §2.0a; the original is left above so the change is auditable). There is **no 20 s
+   per-technique budget.** The real bounds are:
+
+   - **Discovery/delivery probes: hardcoded at 8 `deliver_parts` call sites — 1.5 s,
+     2.0 s, 3.0 s — with no retry.** `--timeout` does not reach them.
+   - **`--timeout` reaches only two places:** `run_dynamic_profile(..., timeout=min(self.timeout, 2.0))`
+     (`orchestrator.py:187`), which **caps it at 2.0 s** and is inert for any larger
+     value; and the verifier (`verifier.py:164`), where it bounds **verification** runs,
+     not discovery.
+   - **The 360 s outer wall** (`run_bench.py:407`), which nothing came near (§2.4).
+
+   Corrected scope of the figure: **capability with hardcoded 1.5–3.0 s discovery probes
+   under a 360 s outer wall, where `--timeout` bounds verification rather than
+   discovery.**
+
+   **Status after §2.4a:** race-type truncation is **ruled out** on all 11 failures
+   (15/15 deterministic, 0 divergent). **Deterministic** truncation remains open and
+   needs `timed_out` consumers to settle.
+
+   **Operationally, and this is the half a reader most needs:** a future round testing
+   sensitivity to the discovery budget **must change those 8 hardcoded call sites, not
+   pass a different `--timeout`.** Anyone acting on the original text above would run the
+   wrong experiment, conclude the budget was not binding, and be wrong for a reason the
+   flag cannot reveal.
 >
 > 2. **Source-read contamination is checked on replay, not on the cold executions
 >    themselves** `[R2-1 / round-3 #1]`. The reviewer's objection is correct and is
