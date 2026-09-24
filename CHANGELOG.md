@@ -8,6 +8,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Walkthrough scorer — blind-follower measurement with a necessity control**
+  (`benchmark/walkthrough/`). `benchmark/` previously contained *zero* references to
+  walkthroughs, so the R5 spec's `>= 85% followable` gate was a threshold against a
+  metric that did not exist — and inventing a lenient one later to clear it is the
+  exact failure this benchmark was built to prevent. A walkthrough is now credited
+  only when a **fresh blind follower**, given only that walkthrough and that binary,
+  produces an artifact whose flag capture is **behaviourally attributed** to the
+  target's own process tree, **and** the identical follower given only the binary
+  fails. Where both arms succeed the target is `UNINFORMATIVE` — it cannot
+  demonstrate the walkthrough contributed anything. This is
+  `benchmark/ablation/`'s necessity test applied to documentation instead of to
+  exploit steps. Scoring reuses `run_bench.py` and `attribution.py` unchanged
+  (fresh per-rep secret, independent re-execution, negative controls, behavioural
+  witness); the walkthrough engine never grades its own output and `b"flag" in out`
+  is never a verdict. Two followers measure deliberately different things: the
+  deterministic `template` follower measures **template validity** and has no bare
+  arm, so it is *structurally* unable to emit `FOLLOWABLE` and must never be quoted
+  against the gate; the `agent` follower is the gate metric. Family-agnostic by
+  construction — nothing in it names a walkthrough family.
+- **Walkthrough scorer — falsifiability controls** (`benchmark/walkthrough/selftest.py`,
+  `fixtures/`). A validation step that cannot fail is worse than none, and this
+  project has found four. `--selftest` proves a negative verdict is reachable across
+  three layers: one good and six deliberately broken artifacts (wrong offset,
+  undeclared constant at the reader's first command, ret2shellcode taught on an NX
+  binary, flag laundering, hardcoded flag, scrape-without-running-the-target), with
+  the **positive control first** so a broken harness reports NOT MEASURABLE instead
+  of reporting the negatives as passes, and fixtures copied to randomised filenames
+  so filename special-casing cannot pass; an explicit **truth table** over the
+  verdict and denominator arithmetic including the inflation case; and a
+  `witness()`/`witness_argv()` differential. Measured: positive control credited,
+  6/6 broken artifacts refused.
+- **Walkthrough scorer — two agent-only cheat channels closed structurally.**
+  `run_bench.py` faces a non-adaptive generator that is never handed the flag; an
+  interactive follower with a shell is a different adversary. (1) *Hardcoding* is
+  closed by **decoy-then-remint**: the follower works against a decoy secret, its
+  artifact is frozen and hashed, the sandbox wiped, and the target rebuilt with a
+  fresh secret it has never seen. (2) *Runtime laundering* — read `flag.txt` and
+  relay it **through** the target, so the target performs the flag-bearing write —
+  survives re-minting and is closed by a **behavioural open-audit**: a process
+  outside the target's lineage opening `flag.txt` scores `FOLLOWER_LAUNDERED`. This
+  was a confirmed false-positive channel, not a hypothetical: with the real
+  ret2plt chain and an `echo` of a Python-read flag, write-attribution alone reports
+  `credited … the target exec'd a shell`.
 - **Phase 5 (reliability hardening) — stdio-safe multi-part payload delivery**
   (`supwngo/exploit/pipeline/delivery.py`). Every native executor previously delivered
   its payload as a *single* write (`subprocess.run(input=blob)` / one `sendline`), which
@@ -164,6 +207,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Ret2LibcLeakExecutor` now performs exactly those steps for real.
 
 ### Changed
+- **`benchmark/attribution.py` — `witness()` refactored to delegate to a new
+  `witness_argv()`**, so the behavioural witness can attribute an arbitrary command
+  rather than only `<python> <script>`. The walkthrough scorer needs this and must
+  not own a second copy of "who wrote the flag" — the whole point of that module is
+  that there is exactly one answer to the question. `witness()`'s behaviour is
+  bit-identical (the traced syscall set defaults to what it has always traced, so
+  `run_bench.py` is unaffected), and `selftest.py` asserts the two entry points
+  agree on the same artifact.
 - **Phase 5 — attempt ordering** (`pipeline/orchestrator.py`): `StrategySuggester` ranked
   `VARIABLE_OVERWRITE` at priority 1 for all 15 benchmark targets (its applicability test
   is nearly always true) and `RET2PLT` at 4, so every target paid ~126 blind magic-value
