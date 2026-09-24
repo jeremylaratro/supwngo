@@ -62,6 +62,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -266,6 +267,53 @@ def apply_variant(text: str, variant: str) -> tuple[str, dict]:
         return out, {"variant": "prose", **info}
     raise FollowerError(f"unknown walkthrough variant {variant!r}; expected one "
                         f"of {', '.join(WALKTHROUGH_VARIANTS)}")
+
+
+# --------------------------------------------------------------------------- #
+# session teardown
+# --------------------------------------------------------------------------- #
+def reap_process_group(pid: int, grace_sec: float = 2.0) -> list[int]:
+    """Kill everything in `pid`'s process group. Returns what needed SIGKILL.
+
+    Called after every follower session, before the scored secret is minted.
+    The scorer's whole anti-hardcoding guarantee is that the follower works
+    against a DECOY and the artifact is later scored against a secret the
+    follower never saw -- which fails if anything the follower started is still
+    alive in the sandbox when the new secret is staged there. A surviving
+    process could simply read the new `flag.txt` and write it somewhere the
+    artifact will find. Found by independent review, 24 Sep 2026.
+
+    Not a complete guarantee: a process that double-forks and calls setsid()
+    leaves this group and survives. That residual is stated in the README rather
+    than papered over -- closing it needs a cgroup or a PID namespace, i.e. OS
+    isolation, which this process-level harness does not have.
+    """
+    try:
+        pgid = os.getpgid(pid)
+    except (ProcessLookupError, PermissionError):
+        return []
+    if pgid in (0, os.getpgid(0)):  # never signal our own group
+        return []
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return []
+    deadline = time.time() + grace_sec
+    while time.time() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except (ProcessLookupError, PermissionError):
+            return []
+        time.sleep(0.1)
+    # Still there after the grace period: these are the survivors.
+    survivors: list[int] = []
+    try:
+        os.killpg(pgid, 0)
+        survivors.append(pgid)
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    return survivors
 
 
 # --------------------------------------------------------------------------- #
@@ -486,6 +534,13 @@ class AgentFollower:
         # Variadic options go LAST and the prompt travels on stdin: with
         # `--allowedTools a b c "prompt"` the prompt is swallowed into the tool
         # list and the CLI exits complaining there was no prompt.
+        # stream-json + --verbose so the transcript contains TOOL EVENTS, not just
+        # the assistant's prose. Independent review made the point: a blindness
+        # audit over plain stdout cannot see a `Read` of a forbidden path, because
+        # the tool call never appears there. The audit is still detection rather
+        # than prevention, but it now scans what the follower DID and not only what
+        # it said about it.
+        argv += ["--output-format", "stream-json", "--verbose"]
         argv += ["--disallowedTools", *self.tier.denied_tools]
         argv += ["--allowedTools", *self.tier.allowed_tools]
 
@@ -494,17 +549,30 @@ class AgentFollower:
 
         t0 = time.time()
         timed_out = False
+        # start_new_session puts the follower and everything it spawns in one
+        # process group, so the whole session can be torn down afterwards. This
+        # is not tidiness: the scorer re-mints the secret flag AFTER the session
+        # ends, and a process that outlived the CLI could sit in the sandbox,
+        # wait for the new flag to be staged, and exfiltrate a secret the
+        # follower was never supposed to see. Found by independent review.
         try:
-            proc = subprocess.run(
-                argv, input=prompt.encode(), cwd=str(workdir), env=env,
-                capture_output=True, timeout=self.tier.wall_timeout_sec)
-            out_b, err_b, rc = proc.stdout or b"", proc.stderr or b"", proc.returncode
-        except subprocess.TimeoutExpired as e:
-            out_b = e.stdout or b""
-            err_b = e.stderr or b""
-            rc, timed_out = None, True
+            proc = subprocess.Popen(                     # noqa: S603
+                argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, cwd=str(workdir), env=env,
+                start_new_session=True)
         except OSError as e:
             raise FollowerError(f"could not launch the follower: {e}") from e
+        try:
+            out_b, err_b = proc.communicate(prompt.encode(),
+                                            timeout=self.tier.wall_timeout_sec)
+            rc = proc.returncode
+        except subprocess.TimeoutExpired:
+            reap_process_group(proc.pid)
+            out_b, err_b = proc.communicate()
+            rc, timed_out = None, True
+        # Unconditional: a clean exit does not mean the session left nothing
+        # behind.
+        survivors = reap_process_group(proc.pid)
         elapsed = time.time() - t0
 
         transcript = workdir / f"follower_{arm}_transcript.txt"
@@ -528,16 +596,33 @@ class AgentFollower:
             invalid_reason = (
                 f"the follower hit the {self.tier.wall_timeout_sec}s wall timeout, "
                 f"so neither its success nor its failure is evidence")
-        elif rc not in (0, None) and not artifact.is_file():
+        elif rc not in (0, None):
+            # ANY nonzero exit, artifact present or not. An earlier version only
+            # invalidated a nonzero exit that left NO artifact, which meant a
+            # crashed or budget-exhausted session that happened to leave a partial
+            # exploit.py counted as an OBSERVED FAILURE -- and in the bare arm an
+            # observed failure is what ENABLES a FOLLOWABLE verdict. So a crash
+            # could manufacture credit for a walkthrough. Found by independent
+            # review. A partial artifact is not evidence of anything.
             invalid_reason = (
-                f"the follower CLI exited {rc} without producing "
-                f"{ARTIFACT_NAME} -- an instrument fault, not a failure to solve")
+                f"the follower CLI exited {rc} (artifact "
+                f"{'present' if artifact.is_file() else 'absent'}) -- an "
+                f"instrument fault, not a failure to solve. A crashed or "
+                f"budget-exhausted session must never read as 'did not solve it'")
         if invalid_reason:
             notes.append(invalid_reason)
         elif not artifact.is_file():
             notes.append(
                 f"the follower exited cleanly without producing {ARTIFACT_NAME} "
                 f"-- a genuine failure to solve, and scored as one")
+        if survivors:
+            # Recorded, not fatal. The processes are dead before the scored
+            # secret is minted, so the exfiltration window is closed; but a
+            # session that leaves processes behind is worth seeing in the report.
+            notes.append(
+                f"the follower left {len(survivors)} process(es) running after it "
+                f"exited; they were killed BEFORE the scored flag was minted, so "
+                f"none of them could have seen it")
 
         return FollowerOutcome(
             kind=self.kind, arm=arm, workdir=workdir,

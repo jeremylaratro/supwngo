@@ -57,11 +57,16 @@ open that do not exist there. Both are closed structurally, not by pattern:
 
 1. HARDCODING / GENERATION-TIME SCRAPING. The follower can read `flag.txt` while
    it works and paste the string into `exploit.py`.
-   Closed by DECOY-THEN-REMINT: the follower works against a decoy secret of
-   identical length; its artifact is then FROZEN, the sandbox is WIPED of
-   everything but the artifact and the walkthrough, the target is REBUILT with a
-   fresh secret the follower has never seen, and the frozen artifact is scored
-   against that. A pasted decoy scores NO_FLAG.
+   Closed by DECOY-THEN-REMINT. The exact order, which matters:
+     a. the follower works against a DECOY secret of identical length;
+     b. its artifact and transcript are FROZEN (copied out of the sandbox and
+        hashed) -- nothing scored later can be edited after this point;
+     c. the corpus target is REBUILT with a freshly minted secret the follower
+        has never seen;
+     d. the sandbox is WIPED of everything but the frozen artifact and the
+        walkthrough, and the re-minted binary and flag file are re-staged;
+     e. the frozen artifact is scored against the new secret.
+   A pasted decoy scores NO_FLAG.
 
 2. RUNTIME LAUNDERING. Re-minting does not stop an artifact that reads
    `flag.txt` at run time and relays the bytes THROUGH the target, which echoes
@@ -118,6 +123,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import sys
 import tempfile
@@ -170,6 +176,9 @@ OUTCOMES = {
     "FOLLOWER_LAUNDERED": "a process outside the target's lineage opened flag.txt",
     "UNWITNESSED_REFUSED": "no witness, and --strict-attribution refuses to score it",
     "FOLLOWER_INVALID": "the follower did not run to completion; no measurement",
+    "SCORING_WINDOW_TAMPERED": ("the artifact, the target binary or flag.txt "
+                                "changed identity while being scored, so this "
+                                "trial measured nothing"),
 }
 CREDITING_OUTCOMES = {"CREDITED", "CREDITED_UNWITNESSED"}
 
@@ -189,6 +198,38 @@ VERDICTS = {
 # Verdicts that are in the pre-declared eligible set, i.e. the strict denominator.
 ELIGIBLE_VERDICTS = {"FOLLOWABLE", "NOT_FOLLOWABLE", "UNINFORMATIVE",
                      "NOT_MEASURABLE"}
+
+
+# The walkthrough's own declared family and route, read out of its header.
+#
+# DESCRIPTIVE ONLY -- never an input to any verdict. It exists because the first
+# template-arm run showed the failing bucket is not one thing: six targets failed
+# because the walkthrough HONESTLY ABSTAINED ("the offset is still unknown; that
+# is the blocking fact"), which is a coverage gap, while others attempted a route
+# and it did not work, which is a defect. Those call for opposite responses, and a
+# single BROKEN count hides the difference.
+#
+# Deliberately NOT allowed to affect scoring: a walkthrough must not be able to
+# excuse itself by declaring a family that does not reach a flag. The R5 gate is
+# flag capture; whether a family should be in that denominator at all is a
+# declared-before-measuring policy call for the maintainer (see the heap question
+# in the walkthrough-families plan), and this field is the evidence for it.
+_FAMILY_RE = re.compile(r"^#\s*Family\s*:\s*(\S+)", re.M)
+_ROUTE_RE = re.compile(r"^#\s*Route\s*:\s*(.+?)\s*$", re.M)
+# The triage family's signature refusal, so "abstained" is read off the artifact
+# rather than guessed from the family name.
+_ABSTAIN_RE = re.compile(
+    r"offset is still unknown|no observed crash|not viable|could NOT determine", re.I)
+
+
+def declared_metadata(text: str) -> dict:
+    fam = _FAMILY_RE.search(text)
+    route = _ROUTE_RE.search(text)
+    return {
+        "family": fam.group(1) if fam else None,
+        "route": route.group(1)[:120] if route else None,
+        "declares_an_unresolved_blocker": bool(_ABSTAIN_RE.search(text)),
+    }
 
 
 def sha256_file(path: Path) -> str | None:
@@ -275,6 +316,51 @@ def _run_capture(argv: list[str], cwd: Path, stdin_bytes: bytes,
         return b"", f"could not run the artifact: {e}".encode(), False
 
 
+def _attest(path: Path) -> dict | None:
+    """Identity of a file the scoring window must not change.
+
+    Two channels found by independent review need this:
+
+      * The staged target is WRITABLE by the artifact. It can overwrite the
+        binary with `#!/bin/sh\\ncat flag.txt`, execute the same pathname and be
+        credited, because lineage attribution trusts the pathname.
+      * The artifact is executed twice -- once plain to see whether the flag
+        appears at all, then again under `strace` for the verdict. The first
+        execution can rewrite `exploit.py`, so the audited run is not the run
+        that was observed.
+
+    `st_ctime_ns` is the load-bearing field: unlike mtime it cannot be set by
+    `utimes()`, so a tamper-run-restore sequence is still detected even though
+    the content hash comes back identical. `st_ino` catches unlink-and-replace.
+    """
+    try:
+        st = path.lstat()
+    except OSError:
+        return None
+    return {"path": str(path), "inode": st.st_ino, "size": st.st_size,
+            "ctime_ns": st.st_ctime_ns, "mode": st.st_mode,
+            "sha256": sha256_file(path) if path.is_file() else None}
+
+
+def _tamper(before: dict[str, dict | None], after: dict[str, dict | None]
+            ) -> list[str]:
+    """Which attested files changed across the scoring window, and how."""
+    changed = []
+    for label, b in before.items():
+        a = after.get(label)
+        if b is None and a is None:
+            continue
+        if b is None or a is None:
+            changed.append(f"{label} {'appeared' if b is None else 'disappeared'} "
+                           "during scoring")
+            continue
+        for field_name in ("inode", "sha256", "ctime_ns", "size"):
+            if b[field_name] != a[field_name]:
+                changed.append(f"{label} {field_name} changed "
+                               f"({b[field_name]} -> {a[field_name]})")
+    return changed
+
+
 def score_artifact(artifact: Path | None, workdir: Path, target_binary: Path,
                    expected_flag: str, timeout: float, trace_dir: Path,
                    strict_attribution: bool) -> dict:
@@ -295,6 +381,39 @@ def score_artifact(artifact: Path | None, workdir: Path, target_binary: Path,
     env = follower_env(REPO_ROOT, tmpdir=tmp)
     audit = rb.inspect_generated_script(artifact, expected_flag)
     argv = [sys.executable, str(artifact)]
+
+    # Pin the identity of everything the scoring window must not change: the
+    # artifact under test, the target it is scored against, and the flag file.
+    # Checked again after the last execution; any change makes the verdict void
+    # rather than a credit. See _attest().
+    attested_paths = {
+        "the artifact": artifact,
+        "the target binary": target_binary,
+        "flag.txt": workdir / "flag.txt",
+    }
+    attested_before = {k: _attest(p) for k, p in attested_paths.items()}
+
+    def _tampered(base: dict) -> dict | None:
+        after = {k: _attest(p) for k, p in attested_paths.items()}
+        changes = _tamper(attested_before, after)
+        if not changes:
+            return None
+        # NOT scored as an observed failure. "The artifact was refused" in the
+        # BARE arm is what ENABLES a FOLLOWABLE verdict, and this condition has a
+        # benign reading -- a walkthrough that tells the reader to `chmod +x` the
+        # binary could produce a ctime change with no cheating at all. The
+        # scorer cannot tell that apart from overwrite-run-restore, so it claims
+        # neither: the trial measured nothing and leaves the denominator.
+        return {**base, "outcome": "SCORING_WINDOW_TAMPERED", "credited": False,
+                "invalidates_trial": True,
+                "attestation": {"before": attested_before, "after": after,
+                                "changes": changes},
+                "reason": ("the scored files changed while the artifact was "
+                           "being scored, so this verdict would not be about "
+                           "the artifact that was frozen or the target it was "
+                           f"meant to attack: {'; '.join(changes)}. Treated as "
+                           "UNMEASURED, not as a failure, because a failure in "
+                           "the bare arm grants the walkthrough credit")}
 
     # Deliberately NOT rb._run_capture: that helper prepends the repo root to
     # PYTHONPATH so an autopwn artifact can `import supwngo`. A follower artifact
@@ -323,6 +442,15 @@ def score_artifact(artifact: Path | None, workdir: Path, target_binary: Path,
         timeout=timeout, env=env, trace_dir=trace_dir,
         traced_syscalls=att.TRACED_SYSCALLS + ",openat,open",
     )
+
+    # Checked AFTER the last execution so it covers both runs. Precedence is
+    # deliberate: a tampered scoring window is decided before any crediting
+    # branch, because a credit obtained by rewriting the target is the worst
+    # false positive this scorer could produce.
+    tampered = _tampered({"verify": verify, "script_audit": audit,
+                          "attribution": witness})
+    if tampered:
+        return tampered
 
     launder: list[dict] = []
     if witness.get("available") and witness.get("trace_log"):
@@ -506,14 +634,23 @@ def compute_rates(results: list[dict]) -> dict:
     }
 
 
+MIN_GATE_REPS = 2
+
+
 def gate_result(rates: dict, kind: str, reps: int, ran_full_manifest: bool,
-                variant: str) -> dict:
+                variant: str, strict_attribution: bool = True,
+                strace: bool = True) -> dict:
     """Whether an R5-style gate verdict may be stated at all.
 
-    A gate number from a subset run, from the template follower, or from a run
-    with an unmeasurable target is not a gate number. Saying `null` and why is
-    the honest output; a figure that gets quoted downstream regardless of the
-    caveats above it is not.
+    A gate number from a subset run, from the template follower, from a run with
+    an unmeasurable target, or from a run whose credits rest on no behavioural
+    witness is not a gate number. Saying `null` and why is the honest output; a
+    figure that gets quoted downstream regardless of the caveats printed above it
+    is not.
+
+    Every blocker below exists because of a specific way the number could
+    otherwise be wrong, and four of them were added after independent review
+    pointed out that the protocol was merely RECORDED rather than ENFORCED.
     """
     blockers = []
     if kind != "agent":
@@ -526,12 +663,37 @@ def gate_result(rates: dict, kind: str, reps: int, ran_full_manifest: bool,
         blockers.append(
             f"{rates['counts']['NOT_MEASURABLE']} target(s) are NOT_MEASURABLE; "
             "fix the instrument and re-run rather than scoring around them")
+    # A VOID leaves the strict denominator, so a target that becomes VOID at run
+    # time makes the gate figure go UP -- breakage reading as progress, the exact
+    # thing rate_strict exists to prevent. The R5 spec already requires VOID
+    # targets to be repaired or replaced BEFORE the measurement run, so refusing
+    # a gate verdict here enforces the spec rather than adding a rule.
+    if rates["counts"].get("VOID"):
+        blockers.append(
+            f"{rates['counts']['VOID']} target(s) went VOID during this run. A "
+            "VOID leaves the denominator, so scoring around it would let a "
+            "corpus fault RAISE the gate figure. Repair or replace the target "
+            "and re-run, as the R5 spec requires")
     if rates["rate_strict"] is None:
         blockers.append("no eligible targets")
     if variant != "verbatim":
         blockers.append(
             f"walkthrough variant is {variant!r}; the gate is defined on the "
             "artifact as shipped")
+    if not strace:
+        blockers.append(
+            "strace is unavailable, so NO credit on this run could be "
+            "behaviourally attributed -- a gate figure built on flag strings plus "
+            "a bypassable pattern audit is not a gate figure")
+    if not strict_attribution:
+        blockers.append(
+            "--strict-attribution was off, so an unwitnessed flag could be "
+            "credited. An interactive follower can scrape in ways no regex "
+            "catches, so the gate requires a behavioural witness for every credit")
+    if reps < MIN_GATE_REPS:
+        blockers.append(
+            f"reps={reps} < {MIN_GATE_REPS}: a single rep measures no reliability "
+            "and no paired comparison, so it cannot support a gate verdict")
     if blockers:
         return {"gate": None, "threshold": GATE_THRESHOLD, "blockers": blockers}
     passed = rates["rate_strict"] >= GATE_THRESHOLD
@@ -550,18 +712,25 @@ def gate_result(rates: dict, kind: str, reps: int, ran_full_manifest: bool,
 # staging
 # --------------------------------------------------------------------------- #
 class Stage:
-    """A repo-free sandbox pair for one target: one dir per arm, stable paths.
+    """A repo-free sandbox per arm for one target, with stable paths.
 
     Stable across reps on purpose: the walkthrough's sanitised `BINARY` constant
     points at the walkthrough arm's staged copy, so that path must not move
-    between reps. Per-rep freshness comes from re-staging the binary and
-    `flag.txt` into the same paths, and from wiping follower leftovers.
+    between reps. Per-rep freshness comes from wiping the sandbox clean before the
+    follower runs and re-staging the binary and `flag.txt`.
+
+    The two arms live under SEPARATE ROOTS (`<root>/arm-<arm>/<slug>/`), not as
+    siblings under one target directory. As siblings, the bare arm's shell could
+    reach the walkthrough with a plain `../walkthrough/`, which would quietly
+    destroy the necessity control -- the bare arm would not be bare. Separate
+    roots do not stop a determined absolute-path search (see the isolation note in
+    README.md), but they remove the adjacent path entirely.
     """
 
     def __init__(self, root: Path, slug: str, binary_name: str):
         self.slug = slug
         self.binary_name = binary_name
-        self.dirs = {arm: root / slug / arm for arm in ARM_ORDER}
+        self.dirs = {arm: root / f"arm-{arm}" / slug for arm in ARM_ORDER}
         for d in self.dirs.values():
             d.mkdir(parents=True, exist_ok=True)
 
@@ -569,10 +738,20 @@ class Stage:
         return self.dirs[arm] / self.binary_name
 
     def stage(self, src_binary: Path, src_flag: Path, arms: tuple[str, ...]) -> None:
+        """Install the binary and flag.txt, refusing to write through an alias.
+
+        `shutil.copy2` onto an existing path follows symlinks, so a follower that
+        replaced `flag.txt` with a link would have the NEXT rep's freshly minted
+        secret written to wherever it pointed -- handing it the scored flag it is
+        specifically not supposed to see. Unlink via `lstat` first and refuse
+        anything that is not a regular file.
+        """
         for arm in arms:
-            shutil.copy2(src_binary, self.binary(arm))
+            for dest, src in ((self.binary(arm), src_binary),
+                              (self.dirs[arm] / "flag.txt", src_flag)):
+                _unlink_alias(dest)
+                shutil.copy2(src, dest)
             os.chmod(self.binary(arm), 0o755)
-            shutil.copy2(src_flag, self.dirs[arm] / "flag.txt")
 
     def wipe_except(self, arm: str, keep: list[Path]) -> list[str]:
         """Remove everything the follower left behind except the named files.
@@ -581,6 +760,10 @@ class Stage:
         cached the DECOY flag; scoring against a leftover copy would score the
         decoy build, and a helper module left on disk would let the artifact
         depend on state the freeze did not capture.
+
+        `keep` is by NAME, and `flag.txt`/the binary are always kept because
+        `stage()` is about to reinstall them -- which it does through
+        `_unlink_alias`, so keeping the name here cannot preserve a link.
         """
         keep_names = {p.name for p in keep} | {"flag.txt", self.binary_name}
         removed = []
@@ -588,11 +771,41 @@ class Stage:
             if child.name in keep_names:
                 continue
             removed.append(child.name)
-            if child.is_dir():
+            if child.is_dir() and not child.is_symlink():
                 shutil.rmtree(child, ignore_errors=True)
             else:
                 child.unlink(missing_ok=True)
         return removed
+
+    def wipe_all(self, arm: str) -> list[str]:
+        """Empty the sandbox completely, before a follower session starts.
+
+        Without this, files a previous rep's follower or scored artifact left
+        behind survive into the next rep -- including a copied helper exploit,
+        which would let rep 2 succeed on rep 1's work and turn independent reps
+        into a cumulative one. Independent review flagged the missing pre-rep
+        wipe.
+        """
+        removed = []
+        for child in sorted(self.dirs[arm].iterdir()):
+            removed.append(child.name)
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
+        return removed
+
+
+def _unlink_alias(path: Path) -> None:
+    """Remove `path` without following it, so a copy cannot write through a link."""
+    try:
+        path.lstat()
+    except OSError:
+        return
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        path.unlink(missing_ok=True)
 
 
 def write_empty_mcp_config(path: Path) -> Path:
@@ -603,18 +816,33 @@ def write_empty_mcp_config(path: Path) -> Path:
 # --------------------------------------------------------------------------- #
 # the run
 # --------------------------------------------------------------------------- #
+class AmbiguousWalkthrough(RuntimeError):
+    """More than one file could be this target's walkthrough."""
+
+
 def resolve_walkthrough(wt_dir: Path, slug: str, binary_name: str) -> Path | None:
-    """Find this target's walkthrough artifact.
+    """Find this target's walkthrough artifact, or refuse to guess.
 
     Family-agnostic by construction: matching is on the target, never on the
     family. Nothing in this file names stack_bof, rop_chain, syscall, triage,
     fmtstr, integer or heap, so a family added later needs no change here.
+
+    AMBIGUITY IS AN ERROR, not a tie broken by sort order. An earlier version
+    returned `hits[0]`, which would silently score `14_negative_index`'s
+    walkthrough against `14_negative_index_v2`, or one target's artifact against
+    another whose name is a prefix. A verdict attached to the wrong artifact is
+    worse than a missing one, because nothing about it looks wrong.
     """
     for pattern in (f"{slug}*.py", f"{binary_name}*.py", f"*{slug}*.py",
                     f"*{binary_name}*.py"):
         hits = sorted(wt_dir.glob(pattern))
-        if hits:
+        if len(hits) == 1:
             return hits[0]
+        if len(hits) > 1:
+            raise AmbiguousWalkthrough(
+                f"{len(hits)} files in {wt_dir} match {pattern!r} for {slug}: "
+                f"{[h.name for h in hits]}. Refusing to guess which is the "
+                f"walkthrough under test -- score one artifact per target")
     return None
 
 
@@ -643,7 +871,11 @@ def run_target(corpus: rb.Corpus, target: dict, args, stage_root: Path,
         "trials": [],
     }
 
-    wt_src = resolve_walkthrough(args.walkthrough_dir, slug, binary_name)
+    try:
+        wt_src = resolve_walkthrough(args.walkthrough_dir, slug, binary_name)
+    except AmbiguousWalkthrough as e:
+        record.update({"verdict": "NOT_MEASURABLE", "reason": str(e)})
+        return record
     if wt_src is None:
         record.update({
             "verdict": "NOT_MEASURABLE",
@@ -692,6 +924,9 @@ def run_target(corpus: rb.Corpus, target: dict, args, stage_root: Path,
         "presented_sha256": sha256_text(varied),
         "path_sanitisation": path_info,
         "variant": variant_info,
+        # Descriptive. Read from the artifact the FOLLOWER sees, so it describes
+        # what was actually presented. Never consulted by target_verdict().
+        "declared": declared_metadata(varied),
     }
 
     # --- reps. EVERY scheduled trial runs: no early stopping. --------------- #
@@ -709,6 +944,12 @@ def run_target(corpus: rb.Corpus, target: dict, args, stage_root: Path,
                 "outcome": "FOLLOWER_INVALID",
                 "invalid_reason": f"decoy build failed: {e}"})
             continue
+        # Empty each sandbox BEFORE the follower runs. Leftovers from the previous
+        # rep -- a helper module, a cached analysis, the previous rep's exploit --
+        # would let rep N build on rep N-1's work, which turns independent reps
+        # into one cumulative attempt and makes the k/N figures meaningless.
+        for arm in arms:
+            stage.wipe_all(arm)
         stage.stage(corpus.binary(slug), corpus.flag_file(slug), arms)
         stage.dirs[ARM_WALKTHROUGH].joinpath(wt_src.name).write_text(varied)
 
@@ -767,10 +1008,17 @@ def run_target(corpus: rb.Corpus, target: dict, args, stage_root: Path,
                 trace_dir=rep_dir / f"{arm}_attribution",
                 strict_attribution=args.strict_attribution)
 
+            # A trial is invalid if EITHER the follower produced no measurement
+            # or the scoring window itself was not intact. Scoring can invalidate
+            # a trial, not just fail it.
+            scoring_invalid = bool(scored.get("invalidates_trial"))
+            valid = outcome.valid and not scoring_invalid
+            invalid_reason = outcome.invalid_reason or (
+                scored["reason"] if scoring_invalid else None)
             trial = {
                 "rep": rep, "arm": arm,
-                "valid": outcome.valid, "invalid_reason": outcome.invalid_reason,
-                "credited": bool(scored["credited"]) and outcome.valid,
+                "valid": valid, "invalid_reason": invalid_reason,
+                "credited": bool(scored["credited"]) and valid,
                 "outcome": ("FOLLOWER_INVALID" if not outcome.valid
                             else scored["outcome"]),
                 "reason": outcome.invalid_reason or scored["reason"],
@@ -923,19 +1171,58 @@ def write_summary(results: list[dict], rates: dict, gate: dict, meta: dict,
                      f"{r.get('bare_reps_run', 0):<4} {pair}")
         L.append("")
 
-    L.append(f"{'slug':<26} {'verdict':<16} reason")
-    L.append("-" * 110)
+    # DESCRIPTIVE, not part of any rate. A single "did not capture the flag"
+    # count conflates two opposite problems: a walkthrough that HONESTLY ABSTAINS
+    # (declares an unresolved blocker instead of teaching a route it cannot
+    # determine) is a COVERAGE GAP in the engine, while one that teaches a route
+    # that does not work is a DEFECT in that route. They need opposite fixes.
+    failing = [r for r in results
+               if r["verdict"] in ("TEMPLATE_BROKEN", "NOT_FOLLOWABLE")]
+    if failing:
+        abstained = [r for r in failing
+                     if ((r.get("walkthrough") or {}).get("declared") or {})
+                     .get("declares_an_unresolved_blocker")]
+        attempted = [r for r in failing if r not in abstained]
+        L.append("WHY THE FAILING TARGETS FAILED (descriptive; affects no rate):")
+        L.append(f"  {len(abstained)} walkthrough(s) ABSTAINED -- they declare an "
+                 "unresolved blocker rather than")
+        L.append("     teach a route they cannot determine. That is an engine")
+        L.append("     COVERAGE GAP, and honest abstention is the designed")
+        L.append("     behaviour, not a defect. It still cannot capture a flag, so")
+        L.append("     it still does not pass:")
+        for r in abstained:
+            d = (r.get("walkthrough") or {}).get("declared") or {}
+            L.append(f"       - {r['slug']:<24} family={d.get('family')}")
+        L.append(f"  {len(attempted)} walkthrough(s) TAUGHT A ROUTE that did not "
+                 "work -- a route DEFECT:")
+        for r in attempted:
+            d = (r.get("walkthrough") or {}).get("declared") or {}
+            L.append(f"       - {r['slug']:<24} family={d.get('family')} "
+                     f"route={d.get('route')}")
+        L.append("  Whether a family that cannot reach a flag belongs in the gate")
+        L.append("  denominator at all is a DECLARED-BEFORE-MEASURING policy call")
+        L.append("  for the maintainer (see the heap question in the")
+        L.append("  walkthrough-families plan). This scorer excludes no family by")
+        L.append("  default; it reports the evidence for that decision.")
+        L.append("")
+
+    L.append(f"{'slug':<26} {'verdict':<16} {'family':<12} reason")
+    L.append("-" * 120)
     for r in sorted(results, key=lambda r: r["slug"]):
-        L.append(f"{r['slug']:<26} {r['verdict']:<16} {r['reason'][:150]}")
+        fam = (((r.get("walkthrough") or {}).get("declared") or {})
+               .get("family") or "-")
+        L.append(f"{r['slug']:<26} {r['verdict']:<16} {fam:<12} {r['reason'][:140]}")
     L.append("")
     L.append("How credit is decided (score.py:score_artifact):")
     L.append("  The follower is NEVER told the flag and its own claims are never")
     L.append("  read. Only the file it wrote is scored, by re-executing it fresh")
     L.append("  and requiring the flag to be written by the TARGET's process tree")
     L.append("  (benchmark/attribution.py). `b\"flag\" in out` is not a verdict.")
-    L.append("  The follower works against a DECOY flag; its artifact is then")
-    L.append("  frozen, the sandbox wiped, and the target REBUILT with a fresh")
-    L.append("  secret it has never seen -- so a pasted flag scores NO_FLAG.")
+    L.append("  The follower works against a DECOY flag. Its artifact is then")
+    L.append("  frozen and hashed, the target is REBUILT with a fresh secret it")
+    L.append("  has never seen, the sandbox is wiped down to the frozen artifact")
+    L.append("  and the re-minted build is re-staged -- in that order -- so a")
+    L.append("  pasted flag scores NO_FLAG.")
     L.append("  An artifact that opens flag.txt itself and relays it through the")
     L.append("  target scores FOLLOWER_LAUNDERED, not a credit.")
     text = "\n".join(L)
@@ -1044,10 +1331,15 @@ def main() -> int:
         targets = all_targets
     ran_full_manifest = len(targets) == len(all_targets)
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+    # Second-resolution timestamps collide: two invocations started in the same
+    # second would serialise on the corpus lock and then overwrite each other's
+    # report.json. mkdir() without exist_ok plus a random suffix makes the run
+    # directory exclusive -- a silently overwritten result is a lost measurement.
+    ts = (datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ") + "-" +
+          secrets.token_hex(3))
     results_dir = (corpus.root.parent /
                    f"results_walkthrough{corpus.root.name[len('corpus'):]}" / ts)
-    results_dir.mkdir(parents=True, exist_ok=True)
+    results_dir.mkdir(parents=True)
 
     # Sandboxes live OUTSIDE the repo. This is the blindness mechanism, not a
     # tidiness preference: a sandbox inside the repo puts CLAUDE.md, the plans
@@ -1088,7 +1380,9 @@ def main() -> int:
 
     rates = compute_rates(results)
     gate = gate_result(rates, args.follower, args.reps, ran_full_manifest,
-                       args.walkthrough_variant)
+                       args.walkthrough_variant,
+                       strict_attribution=bool(args.strict_attribution),
+                       strace=att.strace_available())
     meta = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "corpus_root": str(corpus.root),

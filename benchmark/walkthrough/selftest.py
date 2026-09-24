@@ -4,8 +4,8 @@ A validation step that cannot fail is worse than none, and this project has foun
 four of them. So "the scorer can return a NEGATIVE verdict" is a runnable,
 committed test rather than a claim in a docstring.
 
-THREE LAYERS, because any one of them alone is passable by a broken scorer
--------------------------------------------------------------------------
+FOUR LAYERS, because any one of them alone is passable by a broken scorer
+------------------------------------------------------------------------
 1. ARTIFACT layer. Score one good and five deliberately-broken artifacts against
    a real build of `02_ret2plt_system` and assert each verdict.
 
@@ -28,11 +28,22 @@ THREE LAYERS, because any one of them alone is passable by a broken scorer
    must agree on the same artifact, because `witness()` was refactored to delegate
    to `witness_argv()` and `run_bench.py`'s behaviour must be unchanged.
 
+4. END-TO-END layer. Layers 1-3 leave the machinery that actually protects the
+   measurement untested: decoy-then-remint, the per-rep wipe, the two-arm pairing
+   and the asymmetric validity rule live in `run_target`, not in
+   `score_artifact`. So `run_target` is driven directly with a follower scripted
+   in this file -- positive control, UNINFORMATIVE, a follower that hardcodes the
+   flag it was shown, and an invalid bare trial. The scripted follower is
+   installed by replacing `score.build_follower` for the duration; there is
+   deliberately NO test hook in the product, because "the scorer ran with a stub
+   follower" must not be a reachable state of a real measurement.
+
 Exit codes
 ----------
   0  every control behaved as required
   1  a control gave the WRONG verdict -- a defect in the scorer
-  2  could not measure: unbuilt corpus, no strace, or the positive control failed
+  2  could not measure: unbuilt corpus, no strace, or EITHER positive control
+     (the artifact one or the end-to-end one) failed
 """
 from __future__ import annotations
 
@@ -45,7 +56,8 @@ from pathlib import Path
 import attribution as att
 import run_bench as rb
 
-from followers import ARM_BARE, ARM_WALKTHROUGH, follower_env, redact_to_prose
+from followers import (ARM_BARE, ARM_WALKTHROUGH, ARTIFACT_NAME,
+                       FollowerOutcome, follower_env, redact_to_prose)
 from score import (REPO_ROOT, Stage, compute_rates, gate_result, score_artifact,
                    target_verdict)
 
@@ -63,6 +75,8 @@ ARTIFACT_CASES: list[tuple[str, set[str], bool]] = [
     ("broken_launders_flag_file.py", {"FOLLOWER_LAUNDERED"}, False),
     ("broken_stale_secret.py", {"NO_FLAG"}, False),
     ("broken_scrape_no_target.py", {"FOLLOWER_LAUNDERED", "FOLLOWER_GAMED"}, False),
+    ("broken_overwrites_target.py",
+     {"SCORING_WINDOW_TAMPERED", "FOLLOWER_LAUNDERED"}, False),
 ]
 
 
@@ -198,6 +212,186 @@ def check_arithmetic() -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
+# layer 4: the whole instrument, end to end
+# --------------------------------------------------------------------------- #
+# Layers 1-3 score artifacts and arithmetic DIRECTLY, which leaves the part of
+# the scorer that actually protects the measurement untested: the decoy-then-
+# remint cycle, the per-rep wipe, the two-arm pairing and the asymmetric validity
+# rule all live in `run_target`, not in `score_artifact`. So drive `run_target`
+# itself with a scripted follower.
+#
+# The scripted follower is defined HERE, in the test, and installed by replacing
+# `score.build_follower` for the duration. There is deliberately no hook, flag or
+# env var in the product for this: a test seam in `score.py` would be a seam an
+# operator could reach, and "the scorer was run with a stub follower" must not be
+# a reachable state of a real measurement.
+class _ScriptedFollower:
+    """A follower whose behaviour per arm is fixed in advance.
+
+    `plan` maps an arm to one of:
+      a fixture filename  -- copy that fixture in as the artifact
+      "scrape"            -- read flag.txt now and hardcode what it says
+      "nothing"           -- produce no artifact at all
+      "invalid"           -- ran, but produced NO measurement (crashed follower)
+    """
+
+    kind = "scripted"
+
+    def __init__(self, plan: dict[str, str]):
+        self.plan = plan
+        self.arms = tuple(a for a in (ARM_WALKTHROUGH, ARM_BARE) if a in plan)
+        # What the follower SAW while it worked, so the test can prove the
+        # scored secret was not that.
+        self.observed: dict[str, str] = {}
+
+    def run(self, arm: str, workdir: Path, binary: Path,
+            walkthrough: Path | None) -> FollowerOutcome:
+        step = self.plan[arm]
+        out = FollowerOutcome(kind=self.kind, arm=arm, workdir=workdir,
+                              argv=["<scripted>"], artifact=None, ran=True,
+                              elapsed_sec=0.0, prompt=f"scripted:{step}")
+        if step == "invalid":
+            out.valid = False
+            out.invalid_reason = ("scripted: the follower CLI died without "
+                                  "completing, so this trial measured nothing")
+            return out
+        if step == "nothing":
+            return out
+        dest = workdir / ARTIFACT_NAME
+        if step == "scrape":
+            # Exactly the cheat decoy-then-remint exists to defeat: read the
+            # live flag while the session is open and paste it in.
+            seen = (workdir / "flag.txt").read_text().strip()
+            self.observed[arm] = seen
+            dest.write_text("#!/usr/bin/env python3\n"
+                            f"print({seen!r})\n")
+        else:
+            shutil.copy2(FIXTURES / step, dest)
+        out.artifact = dest
+        return out
+
+
+class _E2EArgs:
+    """The subset of the CLI namespace `run_target` reads."""
+
+    def __init__(self, walkthrough_dir: Path, timeout: float):
+        self.follower = "scripted"
+        self.tier = None
+        self.walkthrough_dir = walkthrough_dir
+        self.walkthrough_variant = "verbatim"
+        self.reps = 1
+        self.timeout = timeout
+        self.strict_attribution = False
+
+
+# (label, plan, expected verdict, what it proves)
+E2E_CASES: list[tuple[str, dict[str, str], str, str]] = [
+    # POSITIVE CONTROL FIRST, same rule as layer 1: if the instrument cannot
+    # reach FOLLOWABLE at all, every negative below is a false pass.
+    ("positive: wt solves, bare does not",
+     {ARM_WALKTHROUGH: "good_reference.py", ARM_BARE: "broken_wrong_offset.py"},
+     "FOLLOWABLE",
+     "credit is reachable end to end, through the real remint cycle"),
+    ("necessity: both arms solve",
+     {ARM_WALKTHROUGH: "good_reference.py", ARM_BARE: "good_reference.py"},
+     "UNINFORMATIVE",
+     "a target the bare arm also solves leaves the walkthrough denominator"),
+    ("remint: follower hardcodes the flag it was shown",
+     {ARM_WALKTHROUGH: "scrape", ARM_BARE: "broken_wrong_offset.py"},
+     "NOT_FOLLOWABLE",
+     "the secret the artifact is scored against is not the one the follower saw"),
+    ("validity: the BARE trial measured nothing",
+     {ARM_WALKTHROUGH: "good_reference.py", ARM_BARE: "invalid"},
+     "NOT_MEASURABLE",
+     "an unmeasured bare arm does not read as 'the bare arm failed'"),
+]
+
+
+def check_end_to_end(corpus: rb.Corpus, args, stage_root: Path) -> list[str]:
+    """Drive `run_target` with scripted followers. Returns failures.
+
+    A non-empty first element means the POSITIVE CONTROL failed and nothing
+    below it can be trusted; the caller reports NOT MEASURABLE.
+    """
+    import score as sc
+
+    fails: list[str] = []
+    wt_dir = stage_root / "e2e-walkthroughs"
+    wt_dir.mkdir(parents=True, exist_ok=True)
+    # A walkthrough must exist for `run_target` to proceed. Its CONTENTS are
+    # irrelevant to these cases -- the scripted follower decides the artifact --
+    # but it must survive sanitisation, so it carries the binary path the way a
+    # generated walkthrough does.
+    (wt_dir / f"{SELFTEST_SLUG}_walkthrough.py").write_text(
+        "#!/usr/bin/env python3\n"
+        '"""scripted-follower stand-in walkthrough."""\n'
+        "# family: selftest\n"
+        f'BINARY = "{stage_root / "e2e" / "arm-walkthrough" / SELFTEST_SLUG}/'
+        f'{rb.Corpus.binary_name(SELFTEST_SLUG)}"\n'
+        "OFFSET = 72\n")
+
+    target = next(t for t in corpus.targets() if t["slug"] == SELFTEST_SLUG)
+    e2e_args = _E2EArgs(wt_dir, args.timeout)
+    real_build = sc.build_follower
+    for index, (label, plan, want, proves) in enumerate(E2E_CASES):
+        follower = _ScriptedFollower(plan)
+        sc.build_follower = lambda *a, **k: follower  # noqa: B023 -- per case
+        try:
+            rec = sc.run_target(corpus, target, e2e_args,
+                                stage_root / "e2e" / f"case{index}",
+                                stage_root / "e2e-results" / f"case{index}",
+                                stage_root / "empty-mcp.json")
+        except Exception as e:  # noqa: BLE001
+            sc.build_follower = real_build
+            fails.append(f"e2e[{label}]: run_target itself raised "
+                         f"{type(e).__name__}: {e}")
+            if index == 0:
+                return fails
+            continue
+        finally:
+            sc.build_follower = real_build
+
+        got = rec.get("verdict")
+        ok = got == want
+        print(f"  {'OK  ' if ok else 'FAIL'} {label:<44} -> {got:<16} "
+              f"(wanted {want})")
+        if not ok:
+            print(f"       {rec.get('reason', '')[:180]}")
+            fails.append(f"e2e[{label}]: verdict {got}, wanted {want}")
+            if index == 0:
+                return fails
+        else:
+            print(f"       proves: {proves}")
+
+        # The remint case carries one extra, load-bearing assertion: the flag
+        # the follower READ must not be the flag the artifact was SCORED against.
+        # Without this, the case could pass merely because `print()` is not the
+        # target writing, which is a different control.
+        if plan.get(ARM_WALKTHROUGH) == "scrape":
+            seen = follower.observed.get(ARM_WALKTHROUGH)
+            trials = [t for t in rec.get("trials", [])
+                      if t.get("arm") == ARM_WALKTHROUGH]
+            if not trials:
+                fails.append("e2e[remint]: no walkthrough trial was recorded")
+            for t in trials:
+                if t.get("decoy_flag") != seen:
+                    fails.append(
+                        "e2e[remint]: the follower read "
+                        f"{seen!r} but the recorded decoy was "
+                        f"{t.get('decoy_flag')!r} -- the run is not reporting "
+                        "what the follower was actually shown")
+                if t.get("scored_flag") == seen:
+                    fails.append(
+                        "e2e[remint]: the artifact was scored against the SAME "
+                        "secret the follower was shown, so decoy-then-remint "
+                        "is not running and a pasted flag would be credited")
+                else:
+                    print(f"       proves: scored against {t['scored_flag'][:12]}"
+                          f"..., follower saw {str(seen)[:12]}...")
+    return fails
+
+
+# --------------------------------------------------------------------------- #
 # layer 1 + 3: real artifacts against a real build
 # --------------------------------------------------------------------------- #
 def run(args) -> int:
@@ -280,12 +474,32 @@ def run(args) -> int:
         diff_ok = _check_witness_differential(corpus, stage, stage_root,
                                               args.timeout)
 
+        # layer 4: the whole instrument, through run_target.
+        print("\n[end-to-end] run_target with scripted followers "
+              "(remint, pairing, validity):")
+        e2e_fails = check_end_to_end(corpus, args, stage_root)
+        if e2e_fails and e2e_fails[0].startswith("e2e[positive"):
+            print("\n[end-to-end] NOT MEASURABLE: the END-TO-END POSITIVE "
+                  "CONTROL failed.")
+            print(f"  {e2e_fails[0]}")
+            print("  run_target cannot reach FOLLOWABLE even when the")
+            print("  walkthrough arm is handed a verified exploit and the bare")
+            print("  arm a broken one, so every negative verdict it produces")
+            print("  would be a false pass. Fix the harness before trusting a")
+            print("  measurement.")
+            return 2
+
     bad = [r for r in results if not r[2]]
     print()
     print("=" * 70)
     print(f"artifact layer : {len(results) - len(bad)}/{len(results)} correct")
     print(f"arithmetic     : {'PASS' if not arith_fails else 'FAIL'}")
     print(f"differential   : {'PASS' if diff_ok else 'FAIL'}")
+    print(f"end-to-end     : "
+          f"{'PASS' if not e2e_fails else f'{len(e2e_fails)} FAILURE(S)'} "
+          f"({len(E2E_CASES)} cases through run_target)")
+    for f in e2e_fails:
+        print(f"    FAIL {f}")
     credited = [r for r in results if r[3]]
     refused = [r for r in results if not r[3] and r[2]]
     print()
@@ -294,7 +508,7 @@ def run(args) -> int:
           f"broken ones.")
     print("A scorer that had never returned a negative verdict would not be a "
           "scorer; this one has, on the record above.")
-    if bad or arith_fails or not diff_ok:
+    if bad or arith_fails or not diff_ok or e2e_fails:
         print("\nSELFTEST FAILED -- do not trust a measurement from this scorer "
               "until the failures above are fixed.")
         return 1

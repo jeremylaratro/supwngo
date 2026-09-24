@@ -108,6 +108,19 @@ from pathlib import Path
 # appear when multiplexing onto stderr).
 _LINE = re.compile(r"^(\d+)\s+(.*)$")
 _EXECVE_OK = re.compile(r'execve(?:at)?\("([^"]*)"')
+# A successful execve is `... ) = 0`; a failure is `... ) = -1 ERRNO (text)`.
+#
+# This used to be a DENYLIST -- "record the exec unless the line mentions ENOENT
+# or EACCES" -- which silently recorded every OTHER failure mode as a successful
+# exec: E2BIG, ENOEXEC, EPERM, ELOOP, ETXTBSY. That is a false-credit channel, not
+# just untidiness: a process that merely ATTEMPTS to exec the target (say with an
+# oversized argv, guaranteeing E2BIG) would be recorded as having become the
+# target, and every later write in its subtree would be credited to the target's
+# lineage. Independent review of the walkthrough scorer found it.
+#
+# An ALLOWLIST is the only safe shape here, and it is a strict tightening: it can
+# only ever remove exec events, so it cannot turn a real failure into a success.
+_EXECVE_SUCCEEDED = re.compile(r"\)\s*=\s*0\s*$")
 _SPAWN = re.compile(r"(?:clone3?|vfork|fork)\(.*?\)\s*=\s*(\d+)\s*$")
 _WRITE = re.compile(r'write\(\d+,\s*"(.*)"(?:\.\.\.)?,\s*\d+\)')
 
@@ -252,7 +265,7 @@ def parse_trace(trace_path: Path, cwd: Path) -> ProcessTree:
             # silently either -- it simply matches nothing below.
             rest = head + r.group(2) if head is not None else rest
 
-        if "ENOENT" not in rest and "EACCES" not in rest:
+        if _EXECVE_SUCCEEDED.search(rest):
             e = _EXECVE_OK.search(rest)
             if e:
                 exec_events.setdefault(pid, []).append((seq, _resolve(e.group(1), cwd)))
