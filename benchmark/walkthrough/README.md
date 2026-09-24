@@ -107,6 +107,48 @@ Accepted up front, as the spec requires: **a strong follower makes easy targets
 uninformative and shrinks the denominator.** Every uninformative slug is named in
 the summary. A denominator of 15 must not be assumed.
 
+### The floor under the denominator
+
+A gate verdict is also withheld when the **informative** denominator is below
+`MIN_INFORMATIVE_TARGETS = 7`. 7 is *derived*, not chosen: at n=7 a single
+target cannot decide the gate (6/7 = 85.7% still clears 85%), at n=6 it can
+(5/6 = 83.3%). Below the floor the run reports `NOT MEASURABLE` rather than a
+PASS or FAIL that one flipped target produced. `--selftest` asserts the floor
+fires at n=2 **and** does not fire at n=8, so it cannot degrade into a blocker
+that always trips.
+
+This is not hypothetical. Measured on round-1 the bare Tier-3 follower captured
+the flag on **both** `hard` targets at 2/2, while the engine ships a working
+template for only 5 of 15 — none harder than the SROP the bare arm beat unaided.
+`{walkthrough works} ∩ {bare fails}` is plausibly empty. The tier argument, the
+two rejected alternatives, and what would flip them:
+`docs/plans/2026-09-24-walkthrough-follower-tier-decision.md`.
+
+The summary prints both denominators side by side on purpose: "85% of the targets
+where a walkthrough **could possibly** have mattered" and "85% of the 15 targets"
+are different claims, and quoting the first as the second overstates the result
+by exactly the targets the follower solved unaided.
+
+### Why the bare arm is never bounded to rescue the denominator
+
+Tightening the *bare* arm's budget or tools would raise `FOLLOWABLE` on demand:
+the bare allowance becomes a dial wired straight to the headline number, and the
+arms stop being the same follower, which is the only property that licenses
+attributing an outcome difference to the walkthrough. (Web access is already
+denied in **both** arms for the same reason.)
+
+`--affordance {shell,read-only}` is the symmetric alternative. The profile is a
+field of the shared `AgentTier`, so it cannot be applied to one arm:
+
+| profile | tools | models |
+| --- | --- | --- |
+| `shell` (default) | `Bash Read Write Edit Glob Grep` | a researcher with a toolchain **and a test loop** |
+| `read-only` | `Read Write Edit Glob Grep` | a reader who must get it right from the text |
+
+`read-only` removes the iterate-and-test loop rather than the budget — the bare
+`09_srop` transcript ends "Reliable across 3 runs". Every recorded figure in this
+repository used `shell`; `read-only` is **unmeasured**.
+
 ## The two followers measure different things
 
 | follower | measures | deterministic | can produce a gate figure? |
