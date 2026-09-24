@@ -566,6 +566,37 @@ reliability figure so a shrunken denominator cannot pass unnoticed. A single-rep
 run reports no reliability rather than a misleading `1/1`, a `VOID` settles a
 target instead of being re-rolled (the controls are deterministic), and each rep
 gets its own results directory so an intermittent target's evidence survives.
+The `OVERALL` headline itself states that the rate is best-of-N and splits the
+successes into fully-reliable versus intermittent, because the headline is the
+number that gets quoted and a disclosure further down the file does not travel
+with it.
+
+#### What 5 reps actually bought on this corpus: nothing, and that is the finding
+
+Measured, so it is worth stating plainly rather than assuming the feature paid
+for itself:
+
+| | `--reps 1` | `--reps 5` |
+|---|---|---|
+| solved | 1/13 | **1/13** |
+| intermittent targets | (not measurable) | **0** |
+| wall clock | ~4 min | ~21 min |
+
+`15_win_function` is 5/5; the other twelve are 0/5. **No target flaked**, so reps
+changed the score by nothing and cost 5x.
+
+That is still worth having, for two reasons. It converts "1/13, possibly an
+unlucky roll" into "1/13, and the twelve failures reproduce 5/5" — a materially
+stronger claim, and the cheapest available defence against quoting a number that
+one bad roll produced. And the reason nothing flaked here is that twelve targets
+fail *before* delivery: there is no working exploit to race. Delivery races can
+only bite once exploits start working, so reps become **more** load-bearing as
+capability rises, not less — which is precisely the regime the next three corpora
+are meant to enter.
+
+Recommendation for the other corpora: keep N=5 while a score is being driven
+upwards, and treat any target whose `reliability` is not `N/N` as a delivery bug
+to fix rather than a capability result to report.
 
 ## Residual limitation (superseded in part — read the section above first)
 
