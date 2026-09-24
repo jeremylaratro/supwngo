@@ -492,6 +492,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subdirectory so an intermittent target's evidence is not overwritten.
 
 ### Fixed
+- **A first `import pwn` under an in-memory stdout permanently broke pwntools for
+  the rest of the process, silently collapsing walkthrough families to `triage`**
+  (new root `conftest.py`). `pwnlib/term/text.py` calls `curses.setupterm()` at
+  module scope, guarded only by `except curses.error` — which does not catch the
+  `io.UnsupportedOperation: fileno` raised when `sys.stdout` has no file
+  descriptor, as under `click.testing.CliRunner`. The aborted import evicts the
+  half-built `pwnlib` from `sys.modules` but leaves every submodule it had already
+  finished (`pwnlib.context`, `pwnlib.term`, …) cached, so each later `import pwn`
+  builds a *fresh, empty* `pwnlib` whose submodules are never rebound — and since
+  `pwnlib/__init__.py` itself binds only `version` and `args`, the
+  `from pwnlib import *` on line 22 of `pwn/toplevel.py` raises
+  `AttributeError: module 'pwnlib' has no attribute 'context'` from then on.
+  `Binary._load_with_pwntools` catches that broadly and reports the binary as
+  having no symbols, so `rop_chain` abstains and every target needing a ROP
+  technique reports `triage`. The engine was correct throughout; ten walkthrough
+  tests failed for this reason alone, and the failure was order-dependent, which
+  made it look like cross-session interference. The harness now sets
+  `PWNLIB_NOTERM` (which short-circuits the `curses` call) at conftest *import*
+  time — before collection, and therefore before anything can import `pwn`. It
+  also gives each session its own `XDG_CACHE_HOME`, so concurrent sessions stop
+  sharing pwntools' non-atomic, `eval`-parsed ROP gadget cache. Measured:
+  `pytest tests/ -k walkthrough` went from 10 failed / 6 pwntools load failures to
+  358 passed / 0, and two concurrent sweeps now agree exactly.
 - **`benchmark/soundness_probes/drive.py` never exercised behavioural
   attribution, so the tool that validates the harness could not fail.** It called
   `classify()` without the `attribution=` argument that `run_one()` always
