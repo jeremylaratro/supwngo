@@ -89,6 +89,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   address rather than inside the buffer — shellcode that lands in the buffer is corrupted
   by its own `push` instructions once `rsp` is pointing into it — and sweeps NOP-sled
   sizes, landing mid-sled for slack.
+- **Phase 5 — `ret2libc_leak` technique executor**
+  (`executors/rop_techniques.py`): the two-stage GOT-leak ret2libc the Phase-1
+  baseline's `ret2libc` executor only *described*. Three details keep it general
+  rather than target-shaped: the leak target is the output function's own GOT slot
+  (calling `puts@plt` with `rdi = &got[puts]` prints puts' real address even under
+  lazy binding, because the PLT stub resolves the slot before the callee
+  dereferences `rdi`, so no reasoning about which imports are already resolved is
+  needed); the re-entry point for stage two is *derived* by `functions_calling()`,
+  which finds the function containing the overflowing read from objdump's
+  symbol-delimited disassembly; and a PIE image base is recovered by
+  `pie_base_offset()`, which identifies which symbol a printed code pointer belongs
+  to using the only invariant available — a PIE load base is page-aligned — instead
+  of assuming the target leaked any particular function. The same page-alignment
+  test then validates the libc leak, which is what makes the leak locatable without
+  depending on the target's prompts or on libc landing in a particular range.
 - `benchmark/fixtures/positive-controls/` — two supwngo-generated exploit scripts that
   genuinely obtain an interactive shell (`01_shellcode_stack`, `02_ret2plt_system`), checked
   in unmodified as positive controls for changes to `run_bench.py`. Six corpus binaries
@@ -111,6 +126,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `shellcode_techniques.py` places it past the return address and uses a leaked one. Both
   replacements verify by re-running the generated script, so neither can report success on
   an output substring match.
+- **Phase 5 — the template-only `ret2libc` executor**
+  (`pipeline/executors/stack_techniques.py`). It never built a chain: it returned
+  PARTIAL with a one-line prose description of the technique and a failure reason
+  pointing at an unimplemented leak-acquisition stage. `rop_techniques.
+  Ret2LibcLeakExecutor` now performs exactly those steps for real.
 
 ### Changed
 - **Phase 5 — attempt ordering** (`pipeline/orchestrator.py`): `StrategySuggester` ranked
@@ -425,6 +445,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rebuilds the targets with a fresh secret flag, two concurrent runs over one
   corpus would clobber each other's binaries and `flag.txt` files and produce
   spurious `FAILED`s rather than an obvious crash.
+- **Phase 5 — our own timeout-kill was being counted as a target crash**
+  (`pipeline/delivery.py`). `deliver_parts()` read the exit status *after*
+  `io.close()`, which kills a process that is still running, so every probe against
+  a target that loops for more input (`while (1) { vuln(); }`) came back
+  `crashed=True` with `rc=-9`. Crash-threshold offset discovery therefore returned
+  the smallest length it tried — 8 — on every such target, and the resulting chains
+  failed in a way that looks exactly like having picked the wrong technique. The
+  status is now read before closing, and only genuine fault signals
+  (`SIGSEGV`/`SIGBUS`/`SIGILL`/`SIGFPE`/`SIGABRT`/`SIGTRAP`/`SIGSYS`, not `SIGKILL`)
+  count as a crash, with a short reap window so a fault that has not yet been
+  reaped is not misread as "still running".
+- **Phase 5 — the measured offset is now treated as a candidate, not an answer**
+  (`executors/_shared.py:resolve_offsets()`). The crash threshold lands on the first
+  byte of whatever follows the buffer, and whether the return address is 8 bytes
+  further on depends on details not visible from outside (frame pointer, padding,
+  whether the probe's trailing newline overflows). Measured against targets with
+  independently known-correct offsets the probe is right most of the time, 8 off
+  otherwise, and on some targets not even deterministic between runs. Executors now
+  sweep the measurement and its 8-byte neighbours; because each candidate is proven
+  by re-running the generated script, a wrong one costs one cheap run instead of
+  being misdiagnosed as a wrong technique.
 - **Phase 5 — generated exploit scripts are now portable.** The script hardcoded the
   target's absolute path as it was at generation time, so the artifact broke as soon as it
   was copied anywhere (handed to a teammate, checked in as a fixture). It now falls back to
