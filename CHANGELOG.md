@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Benchmark harness — per-invocation `duration_sec` on both pipeline wrappers**
+  (`benchmark/run_bench.py`, `run_one()`). `elapsed_sec` on a target's report spans TWO
+  full `autopwn` invocations (the `--json` self-report probe and the `-o` script-generation
+  run), so it could not answer "how long did the pipeline actually take" versus "how much
+  was harness overhead" without attributing a whole second pipeline run to overhead. Both
+  `autopwn_json_probe` and `autopwn_script_generation` in `report.json` now carry their own
+  additive `duration_sec`, wall-clock around just that invocation. Read-only addition: no
+  verification, attribution, or cheat-detection logic changed.
 - **Phase 5 (reliability hardening) — stdio-safe multi-part payload delivery**
   (`supwngo/exploit/pipeline/delivery.py`). Every native executor previously delivered
   its payload as a *single* write (`subprocess.run(input=blob)` / one `sendline`), which

@@ -913,14 +913,18 @@ def run_one(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
     control = negative_control(corpus, slug, expected_flag, timeout, tmpdir=tmpdir)
 
     # (1) structured self-report
+    t_probe0 = time.time()
     rc1, out1, err1, to1 = run_supwngo(bp, timeout, ["--json"], tmpdir=tmpdir)
+    probe_duration = time.time() - t_probe0
     supwngo_json = parse_json_result(out1) if out1 else None
 
     # (2) the actual generated script (only written in non-JSON mode -- see
     #     module docstring)
     script_path = results_dir / f"{slug}_generated.py"
+    t_scriptgen0 = time.time()
     rc2, out2, err2, to2 = run_supwngo(bp, timeout, ["-o", str(script_path)],
                                        tmpdir=tmpdir)
+    script_generation_duration = time.time() - t_scriptgen0
 
     # (3) genuine independent verification
     script_audit = inspect_generated_script(script_path, expected_flag)
@@ -963,12 +967,14 @@ def run_one(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
         "autopwn_json_probe": {
             "returncode": rc1,
             "wall_timed_out": to1,
+            "duration_sec": round(probe_duration, 3),
             "parsed": supwngo_json,
             "stderr_tail": (err1 or "")[-1500:],
         },
         "autopwn_script_generation": {
             "returncode": rc2,
             "wall_timed_out": to2,
+            "duration_sec": round(script_generation_duration, 3),
             "stderr_tail": (err2 or "")[-1500:],
         },
         "verification": verify,
