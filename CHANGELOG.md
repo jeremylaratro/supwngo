@@ -355,6 +355,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `tests/test_walkthrough_fmtstr.py` (44 tests; no `b"flag" in out` self-scoring
     — verdicts are differentials against a benign run and a same-length control
     payload that reads instead of writing).
+- Two cross-family invariants for walkthrough route selection, enforced as tests
+  rather than left to review. `registry.generate_walkthrough` selects with `max()`,
+  which keeps the **first** maximum, so two routes sharing a score make the winner
+  depend on position in `registry._families()` — and a family added later can then
+  capture a target from an existing family with no code in either one changing.
+  Both second-wave families hit this and both found it by hand (`integer` raised
+  0.88/0.90 to 0.96/0.97 off ties with SROP and ret2shellcode; `fmtstr` raised its
+  read route off 0.90 and its GOT route off 0.80, two ties invisible on its own
+  targets).
+  - `tests/test_walkthrough_scores.py` (11 tests) enumerates every `Route` score in
+    every family with `ast` — not by calling `propose()`, so it needs no binaries,
+    sees branches no corpus target exercises (`rop_chain`'s `0.95 if has_rdi else
+    0.35` contributes both arms), and cannot be satisfied by a family that merely
+    declines to propose during the run. A score expression it cannot enumerate is
+    an error, not a skip. Also asserts `triage` stays the floor, that `0.0` (the
+    "not on the table" convention, and the one value allowed to repeat) is never
+    applicable, and records the whole cross-family ordering so a local edit cannot
+    move one family past another unnoticed.
+  - `tests/test_walkthrough_route_sweep.py` (30 tests) checks all 15 round-1 corpus
+    targets at once, which is the only way to see a new family quietly outscoring
+    an existing one on a target belonging to neither: it is invisible in a diff,
+    in the new family's tests (they only check the targets it means to win) and in
+    the old family's tests (which still pass — the family still proposes, it just
+    stops winning). Asserts the winning family, the route within families owning
+    more than one, and that the winner is a *strict* maximum. Runs with
+    `probe=True` deliberately: that is the default for `supwngo explain` and the
+    only mode in which the measuring families can speak.
+  - See `docs/plans/2026-09-24-walkthrough-families-consolidation.md` for the full
+    17-route ordering with its justification, the 15-target sweep result, and the
+    13 mutations run against these two modules (11 red; the 2 green ones were
+    verified inert — `fmtstr` abstains entirely on the integer targets, and
+    `stack_bof` returns one route per binary — and both are caught by the other
+    module).
 - `supwngo explain BINARY` — new CLI command that emits a walkthrough without running
   the exploitation pipeline (`-o/--output`, `--family`, `--offset`, `--no-probe`,
   `--libc`, `--remote`, `--markdown`, `--json`), and `supwngo solve --walkthrough`,
