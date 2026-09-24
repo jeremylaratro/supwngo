@@ -18,6 +18,15 @@ first round had already named.**
 | --- | --- | --- | --- |
 | step-3 primitive acquisition | B1: specified a capability that already exists (`comparison_immediates()` already recovered the constant, as candidate #1) | BLOCKING 1: the flagship gate specifies a capability that already exists — *the same function* | **yes** |
 | instrumentation pass | B1: I4's carrier (`AttemptRecord`) is not in scope at 7 of 9 call sites | m: the replacement carrier (`context`) is not in scope at 4 of 9 sites, including both sites the proof mandates | **yes** |
+
+**First evidence the rule works.** Told to enumerate all 9 sites *before* choosing a
+third carrier, the author found `context` reaches only 4 of 9 — and abandoned the
+carrier approach entirely, instrumenting the single chokepoint where the value is
+already computed. Zero call-site changes, zero signature changes, no site out of
+scope, and the risk rating fell. The enumeration also corrected a round-1 table entry
+(a call site sits in a nested closure with neither `self` nor `context`). One sweep
+run up front closed a class that had already cost two rounds and would have cost a
+third.
 | schema v4 (code) | — | 7 of 9 HIGHs were *invisible* to the property suite because each property held the defective dimension constant | (single code round) |
 
 The mechanism is mechanical: **reviews report instances, revisions fix instances, so
@@ -118,6 +127,30 @@ Disagreement is welcome and has twice been correct this session — a reviewer's
 `objdump` finding was withdrawn after the author showed the call was a
 `logger.debug()`, and a "risky migration" turned out to *remove* a redundant spawn.
 Push back with evidence; do not accept a finding you can refute.
+
+## 5.1 Implementer reports are not evidence
+
+Implementation runs on a cheaper model than planning and review. Its **self-reports
+about test outcomes must be re-run by whoever owns the gate**, never relayed.
+
+Measured instance: under an always-pass stub of a new gate function, a Sonnet
+implementer reported **5 of 9 tests red**. Seven were red. It also characterised the
+suite's positive control as not asserting `.ok` — it does. Both errors ran in the
+**safe direction**, which is exactly why they would survive a casual check: an
+under-reported red count reads as a weaker gate rather than a broken one, and nothing
+about it looks alarming.
+
+So, per implemented item, the owner personally:
+
+- re-runs the mutation and reports **their own** count, not the implementer's;
+- verifies scope independently — which files actually changed, against the base
+  commit — rather than accepting "only these files were touched";
+- restores the tree afterwards and confirms it is clean.
+
+The same asymmetry applies to any delegated verification: a report of a *negative*
+result (nothing broke, nothing found, fewer failures than expected) is the cheapest
+possible thing for a delegate to produce by accident, and it is the direction the
+whole repo's defect history runs in.
 
 ## 6. Round budget and the tripwire
 
