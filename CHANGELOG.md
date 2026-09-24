@@ -84,3 +84,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-overlapping dependency sets (`claripy`/`unicorn`/`lief` were only in
   `requirements.txt`; `networkx`/`pyyaml` were only in `pyproject.toml`). `pyproject.toml`'s
   `[project.dependencies]` is now the canonical list; `requirements.txt` mirrors it.
+
+### Fixed
+- `supwngo/exploit/auto_leak.py`'s `AutoLeakFinder`'s puts/GOT leak path (the
+  `PUTS_GOT` branch of `auto_leak_libc`) was a bare `pass` stub — it recognized the
+  leak opportunity but never built or sent a chain. It now builds and sends a real
+  `pop rdi; ret` -> `GOT[sym]` -> `puts@plt` chain (and a 3-register
+  `write(1, GOT[sym], 8)` chain for the previously also-silently-ignored `WRITE_GOT`
+  case), parses the leaked pointer with a zero-pad-not-truncate fix (`puts()` only
+  NULs the trailing/high bytes of a little-endian-packed pointer, so the standard
+  technique is to zero-pad up to pointer width rather than treat a short read as a
+  parse failure), and resolves the exact libc base via the target's own libc ELF
+  symbol table when `context.libc.path` is known (falling back to page-alignment
+  otherwise). New helper methods: `_leak_via_got_rop`, `_find_gadget_addr`,
+  `_resolve_libc_symbol_offset`, `_parse_leaked_pointer`. Verified end-to-end
+  against a real compiled no-PIE/no-canary binary and the host's real libc — the
+  resolved base matched `/proc/<pid>/maps` ground truth exactly across multiple
+  ASLR-randomized runs. Part of Phase 3 of
+  `docs/plans/2026-09-23-effectiveness-and-usability.md`.
+- `AutoLeakFinder.identify_leaked_value`'s libc-address range check
+  (`0x7f0000000000`-`0x7f7fffffffff`) assumed an older, narrower ASLR entropy
+  layout. On modern kernels (observed directly during this repair's benchmark
+  spot-check — Ubuntu 22.04's default `mmap_rnd_bits`) a genuine libc leak can
+  legitimately come back with an address outside that narrow range, causing a
+  correct leak to be silently rejected as "not libc". Widened to the whole
+  high-mmap region below the already-checked stack range
+  (`0x700000000000`-`0x7ffdffffffff`) — found and fixed as a direct blocker of the
+  `_leak_via_got_rop` repair above, not a speculative change.
