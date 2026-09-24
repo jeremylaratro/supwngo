@@ -1451,6 +1451,21 @@ interrupt and concurrent writers; and packaging (schema loads via
 
 ## Risks
 
+- **`merge` is O(n) in the store and therefore O(n²) to build a document.**
+  Validating I1–I7 before *and* after every write is what closes round-2
+  finding 4, and it is the right default for a reference implementation whose
+  job is to be obviously correct. It is **not** the right cost for bulk
+  loading, so Phase 2 owes a `load()` that appends a validated batch and
+  checks the invariants **once** at the end, with the same
+  snapshot/rollback boundary. Named here rather than discovered later: the
+  fix is a second entry point, not a weakening of `merge`.
+- **The in-process store is not a security boundary.** A caller holding a
+  `FactStore` can append to `resolutions[]` as easily as it can call
+  `pin()`. What is enforced is that any such record must be well formed,
+  uniquely sequenced and **attributed** (I7, checked on write *and* when
+  `current_pins` folds), and that the *document* — the actual trust
+  boundary — is validated on both sides. A capability model inside one
+  process would be theatre.
 - **The resolver is now the spec, so resolver review quality is the
   project's risk.** Mitigated by the mutation meta-test (a reviewer can
   check that each historical defect is represented) and by the generated
