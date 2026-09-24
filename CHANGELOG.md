@@ -43,6 +43,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `system()` path was gated on "requires a real libc-base leak" even when no libc base
   is needed at all. Tries both stack parities, since glibc's `do_system` executes a
   `movaps` that faults unless RSP is 16-byte aligned at the call.
+- **Phase 5 — `int_truncation_bypass` and `negative_index_write` technique executors**
+  (`supwngo/exploit/pipeline/executors/input_shape_techniques.py`), for bugs driven by the
+  target's numeric input shape. `int_truncation_bypass` replaces what
+  `negative_size_bypass` was attempting: it measures the return-address offset against
+  *the same* input sequence the exploit uses (a negative length first, then the overflow,
+  delivered as separate parts) instead of guessing from five hardcoded offsets, and proves
+  the result by re-running the generated script rather than accepting an output substring
+  match that also counted the bare word `"win"`. `negative_index_write` handles an array
+  index that is only bounds-checked upwards, sweeping both the element distance and the
+  gate constant. Both work on statically linked targets: `has_scanf()` checks the symbol
+  table as well as the PLT, since a static binary has an empty PLT but still carries
+  `__isoc99_scanf`.
+- **Phase 5 — gate constants are now read out of the target's own code**
+  (`comparison_immediates()`): a "flip this variable to the magic value" bug is only
+  exploitable if you know the value, and the executors previously guessed from a
+  hardcoded list of nine CTF-folklore constants. The constants are in the binary's own
+  `cmp`/`test` instructions, so they are extracted from `objdump` output (most-plausible
+  first) with the old list kept only as a fallback.
 - `docs/plans/2026-09-23-phase5-reliability-hardening.md` — the Phase 5 plan, recording
   the five root causes found before any fix was written (single-blob delivery,
   payload-only verification, attempt ordering, label-driven leak parsing, missing
