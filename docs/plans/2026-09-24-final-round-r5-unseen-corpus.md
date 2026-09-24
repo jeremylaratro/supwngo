@@ -27,6 +27,29 @@ Tier definitions are inherited from `benchmark/corpus.yaml` and must stay
 comparable across rounds — a tier is defined by the mitigation set and the number
 of chained primitives required, not by how hard the generator found it to write.
 
+### Stratify by primitive depth, not only by difficulty tier
+
+R2's cold measurement (4/15) showed the difficulty labels are **nearly uncorrelated
+with pipeline outcome**: easy 2/5, medium 1/6, hard 1/4 — with a `hard` ret2csu
+chain credited at 5/5 while an `easy` shellcode-on-writable-stack target produced a
+stub in all 5 reps. Mitigations did not separate the groups either; 7 of the 11
+failures were also no-PIE/no-canary.
+
+What did predict the outcome was **primitive depth** — how many primitives must be
+acquired and chained *before* the final redirect. All four R2 wins were the same
+shape: control the return address, then jump to an address already known. Every
+failure required acquiring something first (a leak to defeat PIE, a canary
+disclosure, a format-string write, heap metadata control, an OOB index).
+
+So a 5/5/5 split by human-intuition difficulty does not control the variable that
+actually drives the result, and a round balanced only that way can shift several
+points on tier composition alone. R5 must **record primitive depth per target** and
+balance on it as well, so the figure is decomposable into "reached the redirect" and
+"had to acquire a primitive first." Without that, an R5 miss cannot be attributed.
+
+This is a finding about the measurement instrument, not about one round, and it
+applies to any future corpus.
+
 ## Problem 1 (BLOCKING): there is no walkthrough scorer
 
 `benchmark/` contains **zero** references to walkthroughs. The autopwn number has
