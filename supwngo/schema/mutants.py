@@ -436,5 +436,11 @@ MUTANTS: Dict[str, Mutant] = {
                {"maximal": _maximal_takes_first}),
         Mutant("staleness_ignores_dead_sources", "v3's four mechanisms", "P17",
                {"is_stale": _is_stale_ignores_dead_sources}),
+        Mutant("id_digest_omits_generation", "round-2 finding 2", "P1",
+               {"ID_DIGEST_FIELDS": tuple(f for f in R.ID_DIGEST_FIELDS
+                                          if f != "generation")},
+               note="the shipped defect itself: retract then re-merge and the "
+                    "live and terminal siblings collide on one id, so the "
+                    "re-observation cannot be stored at all"),
     ]
 }

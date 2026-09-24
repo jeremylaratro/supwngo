@@ -182,7 +182,17 @@ def prop_P1_merge_totality_and_semantics() -> None:
             expected = {R.dedup_key(c) for c in s.active(KEY)}
             expected |= {R.dedup_key(R.validate_candidate(incoming))}
 
-            decision = R.merge(s, incoming)
+            # A `SchemaError` on a **valid** candidate is a violation of merge
+            # totality, not a crash, so it is diagnosed here rather than
+            # escaping. (This is how the store-invariant rollback reports an
+            # id collision: the write is refused, and the property says why.)
+            try:
+                decision = R.merge(s, incoming)
+            except R.SchemaError as exc:
+                raise AssertionError(
+                    f"merge refused a valid candidate: {exc}. Store held "
+                    f"{[c.id for c in s.all_candidates()]}"
+                ) from exc
             assert decision in R.MergeDecision, decision
 
             got = {R.dedup_key(c) for c in s.active(KEY)}
@@ -195,6 +205,43 @@ def prop_P1_merge_totality_and_semantics() -> None:
                 assert now is not None, f"merge removed {cid}"
                 assert now.state is st, f"merge changed state of {cid}: {st} -> {now.state}"
             n += 1
+    # Round-2 finding 2, as a named regression: the two-operation sequence that
+    # produced a terminal and a live candidate sharing **one id**, which then
+    # broke by_id, pins, dependency lookup, the conflict record and ordering at
+    # once.  Asserted directly, because the enumeration above would report it
+    # only as a confusing dedup-key mismatch.
+    s = R.FactStore()
+    R.merge(s, raw())
+    original = s.active(KEY)[0]
+    R.retract(s, original.id, "t0", "measured against the wrong build", "operator")
+    try:
+        decision = R.merge(s, raw(at="t2"))
+    except R.SchemaError as exc:
+        # Without `generation` the collision makes the store violate I6, so the
+        # write is rolled back and the re-observation cannot be stored **at
+        # all**.  Reported as this property failing, with the diagnosis, rather
+        # than as the test crashing.
+        raise AssertionError(
+            f"a re-observation after a retraction could not be stored: {exc}. "
+            "The live and terminal siblings collide on one id unless the id "
+            "digest distinguishes them."
+        ) from exc
+    assert decision is R.MergeDecision.APPENDED
+    live = s.active(KEY)
+    assert len(live) == 1, "a re-observation after a retraction must be live"
+    assert live[0].id != original.id, (
+        "the live candidate shares its id with its retracted sibling; one "
+        "ambiguous id breaks by_id, pins, dependency lookup and array ordering"
+    )
+    assert live[0].generation == original.generation + 1
+    assert R.dedup_key(live[0]) == R.dedup_key(original), (
+        "generation must stay out of the dedup key, or a re-observation would "
+        "stop folding into its active sibling"
+    )
+    assert len({c.id for c in s.candidates(KEY)}) == 2
+    R.validate_store(s)
+    assert any(c.cls is R.ConflictClass.REOBSERVED_AFTER_RETRACTION
+               for c in s.conflicts), "the operator was not told"
     _count("P1 (store, incoming) pairs", n)
 
 

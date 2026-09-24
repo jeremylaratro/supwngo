@@ -1211,7 +1211,7 @@ finding 1: a plan describing a reference implementation is still prose):
 - `docs/reference/context-resolution-tables.md` (new; **generated** by
   `python -m supwngo.schema.resolve --emit-tables`, never hand-edited).
 - `tests/test_context_resolve_properties.py` (new; 21 properties — P1, P1b,
-  P2–P5, P5b, P6–P19 — plus 28 mutants, the mutation meta-test, the
+  P2–P5, P5b, P6–P19 — plus 29 mutants, the mutation meta-test, the
   every-property-has-a-mutant meta-test and the generated-table byte gate).
 
 **Phase 2 — the document:**
@@ -1312,7 +1312,7 @@ P12 registry keys               9      P13 conflict pairs            84
 P14 orders                      2      P15 generated cells           90
 P16 pin records checked         7      P17 dependency depth           3
 P18 equal-specificity           3      P19 cross-identity pairs       1
-mutants bound to a property    26      mutants that must pass         2
+mutants bound to a property    27      mutants that must pass         2
 ```
 
 ### The mutation meta-test — this is not optional
@@ -1321,7 +1321,7 @@ This project has five recorded instances of a validation step that could
 not fail (including a probe driver that omitted the argument it was
 validating, and a test asserting `min(a, b) == expected`). Round-1 finding 11
 found the same disease in rev 1's own mutant list: four of eight mutants
-would **not** have failed the property they were bound to. Each of the 28
+would **not** have failed the property they were bound to. Each of the 29
 mutants below is bound to a **semantic** property, and the meta-test asserts
 *that named property* fails — not merely that something failed.
 
@@ -1385,6 +1385,7 @@ each a real defect in the test suite rather than in the resolver:
 | `resolve_always_refuses` | round-2 finding 12 | **P6** | total and deterministic, therefore passes a codomain check *and* an order-independence check — which is precisely why P6 now has to require the successes |
 | `maximal_takes_first` | sort-and-take-first selection | **P7** | takes the first candidate in *bucket* order, making a maximal-element selection order-dependent |
 | `staleness_ignores_dead_sources` | v3's four mechanisms | **P17** | checks the digest but not the source's state, so a retracted source leaves its dependents looking fresh |
+| `id_digest_omits_generation` | round-2 finding 2 | **P1** | the shipped defect itself: retract then re-merge, the live and terminal siblings collide on one id, I6 refuses the write and the re-observation cannot be stored at all — which P1 reports as a totality violation rather than letting it escape as a crash |
 
 The meta-test **fails if a mutant passes its bound property**. The mutant
 list is the artifact a reviewer diffs: every entry is a defect this plan, an
