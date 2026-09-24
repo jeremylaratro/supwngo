@@ -2715,9 +2715,12 @@ def _emit_walkthrough(
     else:
         console.print("\n[dim]Every value in it was measured or derived.[/dim]")
 
-    console.print(
-        f"\n[dim]Start with:  python3 {output_path} steps[/dim]"
-    )
+    # A Markdown render is not runnable, so telling the reader to `python3` it
+    # would be the first instruction in the artifact that does not work.
+    if markdown:
+        console.print("\n[dim]Read it, then regenerate without --markdown to run it.[/dim]")
+    else:
+        console.print(f"\n[dim]Start with:  python3 {output_path} steps[/dim]")
     return output_path
 
 
