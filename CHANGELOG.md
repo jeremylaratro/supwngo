@@ -58,6 +58,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was a confirmed false-positive channel, not a hypothetical: with the real
   ret2plt chain and an `echo` of a Python-read flag, write-attribution alone reports
   `credited … the target exec'd a shell`.
+- **Walkthrough scorer — the gate refuses to state a verdict on a denominator too
+  small to support one** (`MIN_INFORMATIVE_TARGETS = 7`). The necessity control's
+  cost, accepted up front, is that every target the bare follower solves unaided
+  leaves the denominator as `UNINFORMATIVE`. Measured on round-1 this is not a
+  trimmed tail: the bare Tier-3 follower captured the flag on both `hard` targets
+  (`08_ret2dlresolve`, `09_srop`) in 2/2 reps, while the engine ships a working
+  template for only 5 of 15 targets, none harder than the SROP the bare arm beat
+  unaided — so `{walkthrough works} ∩ {bare fails}` is plausibly *empty*. An 85%
+  threshold over two targets is not a measurement, so the gate now blocks below
+  seven informative targets and reports `NOT MEASURABLE`. Seven is derived, not
+  chosen: at n=7 one target cannot decide the gate (6/7 = 85.7% still passes), at
+  n=6 it can (5/6 = 83.3%). `--selftest` asserts the floor fires at n=2 *and* does
+  not fire at n=8, so it cannot degrade into a blocker that always trips. The
+  summary now also spells out both denominators side by side, because "85% of the
+  targets where a walkthrough could possibly have mattered" and "85% of the 15
+  targets" are different claims and a reader must not be able to mistake one for
+  the other. Reasoning, the two rejected alternatives (a weaker follower tier; a
+  bounded bare arm) and what would flip the decision:
+  `docs/plans/2026-09-24-walkthrough-follower-tier-decision.md`.
+- `--affordance {shell,read-only}` for the walkthrough follower
+  (`benchmark/walkthrough/followers.py`). Bounding the *bare* arm's budget or tools
+  to rescue the denominator is the one fix that must not be made: the bare
+  allowance would become a dial wired straight to the headline number, and the arms
+  would stop being the same follower, which is the only property that licenses
+  attributing an outcome difference to the walkthrough. The affordance profile is
+  therefore a property of the shared tier object and cannot be applied to one arm —
+  `read-only` withdraws `Bash` from **both** arms, removing the test-and-iterate
+  loop (the bare `09_srop` transcript ends "Reliable across 3 runs") rather than
+  the budget. Default stays `shell`, which is what every recorded figure used;
+  `read-only` is committed **unmeasured** so the tier question can be settled by
+  measurement instead of argument, and is recorded as such.
 - **Phase 5 (reliability hardening) — stdio-safe multi-part payload delivery**
   (`supwngo/exploit/pipeline/delivery.py`). Every native executor previously delivered
   its payload as a *single* write (`subprocess.run(input=blob)` / one `sendline`), which

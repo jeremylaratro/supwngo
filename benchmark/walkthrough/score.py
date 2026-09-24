@@ -141,7 +141,7 @@ import attribution as att                          # noqa: E402
 
 sys.path.insert(0, str(HERE))
 from followers import (  # noqa: E402
-    ARM_BARE, ARM_WALKTHROUGH, ARTIFACT_NAME, FOLLOWER_KINDS,
+    AFFORDANCES, ARM_BARE, ARM_WALKTHROUGH, ARTIFACT_NAME, FOLLOWER_KINDS,
     WALKTHROUGH_VARIANTS, AgentTier, FollowerError, apply_variant,
     build_follower, follower_env, sanitize_walkthrough)
 
@@ -636,6 +636,25 @@ def compute_rates(results: list[dict]) -> dict:
 
 MIN_GATE_REPS = 2
 
+# The smallest informative denominator on which an 85% threshold means anything.
+#
+# DERIVED, not chosen, because a floor picked for convenience is a knob on the
+# headline number. With n informative targets the achievable rates are k/n, so a
+# single target's outcome moves the rate by 1/n. At n = 7: 7/7 = 100.0% and
+# 6/7 = 85.7%, so one flip still passes and it takes two to fail. At n = 6:
+# 6/6 = 100.0% but 5/6 = 83.3%, so ONE target's outcome flips a perfect score to
+# a failure. n = 7 is therefore the smallest denominator on which one target
+# cannot single-handedly decide the gate.
+#
+# This exists because of a measured problem, not a hypothetical one: with a
+# Tier-3 follower that has a shell and can iterate, the bare arm solved
+# 02/04/08/09 -- including the two hardest round-1 targets -- so nearly every
+# target is UNINFORMATIVE and the informative denominator collapses. An 85% gate
+# over a denominator of 2 measures nothing, and both PASS and FAIL would be
+# unrelated to walkthrough quality. NOT MEASURABLE is the honest third answer,
+# and the scorer must give it rather than emit a figure.
+MIN_INFORMATIVE_TARGETS = 7
+
 
 def gate_result(rates: dict, kind: str, reps: int, ran_full_manifest: bool,
                 variant: str, strict_attribution: bool = True,
@@ -676,6 +695,23 @@ def gate_result(rates: dict, kind: str, reps: int, ran_full_manifest: bool,
             "and re-run, as the R5 spec requires")
     if rates["rate_strict"] is None:
         blockers.append("no eligible targets")
+    # The necessity control can succeed so thoroughly that there is nothing left
+    # to measure. A strong follower solves easy targets bare -- and, measured,
+    # solves the hard ones bare too -- so UNINFORMATIVE eats the denominator. On
+    # a denominator this small neither PASS nor FAIL is about the walkthroughs.
+    if rates["informative"] < MIN_INFORMATIVE_TARGETS:
+        blockers.append(
+            f"only {rates['informative']} target(s) are INFORMATIVE (the "
+            f"walkthrough arm could have mattered), below the declared minimum "
+            f"of {MIN_INFORMATIVE_TARGETS}. On a denominator that small one "
+            f"target's outcome decides the gate, so neither PASS nor FAIL would "
+            f"be a statement about walkthrough quality. "
+            f"{rates['counts'].get('UNINFORMATIVE', 0)} target(s) are "
+            f"UNINFORMATIVE: the bare follower solved them unaided, which means "
+            f"the follower tier is doing the measuring, not the walkthrough. "
+            f"Lower the follower's affordances SYMMETRICALLY in both arms, or "
+            f"change the measure -- do not shrink the bare arm alone, which "
+            f"would make this number tunable")
     if variant != "verbatim":
         blockers.append(
             f"walkthrough variant is {variant!r}; the gate is defined on the "
@@ -1099,6 +1135,29 @@ def write_summary(results: list[dict], rates: dict, gate: dict, meta: dict,
         L.append(f"  {rates['excluded_from_informative']} target(s) "
                  f"({rates['excluded_share_of_eligible'] * 100:.1f}% of eligible) "
                  "leave the informative denominator.")
+        L.append("")
+        L.append("  THE TWO CLAIMS ARE NOT THE SAME CLAIM. Read the denominator:")
+        L.append(f"    rate_informative is '{f} of the {rates['informative']} "
+                 "target(s) where a walkthrough")
+        L.append("      COULD POSSIBLY have mattered' -- i.e. where the bare")
+        L.append("      follower failed, so the walkthrough had something to add.")
+        L.append(f"    rate_strict is '{f} of the {rates['eligible']} eligible "
+                 "target(s)', full stop.")
+        L.append("  Quoting the first as if it were the second overstates the")
+        L.append("  result by exactly the targets the follower solved unaided.")
+        if rates["informative"] < MIN_INFORMATIVE_TARGETS:
+            L.append("")
+            L.append(f"  !! INFORMATIVE DENOMINATOR = {rates['informative']}, "
+                     f"below the declared minimum of {MIN_INFORMATIVE_TARGETS}.")
+            L.append("     One target's outcome would decide the gate, so no gate")
+            L.append("     verdict is stated. This is the NECESSITY CONTROL")
+            L.append("     SUCCEEDING TOO WELL, not a fault: the bare follower")
+            L.append("     solved the targets unaided, so the follower tier is")
+            L.append("     doing the measuring rather than the walkthrough.")
+            L.append("     The fix is a SYMMETRIC reduction of the follower's")
+            L.append("     affordances in BOTH arms, or a different measure.")
+            L.append("     Shrinking the bare arm alone would make this number")
+            L.append("     tunable, which is worse than not measuring it.")
         if rates["informative_rate_withheld"]:
             L.append("  !! rate_informative is WITHHELD as a gate result: more than")
             L.append(f"     {rates['max_excluded_share'] * 100:.0f}% of the "
@@ -1276,6 +1335,15 @@ def build_argparser() -> argparse.ArgumentParser:
                          "follower raises both arms and makes more targets "
                          "UNINFORMATIVE. Figures from different tiers are not "
                          "comparable.")
+    ap.add_argument("--affordance", choices=sorted(AFFORDANCES), default="shell",
+                    help="What the follower can do, applied SYMMETRICALLY to "
+                         "both arms. shell: Bash, so it can run and test the "
+                         "binary -- an unaided RESEARCHER, which measured 4/4 "
+                         "bare solves on round-1 and collapsed the walkthrough "
+                         "denominator. read-only: no Bash, so it must write the "
+                         "exploit from reading alone -- closer to the READER a "
+                         "walkthrough is written for. Never bound one arm alone: "
+                         "that makes the headline number a dial.")
     ap.add_argument("--effort", default=None)
     ap.add_argument("--budget-usd", type=float, default=2.0)
     ap.add_argument("--follower-timeout", type=float, default=900.0)
@@ -1309,7 +1377,9 @@ def main() -> int:
         return 2
     args.tier = AgentTier(model=args.model, effort=args.effort,
                           budget_usd=args.budget_usd,
-                          wall_timeout_sec=args.follower_timeout)
+                          wall_timeout_sec=args.follower_timeout,
+                          affordance=args.affordance,
+                          allowed_tools=AFFORDANCES[args.affordance])
 
     corpus = rb.Corpus(root=args.corpus_root.resolve(),
                        manifest=args.manifest.resolve())

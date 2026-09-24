@@ -452,10 +452,14 @@ class AgentTier:
     denied_tools: tuple[str, ...] = ("WebFetch", "WebSearch", "Task")
     budget_usd: float = 2.0
     wall_timeout_sec: float = 900.0
+    # Which affordance profile the tools above came from, recorded so a report
+    # states it rather than leaving it to be inferred from the tool list.
+    affordance: str = "shell"
 
     def to_dict(self) -> dict:
         return {
             "model_requested": self.model,
+            "affordance": self.affordance,
             # Stated limitation: `sonnet` is a MUTABLE ALIAS. This harness cannot
             # resolve it to an immutable identifier, so two runs months apart may
             # have used different weights under the same label. Prompts and
@@ -470,6 +474,32 @@ class AgentTier:
             "wall_timeout_sec": self.wall_timeout_sec,
             "cli": _claude_version(),
         }
+
+
+# Affordance profiles. SYMMETRIC BY CONSTRUCTION: the tier is shared by both
+# arms, so selecting a profile cannot tighten one arm and not the other.
+#
+# Why this exists. Measured on round-1: with `shell`, the bare follower solved
+# 02, 04, 08 and 09 unaided -- including both `hard` targets -- so nearly every
+# target came out UNINFORMATIVE and the walkthrough denominator collapsed. The
+# obvious-looking fix, bounding the BARE arm's budget or tools, is the one thing
+# that must not be done: the bare arm's allowance would then be a dial wired
+# directly to the headline number, and the arms would stop being the same
+# follower, which is the property that makes the comparison mean anything.
+#
+# `read-only` reduces BOTH arms instead. Without Bash the follower cannot run the
+# binary, cannot run objdump/checksec/ROPgadget, and cannot test what it writes:
+# it must produce the exploit from reading alone. That is much closer to the
+# audience a teaching walkthrough is written for than an unaided researcher with
+# a full toolchain and a test loop.
+#
+# UNMEASURED AT TIME OF WRITING. It is offered so the choice can be settled by
+# measurement rather than argument; no figure in this repository was produced
+# with it. See docs/plans/2026-09-24-walkthrough-follower-tier-decision.md.
+AFFORDANCES: dict[str, tuple[str, ...]] = {
+    "shell": ("Bash", "Read", "Write", "Edit", "Glob", "Grep"),
+    "read-only": ("Read", "Write", "Edit", "Glob", "Grep"),
+}
 
 
 def _claude_version() -> str:

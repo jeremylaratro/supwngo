@@ -218,6 +218,23 @@ def check_arithmetic() -> list[str]:
     expect("reps at the minimum -> a gate is still stated",
            gate_result(full, "agent", 2, True, "verbatim")["gate"], "PASS")
 
+    # --- the informative-denominator floor -------------------------------- #
+    # The measured failure mode: a Tier-3 follower with a shell solved
+    # 02/04/08/09 bare, including the two hardest round-1 targets, so almost
+    # everything is UNINFORMATIVE. An 85% gate over a denominator of 2 is not a
+    # measurement, and BOTH pass and fail would be unrelated to the walkthroughs.
+    thin = compute_rates(res(*(["FOLLOWABLE"] * 2 + ["UNINFORMATIVE"] * 8)))
+    expect("informative denominator of 2 -> no gate",
+           gate_result(thin, "agent", 3, True, "verbatim")["gate"], None)
+    expect("...and it is the DENOMINATOR that blocks it, not the rate",
+           any("INFORMATIVE" in b for b in
+               gate_result(thin, "agent", 3, True, "verbatim")["blockers"]), True)
+    # The floor must not block a run that legitimately has enough targets, or it
+    # would be a blocker that always fires -- useless in the other direction.
+    wide = compute_rates(res(*(["FOLLOWABLE"] * 7 + ["NOT_FOLLOWABLE"] * 1)))
+    expect("informative denominator of 8 -> a gate IS stated",
+           gate_result(wide, "agent", 3, True, "verbatim")["gate"], "PASS")
+
     # --- the prose redaction actually removes the answer ------------------- #
     sample = ("# teaching line\nOFFSET = 72\n"
               "p = process(BINARY)\np.send(b'A' * OFFSET)\n")
