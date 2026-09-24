@@ -56,6 +56,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subdirectory so an intermittent target's evidence is not overwritten.
 
 ### Fixed
+- **`benchmark/soundness_probes/drive.py` never exercised behavioural
+  attribution, so the tool that validates the harness could not fail.** It called
+  `classify()` without the `attribution=` argument that `run_one()` always
+  passes, testing a code path the harness does not use. It reported "no holes"
+  while the single most important check was absent — false assurance, which is
+  worse than no test. It also still branched on a `WEAK ATTRIBUTION` marker that
+  behavioural attribution had superseded, so once that string disappeared the
+  driver began reporting a spurious `*** FALSE POSITIVE -- NEW HOLE ***` for
+  `pure_python_scrape.py` on `15_win_function`. **The harness itself was never
+  affected:** driven through the real path that probe is `VOID`
+  /`script_gamed_the_check` with `credited_writers: []` in both default and
+  strict mode. The driver now witnesses and classifies exactly as `run_one()`
+  does, checks **both** default and strict (rejection only under strict would
+  mean a default run is scoreable by a script that never exploited anything),
+  prints the attribution chains as the load-bearing evidence, exits non-zero on
+  any failure, and refuses to claim anything about false negatives when no
+  genuine-exploit probe was run.
 - **`benchmark/run_bench.py` recorded only one rep's secret flag, making the
   other reps' verdicts unfalsifiable.** Every rep rebuilds the target with a
   fresh secret, but the rep-aggregated record can carry only one of them, so for
