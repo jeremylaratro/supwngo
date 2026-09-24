@@ -572,6 +572,15 @@ all on the other.
 > values go into structured fields and `to_dict()` only. None may enter `record.notes`, or
 > any other text rendered by `templates.py`, or any per-rep artifact.**
 
+Now repo protocol at `2794965`: *additive is not inert wherever the artifact containing the
+field is compared across runs, reps or hosts*, and the invariant is **stated** rather than
+left to hold accidentally. The reason that generalisation was warranted is that on I3 the
+invariant **held only by luck** — I had bound provenance to a structured field for an
+unrelated reason (a gate cannot assert prose) and never stated the condition for I2 at all.
+A claim that is true by accident is indistinguishable from one true by design right up until
+someone changes the unrelated reason. Two rounds of independent review did not find this; one
+class sweep did.
+
 **Gate for Class 2, red-provable:** after the instruments land, `rep_divergence.py` must
 still report **15/15 deterministic, 0 divergent** on the R2 re-run. Prove it can go red by
 deliberately writing a duration into `notes` on one executor and confirming divergence is
@@ -605,6 +614,53 @@ present in a real `report.json`, not merely on an in-memory record (M6).
 
 ---
 
+## 5.2 Leg coverage: what the diagnostic re-run can and cannot exercise
+
+**Pre-registered before the re-run is executed, deliberately.** A re-run that cannot reach a
+proof leg is *silent* about it, and in this project silence has read as confirmation more than
+once. This table fixes, in advance, which legs a green re-run may be claimed to support.
+
+Two structural facts drive it. First, **I1 and I4 land at steps 5 and 6, after the re-run at
+step 3** — so the re-run exercises neither, at all. Second, the per-technique × per-outcome
+census (§4.4) shows which legs have any natural subject.
+
+| instrument leg | subject | does the re-run exercise it? |
+|---|---|---|
+| **I2** per-attempt duration | naturally occurring — every attempt | **Yes, fully** |
+| **I2** prologue timing (`orchestrator.py:186-188`) | naturally occurring — every target | **Yes, fully** |
+| **I2b** both `duration_sec` fields | naturally occurring — every target | **Yes, fully** |
+| **I3** field serialises through `to_dict()` | naturally occurring | **Yes** — but see below |
+| **I3** provenance *populated* on a win | **no natural subject** — `variable_overwrite` wins 0 of 17 | **No.** Fixtures A/B only |
+| **I5** leg 1, sweep exhausts | naturally occurring — 12 FAILED | **Yes** |
+| **I5** leg 2, `except Exception` path | **no natural subject** — `scanf_canary_bypass` 12 SKIPPED, 0 else | **No.** Needs an induced fixture |
+| **I5** leg 3, `_test_scanf_bypass() → False` | **no natural subject** — same reason | **No.** Needs an induced fixture |
+| **I1** all legs | — | **No — I1 has not landed at re-run time** |
+| **I1** raise vs non-match | **no natural subject** — `ERROR` occurs 0 times in either run | **No, ever.** Induced only |
+| **I4** all legs | — | **No — I4 has not landed at re-run time** |
+| **I4** spawn-failure third state (`delivery.py:183-190`) | **no natural subject** — `ERROR` 0 occurrences | **No, ever.** Induced only |
+
+**Two consequences to honour when the re-run is written up:**
+
+1. **I3 will record `null` provenance on every target in the re-run, and that is the correct
+   result.** `variable_overwrite` never wins on either corpus. It confirms only that the field
+   serialises — it is *not* evidence that provenance works, and it is *not* evidence that it is
+   broken. The only evidence either way is Fixtures A and B.
+2. **A green re-run supports 5 of the 13 legs above.** It is silent on 8. The write-up states
+   which legs were exercised and which could not be, rather than reporting a figure and letting
+   coverage be inferred.
+
+**Outstanding, and explicitly not blocking the R5 measurement precondition:** I5's legs 2 and 3
+need an induced fixture (a canary + `scanf` target that actually reaches
+`ScanfCanaryBypassExecutor`), and I1's and I4's raise/spawn-failure legs need induced faults.
+These are tracked here so a later reader does not mistake their absence for coverage.
+
+**Assessment withdrawn:** I called I5 "the best of the five" and "a genuine positive control".
+That rested on leg 3, which has no subject on any existing target. The claim was overstated in
+the same direction as everything else this protocol exists to catch, and it is corrected here
+rather than left standing in §4.
+
+---
+
 ## 6. Sequencing — gate first, then the safe instruments, then the risky ones
 
 Reordered per the review. The previous order ran I1 conversions against a count-only gate,
@@ -621,7 +677,12 @@ which is the configuration that let the rev-2 error through.
    `duration_sec` fields** (M11) before row 2 is claimed settled, and **I3 ships with
    Fixture A and Fixture B** (M10) before §7's R5 precondition is treated as met.
 3. **Instrumented R1 + R2 re-run** — `--reps 5 --jobs 8 --timeout 20`, the diagnostic
-   baseline.
+   baseline. **HELD.** Blocked on the shared-pwntools-cache fix: two concurrent pytest
+   sessions in this repo corrupt each other via `~/.cache/.pwntools-cache-3.11`, so a re-run
+   collected now is indistinguishable from a corrupted one. Released only once the fix is
+   proven against two concurrent suites. Coverage is pre-registered in §5.2 — the re-run
+   exercises 5 of 13 proof legs and is silent on 8, including the whole of I1 and I4, which
+   have not landed at this point in the order.
 4. **Re-derive the failure table from artifacts.** Every row becomes *recorded*; no row may
    be *inferred* from a target source (rule 2a). Unexplained rows stay unexplained. This
    alone settles row 6 and most of row 4's motivation.
