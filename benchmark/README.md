@@ -184,3 +184,34 @@ baseline numbers against this branch's `supwngo autopwn`. Results are
 timestamped and gitignored (reproducible from the corpus + this harness, like
 the binaries themselves), so they are not committed as static files here —
 re-run the harness to reproduce.
+
+As of this branch (`feat/benchmark-corpus-20260923`, rebased onto
+`integration/phases-0-4-7-20260923` -- Phase 0 import baseline, Phase 2
+consolidated pipeline, Phase 3 repaired leak/Z3/tester modules, Phase 4
+structured hand-off, Phase 6 `solve` command + the `verify_payload()`
+interactive-shell-verification fix, all present), a real run against
+`autopwn` with `--timeout 12` produced:
+
+```
+OVERALL: 2/15 SUCCESS (13.3%), 0 PARTIAL, 13 FAILED
+  easy:   2/5 SUCCESS (13_off_by_one, 15_win_function)
+  medium: 0/7 SUCCESS
+  hard:   0/3 SUCCESS
+```
+
+autopwn's own self-report agreed with independent verification on all 15
+targets (0 PARTIAL) -- the 13 FAILED targets were not cases where the tool
+claimed success and the flag just didn't reproduce; autopwn itself reported
+`success: false` for all 13. Spot-checking two targets with the new `solve`
+command (a thin wrapper over the same `CanonicalAutopwnEngine`) reached the
+same verified result in both cases: `SUCCESS`/`FLAG_CAPTURED` on
+`15_win_function` (and it wrote a working, independently-replayable script
+to `solve_output/<binary>_exploit.py` by default, confirmed by re-running it
+fresh), and the same `FAILED` outcome on `02_ret2plt_system` -- notably,
+`solve`'s structured hand-off shows *why*: its `ret2libc` strategy is
+gated on having "a real libc-base leak", even though `02_ret2plt_system`
+doesn't need one at all (`system@plt` and a `"/bin/sh"` string already exist
+in the binary -- see its `corpus.yaml` entry). That's a real, specific gap
+in the tool's current strategy set, not a benchmark artifact: the
+consolidated pipeline doesn't yet recognize the "call system@plt directly,
+no leak needed" case that ret2plt-style targets exercise.

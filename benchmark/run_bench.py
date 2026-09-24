@@ -117,10 +117,12 @@ def run_supwngo(binary_abs: Path, timeout: float, extra_args: list[str]):
         sys.executable, "-m", "supwngo.cli", "autopwn", str(binary_abs),
         "--timeout", str(timeout),
     ] + extra_args
-    # autopwn tries up to ~7 techniques, each bounded by --timeout; give it
-    # generous wall-clock room beyond that before we consider the CLI
+    # The consolidated pipeline (post Phase 2/3) tries up to ~11 techniques,
+    # each individually bounded by --timeout, plus static/dynamic analysis
+    # overhead (angr/Z3 wiring can be slow on PIE targets); give it generous
+    # wall-clock room beyond the worst-case sum before considering the CLI
     # invocation itself hung.
-    wall_timeout = max(60.0, timeout * 10 + 30)
+    wall_timeout = max(120.0, timeout * 15 + 60)
     try:
         proc = subprocess.run(
             cmd, cwd=str(REPO_ROOT), env=env,
@@ -128,8 +130,16 @@ def run_supwngo(binary_abs: Path, timeout: float, extra_args: list[str]):
         )
         return proc.returncode, proc.stdout, proc.stderr, False
     except subprocess.TimeoutExpired as e:
-        out = e.stdout or ""
-        err = e.stderr or ""
+        # Quirk: subprocess.run() re-raises the TimeoutExpired from
+        # Popen.communicate() as-is, without applying `text=True`'s decoding
+        # step -- e.stdout/e.stderr are bytes here even though a successful
+        # (non-timing-out) run() call above would have given us str.
+        out = e.stdout or b""
+        err = e.stderr or b""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", "replace")
+        if isinstance(err, bytes):
+            err = err.decode("utf-8", "replace")
         return None, out, err, True
 
 
