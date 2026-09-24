@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `supwngo/exploit/verification.py`'s `ExploitVerifier.verify_payload()` only fell back to
+  real interactive (pwntools-based) shell verification when the initial `subprocess.run()`
+  raised `TimeoutExpired`. A shell spawned via `system()`/`execve()` given piped,
+  non-interactive stdin (exactly what `subprocess.run(input=payload)` provides) reads EOF
+  and exits immediately rather than hanging — it never times out, so the interactive
+  verification path was dead for the single most common case (any technique that lands a
+  shell via `system("/bin/sh")`, e.g. ret2win, ret2system). Found via a manual end-to-end
+  smoke test against a trivial ret2win target: the exploit payload was independently
+  confirmed correct (spawned a real shell when replayed by hand), but `autopwn` reported
+  FAILED because `verify_output()`'s passive string-pattern check has nothing to match
+  against a piped shell that only ever saw an immediately-closed stdin. Now retries via
+  the interactive path whenever the fast passive check didn't already succeed, not only on
+  timeout. This was blocking correct verification for what should be the benchmark corpus's
+  easiest target and would have silently deflated every ret2win/ret2system-class success
+  in Phase 1's benchmark numbers. Found and fixed during integration-branch smoke-testing,
+  ahead of Phase 5/6/1-benchmark work.
+
 ### Added
 - `supwngo/exploit/pipeline/handoff.py` — a structured, actionable
   hand-off report (`HandoffReport`) built when `CanonicalAutopwnEngine`
