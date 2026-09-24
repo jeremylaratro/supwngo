@@ -123,6 +123,24 @@ measurement run, not after.
 R5 is the last item. It runs after R2, R3, R4 and after the walkthrough second
 wave (heap / format-string / integer families are currently guided triage only) —
 a walkthrough gate cannot be measured on families the engine does not yet cover.
+See `2026-09-24-walkthrough-families-fmtstr-heap-integer.md`.
+
+### Heap is scoped to detection, which the 85% gate cannot score
+
+The second-wave directive sets heap at **detection minimum**, not full 0-to-pwn.
+A detection-only walkthrough cannot pass blind-follower scoring by construction:
+it does not reach a flag, so the follower captures nothing. With an even 5/5/5
+split and heap the canonical hard family, heap targets would otherwise drag the
+walkthrough figure below 85% for a reason unrelated to walkthrough quality.
+
+Resolve before generating R5 — recommendation is (1):
+
+1. Heap targets leave the walkthrough-gate denominator and are reported separately
+   against a **detection-quality** criterion (primitive, allocator, reachability
+   correctly identified).
+2. Heap targets stay in and the gate reads "85% of non-heap scored targets".
+
+Declare the choice before measuring, not after the number is known.
 
 ## Open questions for the maintainer
 
