@@ -50,6 +50,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flags parsed out of `build_all.sh`, which was not modified) — proving the exploits
   genuinely exploit each bug rather than incidentally printing the corpus's
   deterministic committed flag constant.
+- `benchmark/ablation/` — an ablation suite proving every step of each round-1 chain is
+  **necessary**, not merely that the chain works. Negative controls only establish that a
+  target isn't *trivially* solvable (which is how `11_heap_uaf_leak` slipped through: benign
+  input doesn't win, and a "working" exploit does, yet the use-after-free was never
+  required). For each meaningfully separable step, `ablate.py` runs the whole chain with
+  exactly that step removed and requires the flag not to appear. Each target has one
+  parametrised chain function whose defaults are the working exploit, so every ablation is
+  one flipped keyword on the same code and each target also gets a positive control — a
+  `BLOCKED` verdict therefore can't be an artifact of broken harness code. Targets are
+  rebuilt with a fresh random secret via `run_bench.build_with_secret()`, all emitted bytes
+  are checked, and the run holds `corpus_lock`. CLI mirrors the R4 harness (`--case`,
+  `--timeout`, `--list`, `--no-rebuild`, `--corpus-root`; exit 0 = every ablation failed to
+  produce the flag, 1 = a step was unnecessary, 2 = setup problem). Result: **49/49 strict
+  ablations blocked, 13/13 positive controls passed** — no further round-1 target measures
+  less than it claims.
 - `docs/reports/CORPUS1-REFERENCE-EXPLOITS-23SEP2026.md` — the per-target ground-truth
   write-up behind those scripts (technique, offsets/addresses, what must be leaked and how
   it is applied, nondeterminism, and an honest automatability read per target), plus
