@@ -2197,6 +2197,207 @@ def test_resolve_priority_covers_every_classifiable_conflict() -> None:
     )
 
 
+# ===========================================================================
+# Narrowness annotations.
+#
+# Round 3 taught the lesson this table exists for: **seven of its nine HIGH
+# findings were invisible to this suite rather than absent from it.**  The
+# properties ran hundreds of cases each and held the one dimension that mattered
+# constant -- every P2 fixture carried the same ``generation``, P6 had a single
+# ``ResolveContext``, P5's universe held three of six scopes.  That is a
+# different failure mode from a test that asserts nothing, and a worse one:
+# case counts and pass counts both look healthy, so **narrowness reads exactly
+# like correctness.**
+#
+# So every property declares which dimensions its input set *varies* and which
+# it deliberately *holds constant*.  The meta-tests below then check the claims
+# that are mechanically checkable -- that the vocabulary is closed, that nothing
+# is both varied and held, and that no dimension is left unvaried by every
+# property in the suite.  What they cannot check is whether a declaration is
+# **true**; that is a reading task, and the annotation exists to make it a
+# 29-claim review instead of a 29-property excavation.
+# ===========================================================================
+
+#: The closed vocabulary.  A dimension named in no property's ``varies`` is a
+#: dimension of the schema that nothing in the suite exercises -- which is the
+#: P27 trick applied one level up, at breadth rather than at invariants.
+DIMENSIONS: Tuple[str, ...] = (
+    # candidate content
+    "value", "provenance", "identity", "scope", "binding", "conditions",
+    "method", "by", "observation_at", "evidence", "derived_from", "state",
+    "generation", "candidate_id",
+    # store shape
+    "store_size", "arrival_order", "dedup_collision", "terminal_sibling",
+    "dependency_depth", "log_record_shape", "log_record_count",
+    "conflict_record_shape", "fact_key",
+    # resolve context
+    "context_identities", "context_identity_mode", "context_conditions",
+    "context_binding",
+)
+
+#: ``dimension -> the single property that varies it``, filled in by the breadth
+#: meta-test below and printed with the enumeration bounds.  Not an assertion: a
+#: dimension with one claimant is a single point of failure for that dimension,
+#: and the point is that it is *visible* in every run rather than rediscovered.
+SOLO_DIMENSIONS: Dict[str, str] = {}
+
+#: ``pid -> (varies, holds_constant)``.  ``holds_constant`` lists only the
+#: dimensions a reader might reasonably expect this property to vary -- it is an
+#: admission, not an inventory of everything the fixture happens to fix.
+NARROWNESS: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...]]] = {
+    "P1": (("value", "provenance", "method", "observation_at", "conditions",
+            "identity", "store_size", "dedup_collision", "terminal_sibling",
+            "state"),
+           ("scope", "binding", "generation", "fact_key", "arrival_order")),
+    "P1b": (("value", "provenance", "scope", "identity", "conditions", "method",
+             "observation_at", "evidence", "derived_from", "state", "generation",
+             "candidate_id", "fact_key"),
+            ("arrival_order", "store_size")),
+    "P2": (("value", "provenance", "method", "by", "observation_at",
+            "conditions", "identity", "arrival_order", "store_size",
+            "terminal_sibling", "derived_from", "log_record_count"),
+           # generation is P20's job precisely because P2 could not see it.
+           ("generation", "scope", "fact_key")),
+    "P3": ((),
+           # Deliberately declared empty: P3 is a single fixture merged twice.
+           ("value", "provenance", "scope", "conditions", "identity",
+            "store_size", "fact_key", "observation_at")),
+    "P4": (("provenance",),
+           ("value", "scope", "identity", "conditions")),
+    "P5": (("scope", "provenance", "identity", "conditions"),
+           ("value", "binding", "fact_key")),
+    "P5b": (("value", "method", "by", "observation_at", "state", "candidate_id",
+             "provenance", "identity", "scope", "conditions"),
+            ("fact_key",)),
+    "P6": (("value", "provenance", "identity", "conditions", "store_size",
+            "context_identities", "context_identity_mode", "context_conditions",
+            "context_binding"),
+           ("scope", "generation", "fact_key", "arrival_order")),
+    "P7": (("value", "provenance", "arrival_order", "store_size"),
+           ("scope", "identity", "conditions", "context_identities",
+            "context_identity_mode", "fact_key")),
+    "P8": (("value", "provenance", "store_size"),
+           ("scope", "identity", "conditions", "context_identities", "fact_key")),
+    "P9": (("scope", "identity", "conditions", "provenance", "fact_key",
+            "binding"),
+           ("value", "arrival_order", "context_identity_mode")),
+    "P10": (("value", "provenance", "identity", "scope", "conditions", "method",
+             "by", "observation_at", "state", "generation", "derived_from",
+             "candidate_id"),
+            ("fact_key",)),
+    "P11": (("state",),
+            ("value", "fact_key")),
+    "P12": (("fact_key",),
+            ("value", "provenance", "scope", "context_identities")),
+    "P13": (("value", "provenance", "identity", "conditions", "store_size"),
+            ("scope", "context_identities", "context_identity_mode",
+             "context_conditions", "fact_key", "arrival_order")),
+    "P14": (("provenance", "arrival_order"),
+            ("value", "scope", "identity", "conditions", "store_size",
+             "fact_key")),
+    "P15": (("provenance", "scope", "state", "fact_key"),
+            ("value", "identity", "conditions")),
+    "P16": (("log_record_shape", "log_record_count", "observation_at",
+             "arrival_order", "value"),
+            ("fact_key", "provenance", "scope", "state")),
+    "P17": (("dependency_depth", "state", "derived_from", "fact_key"),
+            ("value", "provenance", "scope", "identity", "conditions")),
+    "P18": (("observation_at",),
+            ("value", "provenance", "scope", "identity", "conditions",
+             "fact_key")),
+    "P19": (("identity", "context_identity_mode"),
+            ("value", "provenance", "scope", "conditions", "store_size",
+             "fact_key")),
+    "P20": (("generation", "arrival_order", "terminal_sibling", "candidate_id"),
+            ("value", "provenance", "scope", "identity", "conditions",
+             "fact_key")),
+    "P21": (("evidence",),
+            ("value", "provenance", "scope", "fact_key")),
+    "P22": (("log_record_shape", "state", "fact_key", "candidate_id"),
+            ("value", "provenance", "scope", "identity", "conditions",
+             "log_record_count")),
+    "P23": (("conflict_record_shape", "observation_at", "candidate_id",
+             "fact_key"),
+            ("value", "provenance", "scope", "identity", "conditions")),
+    "P24": (("identity", "conditions", "scope", "fact_key"),
+            ("value", "provenance", "binding", "generation", "store_size")),
+    "P25": (("value", "identity", "conditions", "store_size",
+             "context_identities", "context_identity_mode",
+             "context_conditions", "context_binding"),
+            ("scope", "provenance", "binding", "fact_key")),
+    "P26": (("context_identities", "context_identity_mode",
+             "context_conditions", "context_binding"),
+            ("value", "provenance", "scope", "store_size", "fact_key")),
+    "P27": (("state", "generation", "derived_from", "log_record_shape",
+             "conflict_record_shape", "scope", "candidate_id", "fact_key"),
+            ("value", "provenance", "identity", "conditions")),
+}
+
+
+def test_every_property_declares_what_it_varies() -> None:
+    """Every property carries a narrowness annotation drawn from the closed
+    vocabulary, and nothing is claimed both ways."""
+    assert set(NARROWNESS) == set(PROPERTIES), (
+        "annotation and property set disagree: "
+        f"unannotated {sorted(set(PROPERTIES) - set(NARROWNESS))}, "
+        f"stale {sorted(set(NARROWNESS) - set(PROPERTIES))}"
+    )
+    for pid, (varies, holds) in sorted(NARROWNESS.items()):
+        unknown = (set(varies) | set(holds)) - set(DIMENSIONS)
+        assert not unknown, (
+            f"{pid} names dimensions outside the closed vocabulary: "
+            f"{sorted(unknown)} -- either add them to DIMENSIONS deliberately or "
+            "use the existing name, so a narrowness audit can be mechanical"
+        )
+        both = set(varies) & set(holds)
+        assert not both, f"{pid} claims to both vary and hold {sorted(both)}"
+        assert len(set(varies)) == len(varies), f"{pid} repeats a varied dimension"
+
+
+def test_no_dimension_is_unvaried_by_the_whole_suite() -> None:
+    """The breadth analogue of P27.
+
+    A dimension that **no** property varies is a dimension along which this
+    suite cannot fail, however many cases it runs -- which is exactly how seven
+    of round 3's nine HIGH findings hid in plain sight.  If a new dimension is
+    added to the schema, this fails until some property exercises it.
+    """
+    claimants: Dict[str, List[str]] = {d: [] for d in DIMENSIONS}
+    for pid, (varies, _) in sorted(NARROWNESS.items()):
+        for d in varies:
+            claimants[d].append(pid)
+    unvaried = sorted(d for d, who in claimants.items() if not who)
+    assert not unvaried, (
+        f"no property varies {sorted(unvaried)}; the suite cannot fail along "
+        "that dimension no matter how many cases it runs"
+    )
+    # Not an assertion: a dimension with a single claimant is a single point of
+    # failure for that whole dimension, so name them in the run output rather
+    # than leaving them to be rediscovered by the next audit.
+    solo = sorted(d for d, who in claimants.items() if len(who) == 1)
+    _count("dimensions in the closed vocabulary", len(DIMENSIONS))
+    _count("dimensions varied by exactly one property", len(solo))
+    SOLO_DIMENSIONS.clear()
+    SOLO_DIMENSIONS.update({d: claimants[d][0] for d in solo})
+
+
+def test_single_fixture_properties_are_declared_as_such() -> None:
+    """A property that varies nothing must say so, and be a knowingly narrow one.
+
+    P3 (idempotence) is the honest example: it merges one fixture twice, and its
+    claim genuinely does not need breadth to mean something. The point of listing
+    it is that *unintended* emptiness is then visible, because any new property
+    with an empty ``varies`` has to be added to this list on purpose.
+    """
+    knowingly_narrow = {"P3"}
+    empty = {pid for pid, (varies, _) in NARROWNESS.items() if not varies}
+    assert empty == knowingly_narrow, (
+        f"properties varying nothing: {sorted(empty)}; expected exactly "
+        f"{sorted(knowingly_narrow)}. A property with no varied dimension runs "
+        "one case and reads like coverage"
+    )
+
+
 def test_every_mutant_names_a_real_property() -> None:
     for name, mutant in M.MUTANTS.items():
         if mutant.breaks is not None:
@@ -2226,6 +2427,9 @@ def test_enumeration_bounds_are_reported(capsys) -> None:
             fn()
         except Exception:  # pragma: no cover - test_property reports failures
             pass
+    # Fill SOLO_DIMENSIONS here too, so this report does not silently depend on
+    # collection order having run the breadth meta-test first.
+    test_no_dimension_is_unvaried_by_the_whole_suite()
     with capsys.disabled():
         print("\n--- enumeration bounds actually exercised ---")
         print(f"  MAX_STORE={MAX_STORE} MAX_BATCH={MAX_BATCH} "
@@ -2236,4 +2440,9 @@ def test_enumeration_bounds_are_reported(capsys) -> None:
               f"{sum(1 for m in M.MUTANTS.values() if m.breaks):>8d}")
         print(f"  {'mutants proving redundancy (must pass)':44s} "
               f"{sum(1 for m in M.MUTANTS.values() if m.breaks is None):>8d}")
+        if SOLO_DIMENSIONS:
+            print("  dimensions varied by only one property "
+                  "(that property is the whole coverage of it):")
+            for dim in sorted(SOLO_DIMENSIONS):
+                print(f"      {dim:40s} {SOLO_DIMENSIONS[dim]}")
     assert _COUNTS, "no enumeration counts were recorded"

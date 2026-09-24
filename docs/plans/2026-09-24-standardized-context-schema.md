@@ -1253,7 +1253,48 @@ finding 1: a plan describing a reference implementation is still prose):
   `python -m supwngo.schema.resolve --emit-tables`, never hand-edited).
 - `tests/test_context_resolve_properties.py` (new; **29** properties — P1,
   P1b, P2–P5, P5b, P6–P27 — plus **37** mutants, the mutation meta-test, the
-  every-property-has-a-mutant meta-test and the generated-table byte gate).
+  every-property-has-a-mutant meta-test, the **narrowness annotation** and its
+  three meta-tests, and the generated-table byte gate).
+
+#### The narrowness annotation
+
+Round 3's sharpest lesson was not about any one defect: **seven of its nine HIGH
+findings were invisible to the property suite rather than absent from it.** The
+properties ran hundreds of cases each and held the one dimension that mattered
+constant. That failure mode is worse than an empty assertion, because the case
+counts and the pass counts both look healthy — **narrowness reads exactly like
+correctness.**
+
+So the suite now carries a closed `DIMENSIONS` vocabulary (**27** entries across
+candidate content, store shape and resolve context) and a `NARROWNESS` table
+declaring, per property, which dimensions its input set *varies* and which it
+deliberately *holds constant*. Three meta-tests enforce what is mechanically
+enforceable:
+
+| Meta-test | Asserts |
+| --- | --- |
+| `test_every_property_declares_what_it_varies` | every property is annotated, every name is drawn from the closed vocabulary, nothing is claimed both varied and held |
+| `test_no_dimension_is_unvaried_by_the_whole_suite` | **no dimension is varied by zero properties** — the P27 trick one level up. A schema field nothing exercises is a direction along which the suite cannot fail, however many cases it runs |
+| `test_single_fixture_properties_are_declared_as_such` | a property whose `varies` is empty must be on an explicit list (only P3, idempotence, is), so *unintended* single-case properties surface |
+
+What these cannot check is whether a declaration is **true** — that is a reading
+task. The annotation's purpose is to make it a 29-claim audit instead of a
+29-property excavation, and to make the next such audit mechanical.
+
+The table also reports, without asserting on it, every dimension varied by
+**exactly one** property — that property is the entire coverage of that
+dimension. Currently three: `binding` (P9 only), `dedup_collision` (P1 only),
+`dependency_depth` (P17 only).
+
+All three meta-tests were shown to go red, as the project's standing rule
+requires, against six deliberate mutilations of the annotation: a dropped
+annotation, a dimension outside the vocabulary, a dimension claimed both ways, a
+new vocabulary entry no property claims, a dimension losing its only claimant,
+and a property silently becoming single-case. **The first attempt at the
+fifth control came back GREEN** — it stripped `evidence` from P21 on the
+assumption P21 was its only claimant, but P1b varies `evidence` too. The control
+was wrong, not the gate; solo dimensions are now computed rather than guessed,
+which is exactly the class of mistake the printed solo list exists to prevent.
 
 **Phase 2 — the document:**
 
