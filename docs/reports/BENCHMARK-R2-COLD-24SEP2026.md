@@ -310,6 +310,46 @@ crash. The next person to see this file will have the same question.
 
 ## PART 2 — THE COLD RESULT
 
+### 2.0a ERRATUM (added 24 Sep 2026, after step-3 plan review) — there is no 20 s per-technique budget
+
+**No measured value in this report changes. The 4/15 figure, every per-target verdict,
+the attribution results and the paired-design finding all stand.** What was wrong is the
+*mechanism* asserted by residual limit 1 and by the scope clause attached to the figure.
+
+Residual limit 1 (inherited verbatim from the plan) says inner truncation is possible
+"at the 20 s budget", and §2.4 defines the figure as "capability at a 20 s per-technique
+budget". **Neither describes the code.** Traced during step-3 planning:
+
+| what `--timeout 20` actually reaches | effect |
+|---|---|
+| `CanonicalAutopwnEngine(timeout=20)` → `orchestrator.self.timeout` | used in exactly **two** places |
+| `orchestrator.py:187` `run_dynamic_profile(..., timeout=min(self.timeout, 2.0))` | **capped at 2.0 s** — inert for any value above 2 |
+| `verifier.py:164` `run_timeout = … max(20.0, self.timeout * 3)` | bounds **verification** runs (60 s here), not discovery |
+| executors' own `deliver_parts(...)` calls | **hardcoded** `1.5` / `2.0` / `3.0` s across 8 call sites — `--timeout` does not control them |
+| `run_bench.py:407` `wall_timeout = max(120, timeout*15 + 60)` | 360 s outer wall; never hit (§2.4) |
+
+So the correct scope statement is: **capability with hardcoded 1.5–3.0 s
+delivery/discovery probes under a 360 s outer wall, where `--timeout` bounds verification
+rather than discovery.** Read §2.4 and residual limit 1 with that substitution.
+
+**This correction moves the concern up, not down.** A hardcoded 2.0 s probe with no retry
+is a far more plausible truncation source than a 20 s budget would be, and it is the
+`_probe_echo_sizes` problem generalised: the same shape exists at 8 call sites, not one.
+Whether it actually truncated anything in this run is still open — that is unchanged.
+
+**A second consequence, about the instrument rather than this round.** The
+pre-registration reasoned about "one predeclared timeout config" on the assumption that
+`--timeout` bounded per-technique work. It largely does not. R1 and R2 were both run at
+`--timeout 20`, and **raising that number would not have given discovery more room** —
+so the two rounds remain comparable on this axis, but for a different reason than
+claimed, and a future round wanting to test sensitivity to the discovery budget must
+change the hardcoded call sites, not the flag. Recorded because a reader would otherwise
+reasonably assume the flag was the knob.
+
+Found by verifying a reviewer's finding rather than by my own audit; the reviewer is
+credited in `docs/reports/reviews/`. The original text is left in place below rather than
+silently edited, so the correction is auditable against what was first published.
+
 ### 2.0 Lead finding — this outranks the scalar
 
 **R2 is a *paired* re-shaping of R1: each target keeps R1's technique family and
