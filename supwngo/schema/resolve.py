@@ -1320,6 +1320,15 @@ def current_pins(store: FactStore) -> Dict[str, str]:
     record had the larger content hash -- a "latest pin" rule that was
     deterministic but not chronological.
     """
+    # Validated at **read** time too, not only when a write passes through
+    # merge(): a pin is the one mechanism allowed to override a measurement, so
+    # the record granting that override is checked at the moment it is honoured.
+    # (The in-process trust boundary is not a wall -- a caller holding the store
+    # can append to a public list as easily as it can call pin() -- but a
+    # forged record must now at least be well formed, uniquely sequenced and
+    # *attributed*, and it is in the audit log either way.  The enforceable
+    # boundary is the document, and I7 is what guards it.)
+    _validate_log(store)
     latest: Dict[str, PinRecord] = {}
     for rec in store.resolutions:
         if rec.cls not in ("pin", "unpin"):

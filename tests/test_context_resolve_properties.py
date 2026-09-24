@@ -953,6 +953,10 @@ def prop_P16_current_pins_is_a_function() -> None:
         probe.resolutions.append(bad)
         with pytest.raises(R.SchemaError):
             R.validate_store(probe)
+        # And it is refused at **read** time as well, so a hand-appended record
+        # cannot be honoured as an operator pin just because nobody re-merged.
+        with pytest.raises(R.SchemaError):
+            R.resolve(probe, KEY, CTX)
         n += 1
     with pytest.raises(R.StateTransitionError):
         R.pin(s, KEY, "f_" + "0" * 32, "t1", "no such candidate", "operator")

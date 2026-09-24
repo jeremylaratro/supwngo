@@ -670,6 +670,14 @@ def current_pins(store):          # total, order-independent
         yield key, latest.candidate_id if latest.cls == "pin" else None
 ```
 
+`current_pins` **validates the log before folding it** (I7), because a pin is
+read-time authority: the record granting an override is checked at the moment it
+is honoured, not only when some later write happens to pass through `merge`. The
+in-process trust boundary is not a wall — a caller holding the store object can
+append to a list as easily as it can call `pin()` — but a forged record must be
+well formed, uniquely sequenced and **attributed**, and it is in the audit log
+either way. The enforceable boundary is the *document*, and I7 is what guards it.
+
 `seq` is assigned by the store (`1 + max(seq)`), is unique by I7, and is the
 **only** ordering key. `at` is operator text kept for human readers: folding on
 it made `"t10"` lose to `"t9"` lexicographically, and equal or empty timestamps
