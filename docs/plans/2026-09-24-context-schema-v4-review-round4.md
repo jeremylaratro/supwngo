@@ -46,6 +46,36 @@ with the `identity=""` half the reviewer did not name and the two
 constructed-`AppliesTo` sites. That is convergent confirmation of the finding and
 of the sweep method; it is **not** evidence the remaining twelve are handled.
 
+### Evidence provenance — every figure labelled serial or concurrent
+
+Two concurrent pytest sessions in this repo have been measured corrupting each
+other through shared state (six spurious failures, all passing on isolated
+re-run). Any suite total collected inside that window is provisional, and a
+`[RED]` proof obtained under a known-bad condition is as untrustworthy as a
+green one. So:
+
+| figure | value | collected |
+| --- | --- | --- |
+| property suite | 75 passed | **concurrent — provisional** |
+| repo-wide excl. `test_challenges.py` | 673 passed, 10 skipped | **concurrent — provisional** |
+| the nine `[RED]` mutation proofs | **9/9 red** | **serial**, one process, no pytest |
+| the two must-pass mutants | 2/2 pass against P9 | **serial**, same process |
+| shared-state exposure of the property suite | **0 files** opened outside the worktree across all 29 properties | **serial**, `sys.addaudithook` |
+
+The nine proofs were re-run serially and all nine are red, with the same
+classification the meta-test uses — a crash is not a proof, and none crashed.
+But the decisive figure is the last one: an `open`-event audit hook filtered to
+paths outside this worktree recorded **zero** opens across all 29 properties. No
+`~/.supwngo/supwngo.db`, no cache, no shared file of any kind. The suite imports
+the whole `supwngo` tree (840 modules, `__init__.py` is eager) and **none** of
+`pwnlib`, `angr`, `capstone`, `keystone`, `ropper`, `elftools`, `unicorn`.
+
+So this suite is **structurally** out of reach of the corruption vector, which is
+a stronger statement than "I re-ran it alone" — and it held while another agent's
+pytest was in fact running. The two repo-wide totals stay labelled provisional
+regardless, because they include tests that *do* use shared state and re-running
+those is not this artifact's job.
+
 ### Author-side finding the reviewer corroborates and this record extends
 
 Running a mechanical refusal-site sweep over the normative module — patch each
@@ -55,11 +85,13 @@ against every `raise` in the AST — gives:
 ```
 constructed-exception raise sites:            107
 bare re-raise sites (exempt):                   4
-NEVER FIRED by any test in the repo:           29
-positive-control coverage of refusals:      78/107
+in instrument scope (module error classes):   106
+out of instrument scope (builtin raises):       1
+NEVER FIRED by any test in the repo:           28 / 106
+positive-control coverage of refusals:      78/106 in scope
 ```
 
-Twenty-nine refusals in a module whose governing rule is *a validation step that
+Twenty-eight refusals in a module whose governing rule is *a validation step that
 cannot fail is worse than none* have never been observed to fire. This is
 strictly mechanical — no annotation — and so it is a **sharper answer to
 secondary question 2(a) than the reviewer's**, for refusal coverage specifically:
