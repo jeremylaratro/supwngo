@@ -61,6 +61,27 @@ What is wrong is the out-of-scope count (1 → 2), and the census never had a
 category for the four bare re-raises at all. The "never fired" count is **not
 re-measured here**: it needs a full suite pass and I am not alone on the host.
 
+> ### ERRATUM, added with rev 5 — the bare-re-raise half of that sentence is false
+>
+> "the census never had a category for the four bare re-raises" is **wrong**, and I
+> propagated it. The plan's §6 instrument block already contained the line
+> `bare re-raise sites (exempt): 4`. The category existed; I did not read it before
+> reporting it absent.
+>
+> The out-of-scope correction (1 → 2) stands, and so does **28 of 106 in scope**.
+> Only the bare-re-raise claim is withdrawn. The constructed-exception total also
+> moves 107 → 108, since the missing site was `L2154 SystemExit`.
+>
+> This is the **second** time I have accused this instrument of being worse than it
+> is — the first was asserting that `ABSENT.__bool__`'s `# pragma: no cover` comment
+> was false when it was true. Both run in the same direction: a false accusation of
+> missing coverage. Protocol `018b3ba` requires an instrument to report what it
+> cannot instrument as out of scope rather than as uncovered; the symmetric hazard is
+> the **auditor** reporting a category as absent rather than reading it, and I am now
+> the recorded instance of it twice. Worth a protocol line of its own, if the
+> coordinator agrees: *before reporting a category absent from an instrument's
+> output, quote the output.*
+
 ## The five skipped sweeps
 
 The protocol asks which sweep was skipped, not which instance was missed.
