@@ -1,11 +1,13 @@
 # Schema split, unit 1 of 3: canonicalisation
 
 **Date:** 2026-09-24
-**Status:** PLAN rev 2 — under independent review (round 1 sent at rev 1).
+**Status:** PLAN rev 3 — under independent review (round 1 sent at rev 1).
 Not implemented. **Rev 2 corrects a blocking defect in rev 1's own §4**, found
 by attacking the seam contract as the review brief asks the reviewer to do; see
-§4a. Rev 1 is preserved in git history because the review in flight is against
-it and the audit trail matters more than a clean document.
+§4a. **Rev 3 adds a sixth collision, live today, of exactly the class round 3's
+bytes fix claimed to have closed** — see §2a. Rev 1 is preserved in git history
+because the review in flight is against it, and the audit trail matters more
+than a clean document.
 **Unit:** 1 of 3 (canonicalisation → audit-log validation → property breadth).
 **Parent:** `docs/plans/2026-09-24-standardized-context-schema.md` (v4 rev 4,
 HELD FOR A SPLIT), round-4 review at
@@ -31,7 +33,7 @@ applied to the evidence rather than the code.
 | the nine `[RED]` mutation proofs | 9/9 red | **serial**, single process, no pytest |
 | the two must-pass mutants | 2/2 pass against P9 | **serial**, same process |
 | shared-state exposure of the property suite | **0 files** opened outside the worktree across all 29 properties | **serial**, `sys.addaudithook` |
-| pristine canonicaliser collisions | 5 | **serial** |
+| pristine canonicaliser collisions | **6** (5 cross-type, plus the `_BYTES_TAG` dataclass spoof in §2a) | **serial** |
 | refusal sites never fired | **28 of 106 in instrument scope** (see §6 — the first count of 29 of 107 was my own instrument's blind spot) | **serial** |
 
 The exposure figure is the one that settles the hazard. An `open`-event audit
@@ -111,6 +113,98 @@ precisely what P2 exists to forbid, and P2 cannot see this because P2 does not
 vary evidence *types*. This is the round-3 lesson recurring in a new channel —
 and it is why this unit is first.
 
+
+### 2a. A sixth collision, and it is a recurrence of round 3's own fix
+
+Found while trying to construct the **fifth subtler mutant** §5 asks for, which
+is how it should have been found the first time.
+
+Round 3 fixed a bytes-encoding collision: `"b64:" + b64` collided with the
+*string* `"b64:…"`. The fix encodes bytes as a single-key mapping
+`{_BYTES_TAG: b64}` and reserves the key. Its comment states the guarantee:
+
+```python
+# A single-key mapping cannot collide with a string, and the reserved key below
+# is refused as a mapping key so it cannot collide with a real mapping.
+```
+
+The second clause is **false**. The reservation is checked in the `Mapping`
+branch of `_jsonable` only — and the **dataclass** branch also produces a
+mapping, from field names, with no reservation check:
+
+```python
+if dataclasses.is_dataclass(obj):
+    return {f.name: _jsonable(getattr(obj, f.name)) for f in dataclasses.fields(obj)}
+```
+
+`__bytes_b64__` is a legal Python identifier, so a dataclass can have a field
+with that name. Measured (serial):
+
+```
+canonical(Spoof(__bytes_b64__="eA=="))  ->  {"__bytes_b64__":"eA=="}
+canonical(b"x")                         ->  {"__bytes_b64__":"eA=="}
+COLLIDE? True
+```
+
+and it is **live through the public API today**, not a laboratory curiosity:
+
+```
+both accepted by validate_candidate:      True
+evidence values distinguishable?          True
+Observation.digest() equal (COLLISION)?   True
+after merging both: 1 active, 1 observation(s)
+```
+
+So a caller-supplied dataclass is indistinguishable from real bytes and the
+observation union silently drops one — the same order-dependent evidence loss as
+§2, through the same channel, from the defect round 3 believed it had closed.
+
+```
+FINDING  HIGH: the _BYTES_TAG reservation guards one branch of two that can
+         emit a single-key mapping
+CLASS    a reserved tag enforced at some of the sites that can produce its shape,
+         not all of them
+SWEEP    enumerate every _jsonable branch that can return a Mapping, and check
+         each for the reservation
+RESULT   two such branches: `Mapping` (guarded) and `dataclass` (unguarded).
+         The `set`/`frozenset` and `list`/`tuple` branches return arrays and
+         cannot collide with the tag. Swept, no third instance.
+LABEL    RECURRENCE — round 3's class, and round 3's own fix
+```
+
+**Why the existing gates missed it.** P21 spoofs `_BYTES_TAG` as a *mapping* key,
+which is the guarded branch — the property tests the half of the rule that works.
+This is round 4's lesson again at one remove: the mutant and the property both
+addressed the branch the author was thinking about.
+
+**Consequences for this plan.** Rev 2's positional split makes it unreachable
+*from callers* — a dataclass at an open position is refused — but it does not make
+it false, because structural dataclasses are still encoded by field name. So C7
+grows a second clause:
+
+> **C7.** At every structural position exactly one dataclass type may appear, **and
+> no structural dataclass field may be named a reserved tag.** Both halves ship as
+> one mechanical check over the dataclass field annotations.
+
+Measured: no current dataclass field is named `__bytes_b64__`, so C7's second
+clause holds today — which is exactly the status the first clause had, and exactly
+why both are checks rather than sentences.
+
+### The fifth subtler mutant, and one I could not construct
+
+§5's fifth mutant is therefore:
+
+| mutant | the edit | caught? |
+| --- | --- | --- |
+| `bytes_tag_guards_mappings_only` | reserve `_BYTES_TAG` in the `Mapping` branch but not over dataclass field names — **today's behaviour** | **No.** P21 spoofs the tag only as a mapping key. This must go red. |
+
+And one attempted construction that **failed**, recorded because a blind spot I
+looked for and did not find is worth as much as one I found:
+
+| attempted | why it does not work |
+| --- | --- |
+| `set_sort_by_str` — sort sets by `str(v)` instead of `json.dumps(v, sort_keys=True)` | I expected `{1, "1"}` to reorder. It does not: measured over `{1,'1'}`, `{'a','B'}`, `{True,'True'}` the two sort keys produce **identical** orders, because the JSON quoting is a constant prefix over homogeneous types and the mixed-type cases happen to agree. And post-split, sets survive only at structural positions (`FactSpec.allowed_scopes`, `ResolveContext.identities`), both **homogeneous**. Not a viable mutant; recorded as a checked-and-clear blind spot. |
+
 ---
 
 ## 3. The seam contract between the three units
@@ -134,7 +228,7 @@ restate:**
 | C4 | The three digest projections are unchanged: `observations` and `state` remain in no digest | unit 3's P10 |
 | C5 | `Observation.digest()` distinguishes any two observations a caller can distinguish | follows from C1 + C2; the positive control is §2's merge case |
 | C6 | the refusal-coverage instrument declares its own scope: a site it cannot instrument is reported **out of scope**, never as uncovered | §6 |
-| C7 | at every **structural** position exactly one dataclass type may appear, so the field-mapping encoding cannot collide | a mechanical check over the dataclass field annotations, §4a |
+| C7 | at every **structural** position exactly one dataclass type may appear, **and no structural dataclass field is named a reserved tag** (§2a) | one mechanical check over the dataclass field annotations, §2a + §4a |
 
 **Unit 2 (audit-log validation) depends on:** C1 and C5 only. Log records
 reference candidates by id, and ids do not contain observations (C4), so unit 2's
@@ -155,7 +249,11 @@ P21 only, and records the rest as unit 3's inventory.
 
 ---
 
-## 4. Two methods, weighed
+## 4. Three methods, weighed
+
+<!-- rev 3: the heading read "Two methods" over three lettered options.
+     Trivial, and the same shape as the findings this plan reports: a claim
+     the artifact does not support. Corrected, not excused. -->
 
 ### Option A (recommended) — close the domain and refuse
 
@@ -290,7 +388,8 @@ exactly where guessing was happening.
   at each position, which is a *different* claim and must be established as one.
 - **C2** applies to the open domain only.
 - **C7 (new): at every structural position, exactly one dataclass type may
-  appear.** This is the residual risk the split creates and it must not be left
+  appear** — *and, per rev 3's §2a, no structural dataclass field may be named a
+  reserved tag; that second clause closes a collision that is live today.* This is the residual risk the split creates and it must not be left
   implicit: `_jsonable_structural` encodes every dataclass as a mapping of its
   fields, so two *different* dataclass types with the same field names and values
   would collide. Today they cannot share a position (`resolutions` holds only
@@ -345,6 +444,12 @@ blind spot is indistinguishable from coverage.
 | new `canonical_accepts_tuple_as_list` | — | accept `tuple` and encode as `list` while refusing sets and dataclasses | P21 red — one type at a time, so P21 cannot pass by catching a different type |
 | new `evidence_gate_type_only` | — | check the value is not a `float` but accept any other object | P21 red |
 | new `observation_digest_first_wins` | — | keep `_merge_observations` unioning by digest but drop the injectivity precondition | must expose §2's order-dependent loss |
+| new `bytes_tag_guards_mappings_only` (**rev 3**, §2a) | — | reserve `_BYTES_TAG` in the `Mapping` branch but not over dataclass field names — **= today's pristine behaviour**, a live collision | P21 must go **red**; today it passes, because it spoofs the tag only as a mapping key |
+
+The fifth was found by trying to falsify "four is enough" (§2a), and a sixth
+candidate was constructed, tested and **rejected as non-viable** rather than
+quietly dropped — see §2a's second table. Four was not enough; the claim that
+five is should be treated the same way.
 
 P21's input set must vary **type at fixed JSON shape** — the dimension it
 currently holds constant. Concretely: the five measured pairs, plus
