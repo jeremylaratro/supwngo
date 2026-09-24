@@ -8,6 +8,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Phase 5 (reliability hardening) — stdio-safe multi-part payload delivery**
+  (`supwngo/exploit/pipeline/delivery.py`). Every native executor previously delivered
+  its payload as a *single* write (`subprocess.run(input=blob)` / one `sendline`), which
+  is silently wrong for any target that mixes buffered stdio input with a raw
+  `read(0, ...)`: `scanf("%d", &n)` fills glibc's 4096-byte stdin `FILE` buffer from
+  whatever is available, so a one-blob exploit is swallowed whole by the first `scanf`
+  and the following `read()` sees EOF — the overflow never happens and the target looks
+  unexploitable. The new module delivers input in parts with a settle delay between them
+  (as a human does at a prompt), and adds `find_return_offset()`, a stdio-safe dynamic
+  offset finder that binary-searches the smallest filler length that crashes the target
+  (no core dumps required — `kernel.core_pattern` is frequently not a plain file — and no
+  GDB batch run, which would re-introduce the single-blob problem). Also adds
+  `scan_hex_addresses()`/`classify_address()`, which recognise a leaked `%p` by its
+  actual rendering instead of requiring one of a fixed set of English labels before it,
+  and test address ranges narrowest-first so `0x7ffd…` stack addresses are no longer
+  mislabelled as libc.
+- **Phase 5 — generated exploit scripts are now the thing that gets verified**
+  (`supwngo/exploit/pipeline/script_builder.py`, `PipelineVerifier.verify_script()`).
+  `verify_payload()` can only express a single-blob exploit, so no multi-stage technique
+  could ever claim a verified SUCCESS (which is why `ret2libc`/`srop`/`format_string`
+  were hardcoded to return PARTIAL prose). Executors now build a standalone, runnable
+  pwntools script first and the pipeline runs *that script* fresh in its own interpreter,
+  with the attempt's unique receipt token piped in as `echo <token>`; SUCCESS requires
+  either the token coming back (only possible through a real obtained shell) or the
+  target printing a flag. A generated script's own `log.success()` lines are explicitly
+  not a success signal. This also closes the gap between "the pipeline says it worked"
+  and "the artifact the user is handed works" — they are now literally the same run.
+- **Phase 5 — `ret2plt` technique executor**
+  (`supwngo/exploit/pipeline/executors/rop_techniques.py`): calls `system("/bin/sh")`
+  through the binary's own PLT with **no information leak**, for a non-PIE target that
+  imports `system` and already contains a `"/bin/sh"` string. This closes the specific
+  gap named in `docs/reports/PHASE1-BASELINE-24SEP2026.md`: the pipeline's only
+  `system()` path was gated on "requires a real libc-base leak" even when no libc base
+  is needed at all. Tries both stack parities, since glibc's `do_system` executes a
+  `movaps` that faults unless RSP is 16-byte aligned at the call.
+- `docs/plans/2026-09-23-phase5-reliability-hardening.md` — the Phase 5 plan, recording
+  the five root causes found before any fix was written (single-blob delivery,
+  payload-only verification, attempt ordering, label-driven leak parsing, missing
+  technique implementations) and the per-target work they imply.
+
+### Changed
+- **Phase 5 — attempt ordering** (`pipeline/orchestrator.py`): `StrategySuggester` ranked
+  `VARIABLE_OVERWRITE` at priority 1 for all 15 benchmark targets (its applicability test
+  is nearly always true) and `RET2PLT` at 4, so every target paid ~126 blind magic-value
+  process spawns before the technique it actually needed was tried. Added explicit
+  `FIRST_TECHNIQUES` (precondition-specific and cheap) and `LAST_TECHNIQUES` (broad
+  brute-force sweeps) layers around the suggester's own ranking. The brute-force sweeps
+  are still attempted — just last.
+
+### Added
 - Phase-1 benchmark corpus + measurement harness under `benchmark/`: 15 purposefully
   vulnerable, hand-verified x86-64 Linux ELF targets (`benchmark/corpus/<NN>_<slug>/`)
   spanning stack shellcode, ret2plt/system, PIE-leak ret2libc, canary leak+bypass,
