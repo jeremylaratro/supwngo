@@ -306,6 +306,18 @@ def prop_P1b_validation_is_the_only_raiser() -> None:
         {**raw(), "id": "f_deadbeefcafe"},
         raw(scope=R.Scope.PROCESS),                  # I4: wrong scope for key
         {**raw(), "applies_to": {"scope": R.Scope.BUILD, "identity": 7}},
+        # Round-4 self-sweep of round 3's falsey class.  Round 3 fixed the
+        # *list* fields (0/""/[] read as absent) and introduced _required_list;
+        # it did not sweep the *string-or-null* fields, where "" was accepted as
+        # a second, never-deduping spelling of "absent" -- and, for identity, an
+        # unsatisfiable one, since context identities must be non-empty.  Four
+        # sites carried it: identity and binding, on each of the mapping and the
+        # constructed path, so all four are exercised here.
+        {**raw(), "applies_to": {"scope": R.Scope.BUILD, "identity": ""}},
+        {**raw(), "applies_to": {"scope": R.Scope.BUILD, "binding": ""}},
+        {**raw(), "applies_to": {"scope": R.Scope.PROCESS, "binding": ""}},
+        {**raw(), "applies_to": R.AppliesTo("", R.Scope.BUILD, (), None)},
+        {**raw(), "applies_to": R.AppliesTo(None, R.Scope.BUILD, (), "")},
         # Round-2 finding 1: these escaped as TypeError/ValueError from inside
         # the field checks, so the funnel -- not a remembered list of shapes --
         # is what makes validation total.
@@ -2249,9 +2261,9 @@ NARROWNESS: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...]]] = {
             "identity", "store_size", "dedup_collision", "terminal_sibling",
             "state"),
            ("scope", "binding", "generation", "fact_key", "arrival_order")),
-    "P1b": (("value", "provenance", "scope", "identity", "conditions", "method",
-             "observation_at", "evidence", "derived_from", "state", "generation",
-             "candidate_id", "fact_key"),
+    "P1b": (("value", "provenance", "scope", "identity", "binding", "conditions",
+             "method", "observation_at", "evidence", "derived_from", "state",
+             "generation", "candidate_id", "fact_key"),
             ("arrival_order", "store_size")),
     "P2": (("value", "provenance", "method", "by", "observation_at",
             "conditions", "identity", "arrival_order", "store_size",

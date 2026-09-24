@@ -68,7 +68,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   observation union is keyed by that digest. Every *falsey* malformed field
   (`id=0`, `derived_from=0`, `evidence=0`, `conditions=0`) was normalised to
   absent by `x or ()`, and unknown nested fields were discarded, so a typo
-  validated clean and asserted something nobody wrote. Log records were checked
+  validated clean and asserted something nobody wrote. That falsey fix covered
+  the *list* fields only; sweeping the same class over the *string-or-null*
+  fields found it again in `applies_to`, where `identity=""` and `binding=""`
+  were accepted at four sites — a second, never-deduping spelling of "absent"
+  for two fields that are part of the dedup key, and for `identity` an
+  unsatisfiable one, since a context identity may not be empty. Both are now
+  refused rather than normalised, by one shared helper instead of four inline
+  checks. Log records were checked
   for shape but not for reference, so a well-formed pin could name a candidate
   that did not exist and resolution honoured it; `store.conflicts` was validated
   nowhere at all; and a terminal state needed no lifecycle record, so a state

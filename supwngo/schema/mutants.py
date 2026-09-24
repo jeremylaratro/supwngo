@@ -533,6 +533,22 @@ def _validate_store_noop(store: R.FactStore) -> None:
     return None
 
 
+def _optional_name_type_only(raw: Any, what: str) -> Any:
+    """Type-check an optional name but accept ``""`` -- the shipped defect.
+
+    Deliberately the *subtle* form.  It does not disable the check; it restores
+    the plausible-looking one that shipped before the round-4 sweep, which
+    type-checks correctly and rejects ``7`` while letting ``""`` through.  A
+    mutant that deleted the whole check would prove much less, because the type
+    half of the rule was never the half that was wrong -- and "mutate to a
+    plausible wrong behaviour, not to a disabled one" is the lesson this entry
+    exists to honour.
+    """
+    if raw is not None and not isinstance(raw, str):
+        raise R.SchemaError(f"{what} must be a string or null")
+    return raw
+
+
 MUTANTS: Dict[str, Mutant] = {
     m.name: m for m in [
         Mutant("merge_supersedes_on_rank", "v3 defect 1", "P1",
@@ -637,5 +653,11 @@ MUTANTS: Dict[str, Mutant] = {
                {"validate_context": _validate_context_noop}),
         Mutant("store_invariants_disabled", "the boundary itself removed", "P27",
                {"validate_store": _validate_store_noop}),
+        Mutant("applies_to_allows_empty_names",
+               "round-4 self-sweep of round 3's falsey class", "P1b",
+               {"_optional_name": _optional_name_type_only},
+               note="the shipped defect: identity=\"\" and binding=\"\" were "
+                    "accepted, giving a second dedup_key for one proposition, "
+                    "and an identity no context can ever satisfy"),
     ]
 }

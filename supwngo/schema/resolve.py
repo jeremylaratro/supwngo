@@ -505,6 +505,46 @@ def _required_list(data: Mapping, name: str, what: str) -> Sequence[Any]:
     return raw
 
 
+def _optional_name(raw: Any, what: str) -> Optional[str]:
+    """An ``applies_to`` name that may be absent: ``None``, or a **non-empty** str.
+
+    The empty string is refused rather than normalised to ``None``, for three
+    reasons that all point the same way:
+
+    * ``validate_context`` already refuses ``""`` for a context identity and for
+      every binding field, so accepting it on the candidate side made the two
+      ends of the same field disagree about what a legal name is;
+    * ``identity`` and ``binding`` are in ``CONTENT_FIELDS``, so ``""`` and
+      ``None`` are **different dedup keys** -- two active candidates for one
+      proposition that can never dedup, which is precisely what merge exists to
+      prevent;
+    * ``""`` was additionally *unsatisfiable* as an identity: context identities
+      must be non-empty, so ``"" not in ctx.identities`` always, and such a
+      candidate could be stored but never resolved.
+
+    Normalising ``""`` to ``None`` would fix the dedup half by guessing, and
+    guessing is how the round-3 ``_jsonable`` key-coercion collision happened.
+    ``applicable`` says it out loud a few hundred lines down -- *refuse rather
+    than guess*.
+
+    This is one function and not four inline checks because there were four
+    sites (identity and binding, on each of the constructed and mapping paths)
+    and all four carried the same defect -- the same drift ``_validate_conditions``
+    was factored out to prevent.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise SchemaError(f"{what} must be a string or null")
+    if not raw:
+        raise SchemaError(
+            f"{what} must be a non-empty string or null; \"\" is neither a name "
+            "nor an absence, and would be a second, never-deduping spelling of "
+            "the same proposition"
+        )
+    return raw
+
+
 def _validate_conditions(raw: Any) -> Tuple[Tuple[str, str], ...]:
     """Conditions are a sorted tuple of ``(str, str)`` pairs.
 
@@ -587,24 +627,18 @@ def _validate_candidate(raw: Any) -> Candidate:
         # A constructed instance is NOT trusted: its fields are re-checked, or a
         # caller could smuggle a malformed identity/conditions past validation.
         applies_to = AppliesTo(
-            at_raw.identity, _as_enum(Scope, at_raw.scope, "scope"),
-            _validate_conditions(at_raw.conditions), at_raw.binding,
+            _optional_name(at_raw.identity, "applies_to.identity"),
+            _as_enum(Scope, at_raw.scope, "scope"),
+            _validate_conditions(at_raw.conditions),
+            _optional_name(at_raw.binding, "applies_to.binding"),
         )
-        if applies_to.identity is not None and not isinstance(applies_to.identity, str):
-            raise SchemaError("applies_to.identity must be a string or null")
-        if applies_to.binding is not None and not isinstance(applies_to.binding, str):
-            raise SchemaError("applies_to.binding must be a string or null")
     elif isinstance(at_raw, Mapping):
         _reject_unknown(at_raw, ("identity", "scope", "conditions", "binding"),
                         "applies_to")
         scope = _as_enum(Scope, at_raw.get("scope"), "scope")
         conds_items = _validate_conditions(at_raw.get("conditions", _MISSING))
-        identity = at_raw.get("identity")
-        if identity is not None and not isinstance(identity, str):
-            raise SchemaError("applies_to.identity must be a string or null")
-        binding = at_raw.get("binding")
-        if binding is not None and not isinstance(binding, str):
-            raise SchemaError("applies_to.binding must be a string or null")
+        identity = _optional_name(at_raw.get("identity"), "applies_to.identity")
+        binding = _optional_name(at_raw.get("binding"), "applies_to.binding")
         applies_to = AppliesTo(identity, scope, conds_items, binding)
     else:
         raise SchemaError("applies_to must be a mapping")
@@ -623,9 +657,13 @@ def _validate_candidate(raw: Any) -> Candidate:
             f"I4 {key}: scope {applies_to.scope.value} not in "
             f"{sorted(s.value for s in spec.allowed_scopes)}"
         )
-    if applies_to.scope in _BOUND_SCOPES and not applies_to.binding:
+    # ``is None`` and not truthiness: ``binding=""`` used to be *falsey*, so it
+    # slipped past the "takes no binding" check below and was stored as ``""``.
+    # ``_optional_name`` now refuses ``""`` outright, and these two say what they
+    # mean rather than relying on that refusal holding.
+    if applies_to.scope in _BOUND_SCOPES and applies_to.binding is None:
         raise SchemaError(f"{key}: scope {applies_to.scope.value} requires applies_to.binding")
-    if applies_to.scope not in _BOUND_SCOPES and applies_to.binding:
+    if applies_to.scope not in _BOUND_SCOPES and applies_to.binding is not None:
         raise SchemaError(f"{key}: scope {applies_to.scope.value} takes no binding")
 
     method, by = data.get("method"), data.get("by")
