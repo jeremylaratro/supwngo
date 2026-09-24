@@ -173,6 +173,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are still attempted — just last.
 
 ### Added
+- `benchmark/ablation/ablate_r2.py` — necessity-ablation suite for the 15
+  `corpus_r2` targets, replacing `corpus_r2_reference/ablation.py` for scoring
+  purposes. The corpus's own suite cannot support its advertised "0/15 leaked":
+  every case runs only the *ablated* chain and asserts flag-absence, with no
+  intact-chain leg anywhere in the file, `EOFError` caught into `out = ""`, and
+  `main()` returning 0 whenever `leaks == 0` — so a changed prompt string, a read
+  timeout or a dead process all read as a pass, and its clean result is equally
+  consistent with 15 broken drivers. The replacement ports `ablate.py`'s guarantee:
+  one parametrised chain function per target whose defaults *are* the working
+  exploit, each ablation the same function with one keyword flipped, so the
+  positive control and the ablation traverse the identical driver path. Three-way
+  outcomes (`BLOCKED` / `NOT BLOCKED` = defect, exit 1 / `NOT MEASURABLE`, exit 2),
+  defect checked first so it cannot be masked by a setup failure. Result: 15/15
+  positive controls, 51/51 strict ablations blocked, 0 defects, plus 4 relaxation
+  probes recorded rather than hidden.
 - `benchmark/sample_load.sh` — samples loadavg and the concurrent `run_bench.py`
   count for the duration of a benchmark run. A single pre-run load snapshot cannot
   detect contention that *arises during* a run, and this host cannot be reserved
