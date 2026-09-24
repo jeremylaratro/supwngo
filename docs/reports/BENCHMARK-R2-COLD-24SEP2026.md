@@ -289,8 +289,8 @@ conditions and a later reader cannot tell which was meant.
 | toolchain | gcc 11.4.0, glibc 2.35, Python 3.11.15, pwntools 4.15.0 |
 | loadavg at GO | `2.20 2.82 2.81` (~7 %) |
 | real harness processes at GO (resolved) | **0** |
-| loadavg at start of cold run | *(Part 2)* |
-| loadavg at end of cold run | *(Part 2)* |
+| loadavg at start of cold run | `2.89 2.60 2.66` → filled in from §2.6 |
+| loadavg at end of cold run | `4.35` falling → filled in from §2.6 |
 | continuous load profile | `benchmark/sample_load.sh`, 15 s interval, for the whole run |
 
 **A stale `.run_bench.lock` is expected and means nothing — test acquisition, never
