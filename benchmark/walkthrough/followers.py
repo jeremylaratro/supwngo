@@ -272,8 +272,8 @@ def apply_variant(text: str, variant: str) -> tuple[str, dict]:
 # --------------------------------------------------------------------------- #
 # session teardown
 # --------------------------------------------------------------------------- #
-def reap_process_group(pid: int, grace_sec: float = 2.0) -> list[int]:
-    """Kill everything in `pid`'s process group. Returns what needed SIGKILL.
+def reap_process_group(pgid: int, grace_sec: float = 2.0) -> list[int]:
+    """Kill everything in process group `pgid`. Returns what needed SIGKILL.
 
     Called after every follower session, before the scored secret is minted.
     The scorer's whole anti-hardcoding guarantee is that the follower works
@@ -283,16 +283,17 @@ def reap_process_group(pid: int, grace_sec: float = 2.0) -> list[int]:
     process could simply read the new `flag.txt` and write it somewhere the
     artifact will find. Found by independent review, 24 Sep 2026.
 
+    Takes the PGID, NOT the leader's pid, deliberately: the group outlives its
+    leader, so once the CLI has exited `os.getpgid(leader_pid)` raises and the
+    orphans left behind -- the only ones that matter here -- would be invisible.
+    The caller reads the PGID once, while the leader is still alive.
+
     Not a complete guarantee: a process that double-forks and calls setsid()
     leaves this group and survives. That residual is stated in the README rather
     than papered over -- closing it needs a cgroup or a PID namespace, i.e. OS
     isolation, which this process-level harness does not have.
     """
-    try:
-        pgid = os.getpgid(pid)
-    except (ProcessLookupError, PermissionError):
-        return []
-    if pgid in (0, os.getpgid(0)):  # never signal our own group
+    if pgid <= 0 or pgid == os.getpgid(0):  # never signal our own group
         return []
     try:
         os.killpg(pgid, signal.SIGTERM)
@@ -562,17 +563,24 @@ class AgentFollower:
                 start_new_session=True)
         except OSError as e:
             raise FollowerError(f"could not launch the follower: {e}") from e
+        # Read the PGID NOW, while the leader is alive. After it exits the group
+        # is unreachable through its pid -- and orphans that outlived the leader
+        # are exactly the ones that matter.
+        try:
+            pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, PermissionError):
+            pgid = proc.pid          # start_new_session makes these equal anyway
         try:
             out_b, err_b = proc.communicate(prompt.encode(),
                                             timeout=self.tier.wall_timeout_sec)
             rc = proc.returncode
         except subprocess.TimeoutExpired:
-            reap_process_group(proc.pid)
+            reap_process_group(pgid)
             out_b, err_b = proc.communicate()
             rc, timed_out = None, True
         # Unconditional: a clean exit does not mean the session left nothing
         # behind.
-        survivors = reap_process_group(proc.pid)
+        survivors = reap_process_group(pgid)
         elapsed = time.time() - t0
 
         transcript = workdir / f"follower_{arm}_transcript.txt"
