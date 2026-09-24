@@ -40,8 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `integration/phases-0-4-7-20260923`).
 
 ### Fixed
-- `benchmark/run_bench.py`'s `report.json` now records `jobs` and
-  `strict_attribution`. Both change what a verdict *means* — `strict_attribution`
+- `benchmark/run_bench.py`'s `report.json` now records `strict_attribution` and
+  `jobs` — the worker count the run *actually used*, clamped to the target count,
+  since `run_targets()` goes serial for a single target and a report claiming 8
+  workers for a 1-target run would misdescribe its own provenance. Both settings
+  change what a verdict *means* — `strict_attribution`
   decides whether an unwitnessed success scores at all, and `jobs` is the
   scheduling shape the run used — so a report omitting them could not be
   compared against another report. Found by exercising `--corpus-root` end to
