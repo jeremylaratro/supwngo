@@ -432,6 +432,36 @@ Three properties that keep this honest:
   (having `win()` read `flag.txt`) became *less* urgent: a scrapeable
   `.rodata` literal is no longer sufficient to score.
 
+### Three attribution defects found after the fix landed (24 Sep)
+
+The first implementation reconstructed the tree correctly but reasoned about it
+in three wrong ways. All three were found by running it against real exploits,
+and all three fixes make attribution *more* accurate rather than more
+permissive. Fixtures for each are in `tests/test_bench_attribution.py`; 5 of
+its 11 tests fail against the pre-fix module.
+
+| # | Defect | Wrong verdict it produced |
+|---|--------|---------------------------|
+| A | The target was identified by its *current* image, but `execve` in place replaces a pid's image without ending the process. A shellcode/SROP solve execs a shell in the target's own pid, so that pid reads `dash` and the target appears never to have run. | **False VOID** against real exploitation, concentrated on exactly the hardest techniques. `system()` forks, so it kept its name and worked — which is why this hid for so long. |
+| B | A `write` record split by strace's `<unfinished ...>` / `<... resumed>` pair matched nothing in either half, so the real writer vanished; meanwhile pwntools' `io.interactive()` relay thread echoed the same bytes in one complete line and was blamed. | **False `script_gamed_the_check`** — an accusation of cheating against a working exploit. Non-deterministic, since it depends on whether the kernel interleaves another pid's line mid-write, so identical code disagreed between runs minutes apart. |
+| C | Consequence of identifying the target by its latest image: a pid that scraped the flag, printed it, and *then* exec'd the target was credited, because by the end of the trace its image **was** the target. | **False SUCCESS.** Pre-existing, and the most serious of the three in kind — it is precisely the channel attribution exists to close. Found while reasoning about what fixing A would break. |
+
+The fix for A and C is one rule, and neither half works alone:
+
+> A flag-bearing write is credited iff some ancestor of the writing process
+> (including the process itself) `execve`d the target **strictly before** that
+> write.
+
+`including the process itself` fixes A. `strictly before` fixes C — and is what
+stops the fix for A from converting a false VOID into a false SUCCESS. Writes
+are grouped per `(pid, exec-epoch)` so bytes a pid wrote as one program are
+never pooled with bytes it wrote as another, while a flag straddling two
+`write()` calls in the same epoch still joins up.
+
+For B, split records are rejoined per pid before anything is matched, and a
+`CLONE_THREAD` writer is resolved to the process it belongs to — a thread of the
+driver *is* the driver, and a thread of the target is still the target.
+
 Residual gap: a script could deliberately write the flag into the target's own
 output channel. That requires real effort rather than a shortcut, and
 `shell_exec_by_target` corroborates the six shell-based targets independently,

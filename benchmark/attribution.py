@@ -54,6 +54,33 @@ execve (who is what), clone/fork/vfork (who begat whom) and write (who emitted
 which bytes). From that we reconstruct the process tree and ask whether any
 flag-bearing write came from the target's subtree.
 
+TWO THINGS THE TRACE MAKES EASY TO GET WRONG
+--------------------------------------------
+Both of these produced wrong verdicts against real exploits before they were
+handled, and both are properties of the trace rather than of the exploit:
+
+1. `execve` IN PLACE erases a pid's name, not its lineage. Shellcode and SROP
+   solves end by exec'ing a shell in the target's own pid, so that pid is
+   reported as `dash` and the target appears never to have run:
+
+       647098 cat  <-  646974 dash  <-  646913 python3    (646974 WAS the target)
+
+   Contrast `system()`, which forks, so the target keeps its name. Identifying
+   the target by its *current* image therefore under-credits precisely the
+   hardest techniques. We record every image a pid has ever had, with the
+   sequence position at which it took it, and credit a write only if the pid
+   had already become the target when the write happened -- so this cannot be
+   inverted into crediting a scrape-then-exec.
+
+2. A SPLIT RECORD hides the real writer, and a thread supplies a decoy. When
+   another pid interleaves mid-syscall, strace emits the write in two halves
+   that match nothing on their own, while pwntools' `io.interactive()` relay
+   thread echoes the same bytes in one complete line. The genuine writer
+   vanishes and the harness's own plumbing gets blamed -- a false accusation
+   against a working exploit, and non-deterministic, since it depends on
+   kernel interleaving. We rejoin split records before matching, and resolve a
+   CLONE_THREAD writer to the process it belongs to.
+
 LIMITS, stated plainly
 ----------------------
 - Needs a working `strace` and ptrace permission. When unavailable this module
@@ -82,9 +109,25 @@ from pathlib import Path
 _LINE = re.compile(r"^(\d+)\s+(.*)$")
 _EXECVE_OK = re.compile(r'execve(?:at)?\("([^"]*)"')
 _SPAWN = re.compile(r"(?:clone3?|vfork|fork)\(.*?\)\s*=\s*(\d+)\s*$")
-_SPAWN_RESUMED = re.compile(
-    r"<\.\.\.\s*(?:clone3?|vfork|fork)\s+resumed>.*?\)\s*=\s*(\d+)\s*$")
 _WRITE = re.compile(r'write\(\d+,\s*"(.*)"(?:\.\.\.)?,\s*\d+\)')
+
+# When another pid's line interleaves mid-syscall, strace splits the record:
+#
+#   642812 write(1, "FLAG{...}\n", 39 <unfinished ...>
+#   642765 clone3({...CLONE_THREAD...}) = 642811
+#   642812 <... write resumed>)              = 39
+#
+# Matching on either half alone finds no write at all, which previously hid the
+# real writer and let an unrelated complete line be blamed instead. These two
+# patterns let us rejoin the halves per pid before anything is matched.
+_UNFINISHED = " <unfinished ...>"
+_RESUMED = re.compile(r"^<\.\.\.\s*(\w+)\s+resumed>\s*(.*)$")
+
+# A CLONE_THREAD child shares its creator's address space: it IS that process,
+# not a child of it. pwntools' io.interactive() relay thread is the case that
+# matters -- it echoes the target's bytes, so treating it as an independent
+# writer blames the harness's own plumbing for producing the flag.
+_CLONE_THREAD = "CLONE_THREAD"
 
 # Shells a successful exploit might land. Used for the corroborating
 # `shell_exec_by_target` witness, not as the primary gate.
@@ -117,13 +160,23 @@ def _resolve(path: str, cwd: Path) -> str:
 
 
 class ProcessTree:
-    """execve/spawn/write facts recovered from an strace log."""
+    """execve/spawn/write facts recovered from an strace log.
 
-    def __init__(self, exec_path: dict[int, str], parent: dict[int, int],
-                 written: dict[int, str]):
-        self.exec_path = exec_path
+    Everything is timestamped with the trace line's ordinal (`seq`), because
+    *when* a pid became the target decides whether a write belongs to it. A pid
+    that scrapes the flag, prints it, and only then `execve`s the target must
+    not be credited for the earlier write -- see `attribute()`.
+    """
+
+    def __init__(self, exec_events: dict[int, list[tuple[int, str]]],
+                 parent: dict[int, int], thread_of: dict[int, int],
+                 write_groups: dict[tuple[int, int], dict]):
+        self.exec_events = exec_events
         self.parent = parent
-        self.written = written
+        self.thread_of = thread_of
+        self.write_groups = write_groups
+        # Latest image per pid, for human-readable chains.
+        self.exec_path = {p: evs[-1][1] for p, evs in exec_events.items() if evs}
 
     def ancestry(self, pid: int) -> list[int]:
         out: list[int] = []
@@ -135,80 +188,156 @@ class ProcessTree:
             cur = self.parent.get(cur)
         return out
 
+    def process_identity(self, pid: int) -> int:
+        """Resolve a thread to the process it is part of.
+
+        A CLONE_THREAD child is the same process as its creator, so its writes
+        are that process's writes. Without this, pwntools' relay thread looks
+        like an independent writer of whatever it echoes.
+        """
+        seen: set[int] = set()
+        cur = pid
+        while cur in self.thread_of and cur not in seen:
+            seen.add(cur)
+            cur = self.thread_of[cur]
+        return cur
+
+    def exec_seqs(self, pid: int, path: str) -> list[int]:
+        return [s for s, p in self.exec_events.get(pid, []) if p == path]
+
     def describe(self, pid: int) -> str:
         parts = []
         for p in self.ancestry(pid):
             path = self.exec_path.get(p)
-            parts.append(f"{p}:{os.path.basename(path) if path else '(inherited)'}")
+            label = os.path.basename(path) if path else "(inherited)"
+            if p in self.thread_of:
+                label += " [thread]"
+            parts.append(f"{p}:{label}")
         return " <- ".join(parts)
 
 
 def parse_trace(trace_path: Path, cwd: Path) -> ProcessTree:
-    exec_path: dict[int, str] = {}
+    exec_events: dict[int, list[tuple[int, str]]] = {}
     parent: dict[int, int] = {}
-    written: dict[int, list[str]] = {}
+    thread_of: dict[int, int] = {}
+    # Keyed by (pid, epoch) where epoch counts that pid's execs so far, so the
+    # bytes a pid wrote as one program are never pooled with the bytes it wrote
+    # as another. A flag split across two write() calls in the same epoch still
+    # joins up.
+    write_groups: dict[tuple[int, int], dict] = {}
+    epoch: dict[int, int] = {}
+    pending: dict[int, str] = {}
 
     try:
         text = trace_path.read_text(errors="replace")
     except OSError:
-        return ProcessTree({}, {}, {})
+        return ProcessTree({}, {}, {}, {})
 
-    for line in text.splitlines():
+    for seq, line in enumerate(text.splitlines()):
         m = _LINE.match(line)
         if not m:
             continue
         pid, rest = int(m.group(1)), m.group(2)
 
+        # Rejoin a record strace split across two lines. Without this the write
+        # is invisible in BOTH halves.
+        if rest.endswith(_UNFINISHED):
+            pending[pid] = rest[: -len(_UNFINISHED)]
+            continue
+        r = _RESUMED.match(rest)
+        if r:
+            head = pending.pop(pid, None)
+            # No pending head means the trace began mid-syscall; the tail alone
+            # is not a record we can attribute, but it must not be discarded
+            # silently either -- it simply matches nothing below.
+            rest = head + r.group(2) if head is not None else rest
+
         if "ENOENT" not in rest and "EACCES" not in rest:
             e = _EXECVE_OK.search(rest)
             if e:
-                exec_path[pid] = _resolve(e.group(1), cwd)
+                exec_events.setdefault(pid, []).append((seq, _resolve(e.group(1), cwd)))
+                epoch[pid] = epoch.get(pid, 0) + 1
 
-        s = _SPAWN.search(rest) or _SPAWN_RESUMED.search(rest)
+        s = _SPAWN.search(rest)
         if s:
             child = int(s.group(1))
             # A pid can be reported once by the parent and once on resume;
             # first writer wins, and self-parenting is nonsense.
             if child != pid:
                 parent.setdefault(child, pid)
+                if _CLONE_THREAD in rest:
+                    thread_of.setdefault(child, pid)
 
         w = _WRITE.search(rest)
         if w:
-            # Accumulate per pid: a flag could straddle two writes.
-            written.setdefault(pid, []).append(w.group(1))
+            key = (pid, epoch.get(pid, 0))
+            g = write_groups.setdefault(key, {"seq": seq, "parts": []})
+            g["parts"].append(w.group(1))
 
-    return ProcessTree(exec_path, parent, {p: "".join(v) for p, v in written.items()})
+    for g in write_groups.values():
+        g["data"] = "".join(g["parts"])
+    return ProcessTree(exec_events, parent, thread_of, write_groups)
 
 
 def attribute(tree: ProcessTree, target_binary: Path, expected_flag: str) -> dict:
-    """Decide who disclosed the flag."""
-    target = os.path.realpath(str(target_binary))
-    target_pids = [p for p, path in tree.exec_path.items() if path == target]
-    target_set = set(target_pids)
+    """Decide who disclosed the flag.
 
-    def from_target(pid: int) -> bool:
-        return any(a in target_set for a in tree.ancestry(pid))
+    A flag-bearing write is credited iff some ancestor of the writing process
+    (including the process itself) `execve`d the target STRICTLY BEFORE that
+    write. Both halves of that rule are load-bearing:
+
+    `including the process itself` -- an in-place `execve` replaces a pid's
+    image without ending the process, so a pid that was the target and then
+    exec'd a shell is still the target's lineage even though its name is now
+    `dash`. Shellcode and SROP end in exactly that in-place exec; crediting
+    only fork-then-exec would systematically under-credit the hardest
+    techniques and report false VOID against real exploitation.
+
+    `strictly before` -- keeping a pid's whole exec history would otherwise
+    open a fresh hole: a script could scrape the flag, print it, and only then
+    `execve` the target, retroactively making its own earlier write look like
+    the target's. Ordering closes that, so the fix for the false VOID cannot be
+    turned into a false SUCCESS.
+    """
+    target = os.path.realpath(str(target_binary))
+    target_execs = {p: tree.exec_seqs(p, target) for p in tree.exec_events}
+    target_execs = {p: s for p, s in target_execs.items() if s}
+
+    def became_target_before(pid: int, seq: int) -> bool:
+        return any(s < seq for a in tree.ancestry(pid)
+                   for s in target_execs.get(a, ()))
 
     credited, uncredited = [], []
-    for pid, blob in tree.written.items():
-        if expected_flag not in blob:
+    for (pid, _epoch), group in sorted(tree.write_groups.items()):
+        if expected_flag not in group["data"]:
             continue
-        (credited if from_target(pid) else uncredited).append(
-            {"pid": pid, "chain": tree.describe(pid)})
+        # Attribute a thread's write to the process it belongs to, so the
+        # harness's own relay thread cannot stand in as an independent writer.
+        writer = tree.process_identity(pid)
+        rec = {"pid": pid, "chain": tree.describe(pid)}
+        if writer != pid:
+            rec["thread_of"] = writer
+        (credited if became_target_before(writer, group["seq"])
+         else uncredited).append(rec)
 
     # Corroborating witness: did the target itself exec a shell? That is the
-    # intended solve path for the six shell-based targets, and unlike the
+    # intended solve path for the shell-based targets, and unlike the
     # `echo $((6*7))` marker it cannot be faked by a target echoing its input.
-    shell_execs = [
-        {"pid": pid, "shell": os.path.basename(path), "chain": tree.describe(pid)}
-        for pid, path in tree.exec_path.items()
-        if os.path.basename(path) in _SHELLS
-        and any(a in target_set for a in tree.ancestry(pid)[1:])
-    ]
+    # Self is included for the same in-place-exec reason as above: an SROP or
+    # shellcode solve `execve`s the shell in the target's own pid.
+    shell_execs = []
+    for pid, evs in tree.exec_events.items():
+        for seq, path in evs:
+            if os.path.basename(path) not in _SHELLS or path == target:
+                continue
+            if became_target_before(pid, seq):
+                shell_execs.append({"pid": pid, "shell": os.path.basename(path),
+                                    "chain": tree.describe(pid)})
+                break
 
     return {
-        "target_pids": sorted(target_pids),
-        "target_observed": bool(target_pids),
+        "target_pids": sorted(target_execs),
+        "target_observed": bool(target_execs),
         "flag_disclosed_by_target": bool(credited),
         "credited_writers": credited,
         "uncredited_writers": uncredited,

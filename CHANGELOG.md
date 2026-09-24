@@ -40,6 +40,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `integration/phases-0-4-7-20260923`).
 
 ### Fixed
+- **`benchmark/attribution.py` reached three wrong verdicts about who wrote the
+  flag.** The process tree was reconstructed correctly; the reasoning over it
+  was wrong. All three fixes make attribution *more* accurate, not more
+  permissive, and `tests/test_bench_attribution.py` pins each with a fixture (5
+  of its 11 tests fail against the pre-fix module):
+  - **False VOID against real exploitation.** The target was identified by its
+    *current* image, but `execve` in place replaces a pid's image without ending
+    the process — a shellcode or SROP solve execs a shell in the target's own
+    pid, so that pid reads `dash` and the target appears never to have run.
+    `system()` forks and so kept its name, which is why this hid: it
+    systematically under-credited only the hardest techniques.
+  - **False accusation of cheating against a working exploit.** A `write`
+    record split by strace's `<unfinished ...>`/`<... resumed>` pair matched
+    nothing in either half, so the real writer vanished, while pwntools'
+    `io.interactive()` relay thread echoed the same bytes in one complete line
+    and was reported as the writer — yielding `script_gamed_the_check`. Because
+    it depends on whether the kernel interleaves another pid's line mid-write,
+    it was non-deterministic: identical code disagreed between runs minutes
+    apart. Split records are now rejoined per pid before any matching, and a
+    `CLONE_THREAD` writer is resolved to the process it belongs to.
+  - **False SUCCESS (pre-existing).** Because the target was identified by its
+    latest image, a script that scraped the flag, printed it, and *then* exec'd
+    the target was credited — exactly the channel attribution exists to close.
+    Credit now requires an ancestor to have exec'd the target *strictly before*
+    the write, which is also what keeps the first fix above from turning a false
+    VOID into a false SUCCESS.
 - `benchmark/run_bench.py`'s `report.json` now records `strict_attribution` and
   `jobs` — the worker count the run *actually used*, clamped to the target count,
   since `run_targets()` goes serial for a single target and a report claiming 8
