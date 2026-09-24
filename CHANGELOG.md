@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Per-attempt `duration_sec` and profiling-prologue timing** (I2,
+  `supwngo/exploit/pipeline/contracts.py`, `orchestrator.py`). `AttemptRecord` gains a
+  `duration_sec` field (also added to `to_dict()`, so it reaches
+  `autopwn_json_probe.parsed.attempts` in `report.json`), wall-clocked by the orchestrator
+  strictly around each executor's `attempt()` call -- never inside an executor's own
+  internal loop (e.g. `VariableOverwriteExecutor`'s 126-combination sweep), so the
+  instrument cannot perturb the thing it measures. Separately, `CanonicalAutopwnEngine`
+  now times its three profiling-prologue stages (`run_static_analysis`,
+  `run_dynamic_profile`, `acquire_leaks`) as three distinct attributes
+  (`static_analysis_duration_sec`, `dynamic_profile_duration_sec`,
+  `leak_acquisition_duration_sec`), since those precede the first `attempt()` and so
+  cannot be derived from per-attempt durations alone. `run()`'s per-technique loop and
+  prologue were split into `_attempt_techniques()`/`_run_prologue()` (pure code motion,
+  no behavior change) so each half is independently testable. Deliberately kept out of
+  `notes`/`failure_reason` (which `templates.py` renders into generated exploit scripts
+  that `rep_divergence.py` hashes per rep) -- structured field and `to_dict()`/engine
+  attributes only.
 - **Candidate provenance on `AttemptRecord`** (`supwngo/exploit/pipeline/contracts.py`,
   `VariableOverwriteExecutor` in `supwngo/exploit/pipeline/executors/stack_techniques.py`).
   A new structured `candidate_provenance` field (also added to `AttemptRecord.to_dict()`,
