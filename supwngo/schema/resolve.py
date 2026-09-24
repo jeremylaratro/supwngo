@@ -44,7 +44,7 @@ __all__ = [
     "compare_specificity", "maximal",
     "applicable", "current_pins", "contradiction_guard", "agreeing",
     "resolve", "try_resolve", "conflicts", "agreements", "is_stale",
-    "canonical_document", "expected_active_dedup_keys",
+    "canonical_document", "expected_active_dedup_keys", "classify_pair",
     "FACT_KEYS", "spec_for", "emit_tables",
     "ID_DIGEST_FIELDS", "DEP_DIGEST_FIELDS", "DERIVED_FIELDS",
     "PROVENANCE_EDGES", "SCOPE_EDGES", "STATE_EVENTS",
@@ -118,9 +118,21 @@ class ConflictClass(enum.Enum):
     """Ordered partition; :func:`conflicts` assigns the first that holds."""
 
     CONTRADICTION_MEASURED_ASSERTED = "contradiction_measured_asserted"
+    #: Neither dominates because they are equal on every ordered component.
+    #: Distinct from INCOMPARABLE, and NOT ``dominated``: ``Ordering`` has four
+    #: members, so "dominated" is not the complement of "incomparable", and
+    #: labelling an equally-specific disagreement ``dominated`` would tell an
+    #: operator that something won when nothing did.
+    EQUALLY_SPECIFIC = "equally_specific"
     INCOMPARABLE = "incomparable"
     DOMINATED = "dominated"
+    #: A re-observation after a terminal state.  The two terminal states are
+    #: reported separately because they mean different things to an operator: a
+    #: retraction was a judgement that the fact was wrong, a supersession was a
+    #: judgement that it was stale.  Collapsing them told the operator the wrong
+    #: one had happened.
     REOBSERVED_AFTER_RETRACTION = "reobserved_after_retraction"
+    REOBSERVED_AFTER_SUPERSESSION = "reobserved_after_supersession"
 
 
 # ---------------------------------------------------------------------------
@@ -270,19 +282,33 @@ class AppliesTo:
         return dict(self.conditions)
 
 
-_ID_RE = re.compile(r"^f_[0-9a-f]{12}$")
+#: 128 bits.  A 48-bit (12 hex) id permitted feasible birthday collisions, and a
+#: colliding id makes ``by_id``, pins, dependency lookup and witness selection
+#: ambiguous -- so the width is not cosmetic.
+_ID_HEX = 32
+_ID_RE = re.compile(r"^f_[0-9a-f]{%d}$" % _ID_HEX)
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
-#: Content-derived id input.  Excludes ``id`` itself, so there is no circularity.
-ID_DIGEST_FIELDS: Tuple[str, ...] = (
+#: What makes two candidates *the same assertion*: the dedup key.  Excludes
+#: ``generation``, so a re-observation still dedups into its active sibling.
+CONTENT_FIELDS: Tuple[str, ...] = (
     "key", "value", "provenance", "applies_to", "derived_from", "method", "by",
 )
+#: Content-derived id input.  Excludes ``id`` itself, so there is no
+#: circularity, and includes ``generation`` so that re-asserting a value after
+#: it was retracted produces a *distinct* id.  Without ``generation``, retract
+#: + re-merge yielded two candidates with one id, which broke ``by_id``,
+#: dependency lookup, the conflict record and candidate ordering all at once.
+ID_DIGEST_FIELDS: Tuple[str, ...] = CONTENT_FIELDS + ("generation",)
 #: What ``derived_from`` pins.  Includes ``id`` so a dependent records *which*
 #: candidate it used.
 DEP_DIGEST_FIELDS: Tuple[str, ...] = ID_DIGEST_FIELDS + ("id",)
 #: Mutated after creation, therefore in **no** digest.  ``state`` is excluded
 #: on purpose: if superseding changed the digest, every dependent's recorded
 #: ``Ref.digest`` would stop matching and a legitimate supersession would be
-#: indistinguishable from tampering.
+#: indistinguishable from tampering.  That exclusion is only safe because ids
+#: uniquely identify immutable candidates, which is what ``generation`` and the
+#: 128-bit width above are for.
 DERIVED_FIELDS: Tuple[str, ...] = ("observations", "state")
 
 
@@ -297,6 +323,9 @@ class Candidate:
     observations: Tuple[Observation, ...]
     derived_from: Tuple[Ref, ...] = ()
     state: State = State.ACTIVE
+    #: Bumped when this assertion is re-made after an identical one reached a
+    #: terminal state, so terminal and live siblings never share an id.
+    generation: int = 0
     id: str = ""
 
     def project(self, fields: Sequence[str]) -> Dict[str, Any]:
@@ -313,7 +342,7 @@ class Candidate:
 
 
 def derive_id(c: Candidate) -> str:
-    return "f_" + _sha(canonical(c.project(ID_DIGEST_FIELDS)))[:12]
+    return "f_" + _sha(canonical(c.project(ID_DIGEST_FIELDS)))[:_ID_HEX]
 
 
 def candidate_digest(c: Candidate) -> str:
@@ -330,7 +359,7 @@ def dedup_key(c: Candidate) -> str:
     ``observations`` instead, which is strictly better than being a dedup
     component.
     """
-    return canonical(c.project(ID_DIGEST_FIELDS))
+    return canonical(c.project(CONTENT_FIELDS))
 
 
 def _merge_observations(
@@ -414,13 +443,57 @@ def _as_enum(cls, raw, what: str):
         raise SchemaError(f"{what}: {raw!r} not one of {[m.value for m in cls]}") from None
 
 
+def _validate_conditions(raw: Any) -> Tuple[Tuple[str, str], ...]:
+    """Conditions are a sorted tuple of ``(str, str)`` pairs.
+
+    Shared by the mapping and the constructed-``AppliesTo`` paths so the two
+    cannot drift; a constructed instance is re-checked because a typed container
+    is not a validated one.  Sorting here is what makes
+    :func:`compare_conditions`' set algebra and the canonical bytes agree.
+    """
+    if raw is None:
+        return ()
+    if isinstance(raw, Mapping):
+        items = list(raw.items())
+    elif isinstance(raw, (list, tuple)):
+        items = []
+        for pair in raw:
+            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                items.append((pair[0], pair[1]))
+            else:
+                raise SchemaError("applies_to.conditions entries must be pairs")
+    else:
+        raise SchemaError("applies_to.conditions must be a mapping or pairs")
+    for name, value in items:
+        if not isinstance(name, str) or not name:
+            raise SchemaError("condition names must be non-empty strings")
+        if not isinstance(value, str):
+            raise SchemaError(f"condition {name!r}: value must be a string")
+    if len({n for n, _ in items}) != len(items):
+        raise SchemaError("applies_to.conditions names a condition twice")
+    return tuple(sorted(items))
+
+
 def validate_candidate(raw: Any) -> Candidate:
     """Validate the **whole** candidate and return it with a derived id.
 
     The only function permitted to raise on untrusted input, and it raises only
-    :class:`SchemaError`.  That is what makes merge total over arbitrary
-    mappings rather than only over well-typed ones.
+    :class:`SchemaError`.  Totality is enforced **structurally** by the wrapper
+    below rather than by having remembered every way a mapping can be
+    ill-formed: field-by-field checks alone let ``observations=1`` escape as a
+    ``TypeError`` and a heterogeneous key set escape from inside ``sorted()``.
     """
+    try:
+        return _validate_candidate(raw)
+    except SchemaError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - deliberate funnel
+        raise SchemaError(
+            f"malformed candidate ({type(exc).__name__}: {exc})"
+        ) from exc
+
+
+def _validate_candidate(raw: Any) -> Candidate:
     if isinstance(raw, Candidate):
         data: Dict[str, Any] = {f.name: getattr(raw, f.name) for f in dataclasses.fields(Candidate)}
     elif isinstance(raw, Mapping):
@@ -429,9 +502,15 @@ def validate_candidate(raw: Any) -> Candidate:
         raise SchemaError(f"candidate must be a mapping or Candidate, got {type(raw).__name__}")
 
     known = {f.name for f in dataclasses.fields(Candidate)}
+    if not all(isinstance(k, str) for k in data):
+        raise SchemaError("candidate field names must be strings")
     unknown = set(data) - known
     if unknown:
         raise SchemaError(f"unknown candidate fields: {sorted(unknown)}")
+
+    generation = data.get("generation", 0)
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
+        raise SchemaError("generation must be a non-negative int")
 
     key = data.get("key")
     if not isinstance(key, str) or not key:
@@ -443,14 +522,19 @@ def validate_candidate(raw: Any) -> Candidate:
 
     at_raw = data.get("applies_to")
     if isinstance(at_raw, AppliesTo):
-        applies_to = at_raw
+        # A constructed instance is NOT trusted: its fields are re-checked, or a
+        # caller could smuggle a malformed identity/conditions past validation.
+        applies_to = AppliesTo(
+            at_raw.identity, _as_enum(Scope, at_raw.scope, "scope"),
+            _validate_conditions(at_raw.conditions), at_raw.binding,
+        )
+        if applies_to.identity is not None and not isinstance(applies_to.identity, str):
+            raise SchemaError("applies_to.identity must be a string or null")
+        if applies_to.binding is not None and not isinstance(applies_to.binding, str):
+            raise SchemaError("applies_to.binding must be a string or null")
     elif isinstance(at_raw, Mapping):
         scope = _as_enum(Scope, at_raw.get("scope"), "scope")
-        conds_raw = at_raw.get("conditions") or ()
-        if isinstance(conds_raw, Mapping):
-            conds_items = tuple(sorted((str(k), str(v)) for k, v in conds_raw.items()))
-        else:
-            conds_items = tuple(sorted((str(k), str(v)) for k, v in conds_raw))
+        conds_items = _validate_conditions(at_raw.get("conditions") or ())
         identity = at_raw.get("identity")
         if identity is not None and not isinstance(identity, str):
             raise SchemaError("applies_to.identity must be a string or null")
@@ -486,34 +570,62 @@ def validate_candidate(raw: Any) -> Candidate:
             raise SchemaError(f"{name} must be a non-empty string")
 
     obs_raw = data.get("observations") or ()
+    if isinstance(obs_raw, (str, bytes, Mapping)) or not isinstance(obs_raw, (list, tuple)):
+        raise SchemaError("observations must be a list")
     observations: List[Observation] = []
     for o in obs_raw:
-        if isinstance(o, Observation):
-            observations.append(o)
-        elif isinstance(o, Mapping):
-            at = o.get("at")
-            if not isinstance(at, str) or not at:
-                raise SchemaError("observation.at must be a non-empty string")
-            ev = o.get("evidence") or ()
-            ev_items = tuple(sorted(ev.items())) if isinstance(ev, Mapping) else tuple(ev)
-            observations.append(Observation(at, ev_items))
+        # A constructed Observation is re-checked for the same reason as
+        # AppliesTo above: a typed container is not a validated one.
+        at = o.at if isinstance(o, Observation) else (
+            o.get("at") if isinstance(o, Mapping) else None)
+        if not isinstance(at, str) or not at:
+            raise SchemaError("observation.at must be a non-empty string")
+        ev = (o.evidence if isinstance(o, Observation)
+              else (o.get("evidence") or ()))
+        if isinstance(ev, Mapping):
+            ev_items = tuple(sorted((str(k), v) for k, v in ev.items()))
+        elif isinstance(ev, (list, tuple)):
+            ev_items = tuple(sorted((str(k), v) for k, v in ev))
         else:
-            raise SchemaError("observation must be a mapping")
+            raise SchemaError("observation.evidence must be a mapping or pairs")
+        canonical(ev_items)
+        observations.append(Observation(at, ev_items))
     if not observations:
         raise SchemaError("a candidate needs at least one observation")
 
     refs_raw = data.get("derived_from") or ()
+    if isinstance(refs_raw, (str, bytes, Mapping)) or \
+            not isinstance(refs_raw, (list, tuple)):
+        raise SchemaError("derived_from must be a list")
     refs: List[Ref] = []
     for r in refs_raw:
         if isinstance(r, Ref):
-            refs.append(r)
+            rkey, rid, rdigest = r.key, r.id, r.digest
         elif isinstance(r, Mapping):
             missing = {"key", "id", "digest"} - set(r)
             if missing:
                 raise SchemaError(f"derived_from entry missing {sorted(missing)}")
-            refs.append(Ref(str(r["key"]), str(r["id"]), str(r["digest"])))
+            rkey, rid, rdigest = r["key"], r["id"], r["digest"]
         else:
             raise SchemaError("derived_from entry must be a mapping")
+        if not isinstance(rkey, str) or not rkey:
+            raise SchemaError("derived_from.key must be a non-empty string")
+        spec_for(rkey)
+        if not isinstance(rid, str) or not _ID_RE.match(rid):
+            raise SchemaError(f"derived_from.id is not a candidate id: {rid!r}")
+        if not isinstance(rdigest, str) or not _DIGEST_RE.match(rdigest):
+            raise SchemaError(f"derived_from.digest is not a sha256 hex: {rdigest!r}")
+        refs.append(Ref(rkey, rid, rdigest))
+    if len({(r.key, r.id) for r in refs}) != len(refs):
+        raise SchemaError("derived_from names the same candidate twice")
+
+    # A derivation with no source is not a derivation.  ``depends_on`` and the
+    # verification classes in the registry are *declarations consumed by the
+    # document layer* (Phase 2) and are deliberately NOT enforced here -- this
+    # module has no loaded binary and no tooling, so it cannot verify anything
+    # and does not pretend to.  This rule is the part that IS enforceable here.
+    if provenance is Provenance.DERIVED and not refs:
+        raise SchemaError("a derived candidate must name at least one source")
 
     candidate = Candidate(
         key=key,
@@ -523,8 +635,12 @@ def validate_candidate(raw: Any) -> Candidate:
         method=method,
         by=by,
         observations=_merge_observations((), tuple(observations)),
-        derived_from=tuple(sorted(refs, key=lambda r: (r.key, r.id))),
+        #: ``digest`` is in the sort key: two refs to the same ``(key, id)`` with
+        #: different digests are different facts, and omitting it left their
+        #: order dependent on input order.
+        derived_from=tuple(sorted(refs, key=lambda r: (r.key, r.id, r.digest))),
         state=state,
+        generation=generation,
     )
     canonical(candidate.value)  # raises SchemaError if not canonicalisable
     candidate = dataclasses.replace(candidate, id=derive_id(candidate))
@@ -580,6 +696,34 @@ class FactStore:
     def _sorted(self, key: str) -> None:
         self._bucket(key).sort(key=lambda c: c.id)
 
+    def _record_conflict(self, conflict: "Conflict") -> None:
+        """Set semantics, so recording the same conflict twice (or from two
+        merge orders) cannot change the bytes."""
+        if conflict not in self.conflicts:
+            self.conflicts.append(conflict)
+        self.conflicts.sort(key=lambda c: (c.key, c.cls.value, c.candidate_ids))
+
+    def _next_seq(self) -> int:
+        """Log sequence numbers are assigned by the store, never by a caller,
+        and they -- not the free-text ``at`` -- order the log.  ``at`` is an
+        operator-supplied string: ``"t10" < "t9"`` lexicographically, so folding
+        pins on ``at`` made a *later* pin lose."""
+        return 1 + max((r.seq for r in self.resolutions), default=0)
+
+    # -- snapshot/restore, so a failed write leaves nothing behind ------
+    def _snapshot(self) -> Tuple[Any, ...]:
+        return (
+            {k: list(v) for k, v in self._facts.items()},
+            list(self.resolutions),
+            list(self.conflicts),
+        )
+
+    def _restore(self, snap: Tuple[Any, ...]) -> None:
+        facts, resolutions, conflicts = snap
+        self._facts = {k: list(v) for k, v in facts.items()}
+        self.resolutions = list(resolutions)
+        self.conflicts = list(conflicts)
+
 
 def expected_active_dedup_keys(store: FactStore, key: str, incoming: Candidate) -> frozenset:
     """Independent oracle for property P1.
@@ -614,6 +758,49 @@ def validate_store(store: FactStore) -> None:
             seen_ids[c.id] = c
     for c in seen_ids.values():                                       # I5
         _assert_acyclic(store, c, set(), set())
+        for ref in c.derived_from:                                    # I5b
+            src = seen_ids.get(ref.id)
+            if src is not None and src.key != ref.key:
+                raise SchemaError(
+                    f"{c.id}: derived_from names {ref.id} under key {ref.key!r} "
+                    f"but that candidate is filed under {src.key!r}"
+                )
+    _validate_log(store)                                              # I7
+
+
+_LOG_CLASSES: Tuple[str, ...] = ("pin", "unpin", "supersede", "retract")
+
+
+def _validate_log(store: FactStore) -> None:
+    """I7: the append-only log is well formed and totally ordered by ``seq``.
+
+    Without this the log was a public list of unvalidated records, and
+    :func:`current_pins` -- the one thing that can override a measurement --
+    folded over whatever a caller had appended.
+    """
+    seen_seq = set()
+    for rec in store.resolutions:
+        if not isinstance(rec, PinRecord):
+            raise SchemaError(f"log entry is not a PinRecord: {type(rec).__name__}")
+        if rec.cls not in _LOG_CLASSES:
+            raise SchemaError(f"log entry class {rec.cls!r} not in {list(_LOG_CLASSES)}")
+        if isinstance(rec.seq, bool) or not isinstance(rec.seq, int) or rec.seq < 1:
+            raise SchemaError(f"log entry seq must be a positive int, got {rec.seq!r}")
+        if rec.seq in seen_seq:
+            raise SchemaError(f"duplicate log seq {rec.seq}")
+        seen_seq.add(rec.seq)
+        if not isinstance(rec.at, str) or not rec.at:
+            raise SchemaError("log entry needs a non-empty at")
+        if not isinstance(rec.actor, str) or not rec.actor:
+            raise SchemaError("log entry needs a non-empty actor")
+        if not isinstance(rec.key, str) or not rec.key:
+            raise SchemaError("log entry needs a non-empty key")
+        for field in ("candidate_id", "by_candidate_id"):
+            cid = getattr(rec, field)
+            if cid is not None and not _ID_RE.match(cid):
+                raise SchemaError(f"log entry {field} is not a candidate id: {cid!r}")
+        if rec.cls != "unpin" and rec.candidate_id is None:
+            raise SchemaError(f"a {rec.cls} record must name a candidate")
 
 
 def _assert_acyclic(store: FactStore, c: Candidate, path: set, done: set) -> None:
@@ -642,41 +829,95 @@ def merge(store: FactStore, incoming: Any) -> MergeDecision:
     candidates *are* the same candidate, (b) observations union as a sorted
     set, and (c) :func:`canonical_document` sorts every array by a
     content-derived key.
+
+    Transactional: the store is valid before the write, and if the write would
+    leave it invalid the snapshot is restored and the error propagates.  Without
+    that boundary ``merge`` *asserted* I3 instead of establishing it, and a store
+    that already violated I3 was left violating it unless the incoming candidate
+    happened to collide.
     """
     candidate = validate_candidate(incoming)            # precondition, not a case
+
+    # The transition table is the only authority on states.  An append yields
+    # exactly ``transition(None, "append")``; anything else has to go through
+    # supersede()/retract() on a stored candidate.
+    appended_state = transition(None, "append")
+    if candidate.state is not appended_state:
+        raise SchemaError(
+            f"merge accepts only state {appended_state.value!r}; got "
+            f"{candidate.state.value!r} -- use supersede()/retract() instead"
+        )
+
+    validate_store(store)                               # I1-I7 hold BEFORE the write
+
     key = candidate.key
     dk = dedup_key(candidate)
-
     matches = [c for c in store.active(key) if dedup_key(c) == dk]
-    if len(matches) > 1:  # pragma: no cover - I3 forbids this
-        raise SchemaError(f"{key}: store violates I3 (duplicate active dedup key)")
 
-    if matches:
-        existing = matches[0]
-        store._replace(
-            existing,
-            dataclasses.replace(
+    snap = store._snapshot()
+    try:
+        if matches:
+            existing = matches[0]
+            store._replace(
                 existing,
-                observations=_merge_observations(existing.observations, candidate.observations),
-            ),
-        )
-        store._sorted(key)
-        return MergeDecision.DEDUPED
+                dataclasses.replace(
+                    existing,
+                    observations=_merge_observations(
+                        existing.observations, candidate.observations),
+                ),
+            )
+            store._sorted(key)
+            decision = MergeDecision.DEDUPED
+        else:
+            # Dedup considers ACTIVE candidates only.  Folding a fresh
+            # observation into a retracted candidate would silently undo the
+            # retraction and leave no active fact at all, so this appends -- at
+            # a fresh ``generation``, so the live and terminal siblings cannot
+            # share an id, and it tells the operator.
+            terminal = [c for c in store.candidates(key)
+                        if c.state is not appended_state and dedup_key(c) == dk]
+            if terminal:
+                generation = 1 + max(c.generation for c in terminal)
+                if candidate.generation != generation:
+                    if _carries_explicit_id(incoming):
+                        raise SchemaError(
+                            f"{key}: generation is assigned by the store "
+                            f"({generation} here), so the supplied id is stale; "
+                            "merge the candidate without an id"
+                        )
+                    candidate = dataclasses.replace(candidate, generation=generation)
+                    candidate = dataclasses.replace(candidate, id=derive_id(candidate))
+                for t in sorted(terminal, key=lambda c: c.id):
+                    store._record_conflict(Conflict(
+                        key,
+                        ConflictClass.REOBSERVED_AFTER_RETRACTION
+                        if t.state is State.RETRACTED
+                        else ConflictClass.REOBSERVED_AFTER_SUPERSESSION,
+                        tuple(sorted((t.id, candidate.id))),
+                    ))
+            store._bucket(key).append(candidate)
+            store._sorted(key)
+            decision = MergeDecision.APPENDED
 
-    # Dedup considers ACTIVE candidates only.  Folding a fresh observation into
-    # a retracted candidate would silently undo the retraction and leave no
-    # active fact at all, so this appends -- and tells the operator.
-    terminal = [c for c in store.candidates(key) if c.state is not State.ACTIVE
-                and dedup_key(c) == dk]
-    if terminal:
-        store.conflicts.append(
-            Conflict(key, ConflictClass.REOBSERVED_AFTER_RETRACTION,
-                     (terminal[0].id, candidate.id))
-        )
+        # Conflicts are recorded on **every write**, not only on resolve: a
+        # producer-only run (``analyze`` with no ``pwn``) never resolves, and
+        # without this it accumulated contradictions in silence.
+        for conflict in context_free_conflicts(store, key):
+            store._record_conflict(conflict)
 
-    store._bucket(key).append(candidate)
-    store._sorted(key)
-    return MergeDecision.APPENDED
+        validate_store(store)                           # I1-I7 hold AFTER it too
+    except Exception:
+        store._restore(snap)
+        raise
+    return decision
+
+
+def _carries_explicit_id(incoming: Any) -> bool:
+    if isinstance(incoming, Candidate):
+        return bool(incoming.id)
+    if isinstance(incoming, Mapping):
+        return bool(incoming.get("id"))
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -720,34 +961,119 @@ def transition(state: Optional[State], event: str) -> State:
     return nxt
 
 
-def _transition_candidate(store: FactStore, cid: str, event: str, reason: str,
+def _require_text(value: Any, what: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise StateTransitionError(f"{what} must be a non-empty string")
+    return value
+
+
+def _transition_candidate(store: FactStore, cid: str, event: str, at: str,
+                          reason: str, actor: str,
                           by_id: Optional[str] = None) -> None:
+    """Validate **everything** first, then mutate, then log -- transactionally.
+
+    The previous order mutated the candidate and then built the record, so a bad
+    ``at`` changed a state and left the change unlogged.
+    """
     c = store.by_id(cid)
     if c is None:
         raise StateTransitionError(f"no candidate {cid}")
-    store._replace(c, dataclasses.replace(c, state=transition(c.state, event)))
-    store._sorted(c.key)
-    store.resolutions.append(
-        PinRecord(cls=event, key=c.key, candidate_id=cid, at=reason_at(reason),
-                  reason=reason, by_candidate_id=by_id)
-    )
+    _require_text(at, f"{event} at")
+    _require_text(actor, f"{event} actor")
+    _require_text(reason, f"{event} reason")
+    next_state = transition(c.state, event)             # refuses before mutating
+    record = PinRecord(cls=event, key=c.key, candidate_id=cid, at=at,
+                       seq=store._next_seq(), actor=actor, reason=reason,
+                       by_candidate_id=by_id)
+    snap = store._snapshot()
+    try:
+        store._replace(c, dataclasses.replace(c, state=next_state))
+        store._sorted(c.key)
+        store.resolutions.append(record)
+        validate_store(store)
+    except Exception:
+        store._restore(snap)
+        raise
 
 
-def reason_at(reason: str) -> str:
-    """Timestamps are supplied by callers, never read from a clock here.  A
-    reason of ``"<iso>|<text>"`` carries its own; otherwise the empty string,
-    which sorts first and keeps the module pure."""
-    return reason.split("|", 1)[0] if "|" in reason else ""
+def supersede(store: FactStore, candidate_id: str, by_candidate_id: str,
+              at: str, reason: str, actor: str) -> None:
+    """``at`` is an explicit parameter, not read from a clock and not smuggled
+    inside ``reason``: this module stays pure, and a record whose sort key came
+    out of a magic string in a free-text field is a record whose ordering nobody
+    can predict.  Ordering is :attr:`PinRecord.seq`, assigned here.
 
-
-def supersede(store: FactStore, candidate_id: str, by_candidate_id: str, reason: str) -> None:
-    if store.by_id(by_candidate_id) is None:
+    A supersession is a claim that one candidate *replaces another for the same
+    proposition*, so the three ways that claim can be nonsense are refused
+    rather than recorded.
+    """
+    replacement = store.by_id(by_candidate_id)
+    if replacement is None:
         raise StateTransitionError(f"no superseding candidate {by_candidate_id}")
-    _transition_candidate(store, candidate_id, "supersede", reason, by_candidate_id)
+    if by_candidate_id == candidate_id:
+        raise StateTransitionError("a candidate cannot supersede itself")
+    target = store.by_id(candidate_id)
+    if target is None:
+        raise StateTransitionError(f"no candidate {candidate_id}")
+    if replacement.key != target.key:
+        raise StateTransitionError(
+            f"cannot supersede {target.key!r} with a candidate for "
+            f"{replacement.key!r}: a supersession is same-key by definition"
+        )
+    if replacement.state is not State.ACTIVE:
+        raise StateTransitionError(
+            f"{by_candidate_id} is {replacement.state.value}; a dead candidate "
+            "cannot supersede a live one"
+        )
+    _transition_candidate(store, candidate_id, "supersede", at, reason, actor,
+                          by_candidate_id)
 
 
-def retract(store: FactStore, candidate_id: str, reason: str) -> None:
-    _transition_candidate(store, candidate_id, "retract", reason)
+def retract(store: FactStore, candidate_id: str, at: str, reason: str,
+            actor: str) -> None:
+    _transition_candidate(store, candidate_id, "retract", at, reason, actor)
+
+
+def pin(store: FactStore, key: str, candidate_id: str, at: str, reason: str,
+        actor: str) -> None:
+    """The **only** writer for a pin.
+
+    A pin is the single mechanism by which an ``asserted`` value may beat a
+    contradictory ``measured`` one, so it is not something a caller may append
+    to a public list: it is validated, attributed and sequenced here.
+    """
+    spec_for(key)
+    c = store.by_id(candidate_id)
+    if c is None:
+        raise StateTransitionError(f"no candidate {candidate_id}")
+    if c.key != key:
+        raise StateTransitionError(
+            f"cannot pin {candidate_id} under {key!r}: it is a {c.key!r} candidate")
+    if c.state is not State.ACTIVE:
+        raise StateTransitionError(
+            f"cannot pin {candidate_id}: it is {c.state.value}")
+    _append_log(store, PinRecord(
+        cls="pin", key=key, candidate_id=candidate_id, at=_require_text(at, "at"),
+        seq=store._next_seq(), actor=_require_text(actor, "actor"),
+        reason=_require_text(reason, "reason")))
+
+
+def unpin(store: FactStore, key: str, at: str, reason: str, actor: str) -> None:
+    spec_for(key)
+    _append_log(store, PinRecord(
+        cls="unpin", key=key, candidate_id=None, at=_require_text(at, "at"),
+        seq=store._next_seq(), actor=_require_text(actor, "actor"),
+        reason=_require_text(reason, "reason")))
+
+
+def _append_log(store: FactStore, record: PinRecord) -> None:
+    snap = store._snapshot()
+    try:
+        store.resolutions.append(record)
+        validate_store(store)
+    except Exception:
+        store._restore(snap)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -947,16 +1273,29 @@ class Agreement:
 
 @dataclasses.dataclass(frozen=True)
 class PinRecord:
+    """One append-only lifecycle record: a pin, an unpin, a supersession or a
+    retraction.
+
+    ``seq`` is store-assigned and is the *only* ordering key.  ``at`` is an
+    operator-supplied label kept for human readers; it is not an ordering key
+    because nothing constrains it to be monotonic or even parseable.  ``actor``
+    is mandatory: a pin is the one mechanism that lets an assertion beat a
+    measurement, so an unattributed pin is not an acceptable record of an
+    explicit operator decision.
+    """
+
     cls: str
     key: str
     candidate_id: Optional[str]
     at: str
+    seq: int
+    actor: str
     reason: str = ""
     by_candidate_id: Optional[str] = None
 
     @property
     def id(self) -> str:
-        return _sha(canonical(self))[:12]
+        return _sha(canonical(self))[:_ID_HEX]
 
 
 def applicable(c: Candidate, ctx: ResolveContext) -> bool:
@@ -979,14 +1318,19 @@ def current_pins(store: FactStore) -> Dict[str, str]:
     """A defined fold over the append-only log, not "if ctx.pins holds one".
 
     Total and order-independent: for each key take the record with the greatest
-    ``(at, id)`` among ``pin``/``unpin``; an ``unpin`` yields no entry.
+    store-assigned ``seq`` among ``pin``/``unpin``; an ``unpin`` yields no entry.
+
+    ``seq`` and not ``at``: ``at`` is operator text, and folding on it made
+    ``"t10"`` lose to ``"t9"`` and equal timestamps fall back to whichever
+    record had the larger content hash -- a "latest pin" rule that was
+    deterministic but not chronological.
     """
     latest: Dict[str, PinRecord] = {}
     for rec in store.resolutions:
         if rec.cls not in ("pin", "unpin"):
             continue
         cur = latest.get(rec.key)
-        if cur is None or (rec.at, rec.id) > (cur.at, cur.id):
+        if cur is None or rec.seq > cur.seq:
             latest[rec.key] = rec
     return {k: r.candidate_id for k, r in latest.items()
             if r.cls == "pin" and r.candidate_id is not None}
@@ -1010,6 +1354,29 @@ def contradiction_guard(key: str, pool: Sequence[Candidate], pins: Mapping[str, 
                     key, sorted((a, b), key=lambda c: c.id),
                     ConflictClass.CONTRADICTION_MEASURED_ASSERTED,
                 )
+
+
+def classify_pair(a: Candidate, b: Candidate) -> Optional[ConflictClass]:
+    """The **one** classifier, used by both :func:`resolve` and :func:`conflicts`.
+
+    Factored out because two copies of an ordered partition drift, and a drifted
+    partition is how a conflict ends up in two classes or none.  Ordered: the
+    first condition that holds wins, and the four cases are exhaustive over
+    differing-value pairs because :class:`Ordering` has exactly four members.
+
+    Returns ``None`` for a pair whose values agree -- those are agreements, not
+    conflicts.
+    """
+    if canonical(a.value) == canonical(b.value):
+        return None
+    if {a.provenance, b.provenance} == {Provenance.MEASURED, Provenance.ASSERTED}:
+        return ConflictClass.CONTRADICTION_MEASURED_ASSERTED
+    order = compare_specificity(a, b)
+    if order is Ordering.EQUAL:
+        return ConflictClass.EQUALLY_SPECIFIC
+    if order is Ordering.INCOMPARABLE:
+        return ConflictClass.INCOMPARABLE
+    return ConflictClass.DOMINATED
 
 
 def agreeing(candidates: Sequence[Candidate]) -> bool:
@@ -1050,12 +1417,24 @@ def resolve(store: FactStore, key: str, ctx: ResolveContext) -> Selected:
     if not winners:
         raise FactUnavailable(f"{key}: no applicable active candidate")
     if not agreeing(winners):
-        cls = (ConflictClass.INCOMPARABLE
-               if any(compare_specificity(a, b) is Ordering.INCOMPARABLE
-                      for a in winners for b in winners if a is not b)
-               else ConflictClass.DOMINATED)
-        raise FactUnresolved(key, winners, cls)
+        # Every pair of maximal candidates is EQUAL or INCOMPARABLE -- if one
+        # dominated the other the loser would not be maximal -- so DOMINATED is
+        # unreachable here, and reporting it would have been a lie.
+        classes = {classify_pair(a, b) for a in winners for b in winners
+                   if a is not b}
+        classes.discard(None)
+        for preferred in (ConflictClass.CONTRADICTION_MEASURED_ASSERTED,
+                          ConflictClass.INCOMPARABLE,
+                          ConflictClass.EQUALLY_SPECIFIC):
+            if preferred in classes:
+                raise FactUnresolved(key, winners, preferred)
+        raise FactUnresolved(key, winners, ConflictClass.INCOMPARABLE)
 
+    # ``witnesses`` is the whole maximal set; ``witness`` is the representative.
+    # It is well defined rather than arbitrary: past ``agreeing()`` every winner
+    # carries the same value *and* the same identity, so any of them answers the
+    # question identically, and ``maximal()`` sorts by a 128-bit content-derived
+    # id so the representative is also stable across runs.
     chosen = Selected(
         key, winners[0].value, winners[0], tuple(winners),
         "unique_maximal" if len(winners) == 1 else "agreed_value",
@@ -1079,41 +1458,57 @@ def try_resolve(store: FactStore, key: str, ctx: ResolveContext):
         return ABSENT
 
 
-def conflicts(store: FactStore, ctx: ResolveContext) -> List[Conflict]:
-    """Computed on every write, not only on resolve.
+def _pairwise(pool: Sequence[Candidate]) -> Iterator[Tuple[Candidate, Candidate]]:
+    for i, a in enumerate(pool):
+        for b in pool[i + 1:]:
+            yield a, b
 
-    A producer-only workflow never calls :func:`resolve`, so without this an
-    ``analyze``-only run would accumulate contradictions in silence and
-    *dominated* contradictions would never be reported at all.
-    """
+
+def conflicts(store: FactStore, ctx: ResolveContext) -> List[Conflict]:
+    """Conflicts *in a given context* -- the resolve-time view."""
     out: List[Conflict] = []
     for key in store.keys():
         pool = [c for c in store.active(key) if applicable(c, ctx)]
-        for i, a in enumerate(pool):
-            for b in pool[i + 1:]:
-                if canonical(a.value) == canonical(b.value):
-                    continue
-                provs = {a.provenance, b.provenance}
-                if provs == {Provenance.MEASURED, Provenance.ASSERTED}:
-                    cls = ConflictClass.CONTRADICTION_MEASURED_ASSERTED
-                elif compare_specificity(a, b) is Ordering.INCOMPARABLE:
-                    cls = ConflictClass.INCOMPARABLE
-                else:
-                    cls = ConflictClass.DOMINATED
+        for a, b in _pairwise(pool):
+            cls = classify_pair(a, b)
+            if cls is not None:
                 out.append(Conflict(key, cls, tuple(sorted((a.id, b.id)))))
+    return sorted(out, key=lambda c: (c.key, c.cls.value, c.candidate_ids))
+
+
+def context_free_conflicts(store: FactStore, key: Optional[str] = None) -> List[Conflict]:
+    """Conflicts visible **without** a resolve context; what :func:`merge` records.
+
+    A producer-only workflow (``analyze`` with no ``pwn``) never calls
+    :func:`resolve` and has no ``ResolveContext``, so a context-scoped conflict
+    report would never run and contradictions would accumulate in silence.  This
+    view is deliberately over-inclusive: it reports pairs that some future
+    context may render inapplicable, which is the safe direction.
+    """
+    out: List[Conflict] = []
+    for k in ([key] if key is not None else store.keys()):
+        for a, b in _pairwise(store.active(k)):
+            cls = classify_pair(a, b)
+            if cls is not None:
+                out.append(Conflict(k, cls, tuple(sorted((a.id, b.id)))))
     return sorted(out, key=lambda c: (c.key, c.cls.value, c.candidate_ids))
 
 
 def agreements(store: FactStore, ctx: ResolveContext) -> List[Agreement]:
     """Same-value pairs are not conflicts; recording them makes "two
-    authorities concurred" visible rather than inferred."""
+    authorities concurred" visible rather than inferred.
+
+    Agreement is decided by :func:`agreeing`, the same predicate
+    :func:`resolve` uses.  Testing equal *values* alone reported two different
+    builds' ``0x401234`` as concurrence, which contradicted both ``agreeing()``
+    and P19.
+    """
     out: List[Agreement] = []
     for key in store.keys():
         pool = [c for c in store.active(key) if applicable(c, ctx)]
-        for i, a in enumerate(pool):
-            for b in pool[i + 1:]:
-                if canonical(a.value) == canonical(b.value):
-                    out.append(Agreement(key, tuple(sorted((a.id, b.id))), a.value))
+        for a, b in _pairwise(pool):
+            if agreeing((a, b)):
+                out.append(Agreement(key, tuple(sorted((a.id, b.id))), a.value))
     return sorted(out, key=lambda a: (a.key, a.candidate_ids))
 
 
@@ -1133,6 +1528,11 @@ def is_stale(store: FactStore, c: Candidate, _seen: Optional[set] = None) -> boo
     for ref in c.derived_from:
         src = store.by_id(ref.id)
         if src is None:
+            return True
+        # ``Ref.key`` is part of the reference, so a reference that names the
+        # right id under the wrong key is structurally false and therefore
+        # stale.  Ignoring it let a false reference read as fresh.
+        if src.key != ref.key:
             return True
         if src.state is not State.ACTIVE:
             return True
@@ -1164,6 +1564,7 @@ def canonical_document(store: FactStore) -> str:
                 "method": c.method,
                 "by": c.by,
                 "state": c.state.value,
+                "generation": c.generation,
                 "observations": _jsonable(
                     sorted(c.observations, key=lambda o: (o.at, o.digest()))
                 ),
@@ -1173,9 +1574,9 @@ def canonical_document(store: FactStore) -> str:
     doc = {
         "schema_version": "supwngo.context/v1",
         "facts": facts,
-        "resolutions": _jsonable(
-            sorted(store.resolutions, key=lambda r: (r.at, r.cls, r.key, r.id))
-        ),
+        # ``seq`` is unique by I7, so this total order needs no tiebreak and
+        # cannot depend on a free-text ``at``.
+        "resolutions": _jsonable(sorted(store.resolutions, key=lambda r: r.seq)),
         "conflicts": _jsonable(
             sorted(store.conflicts, key=lambda c: (c.key, c.cls.value, c.candidate_ids))
         ),
@@ -1249,7 +1650,14 @@ def emit_tables() -> str:
     out.append("")
 
     out += ["### Per-key allowed scopes", "",
-            "| fact key | allowed scopes | depends_on | verification class |",
+            "`allowed scopes` is **enforced** by validation (invariant I4).",
+            "`depends_on` and `verification class` are **declarations for the",
+            "Phase-2 document layer**: this module has no loaded binary and no",
+            "tooling, so it performs no verification and does not pretend to.",
+            "They are listed here so the declaration is reviewable, not because",
+            "resolution consults them.",
+            "",
+            "| fact key | allowed scopes | depends_on | verification class (declared) |",
             "|---|---|---|---|"]
     for key, spec in sorted(FACT_KEYS.items()):
         out.append(f"| `{key}` | {', '.join(sorted(s.value for s in spec.allowed_scopes))} "
@@ -1291,9 +1699,18 @@ def _merge_scenarios() -> List[Tuple[str, str]]:
     s = FactStore(); merge(s, cand())
     rows.append(("an active candidate with a different value", merge(s, cand(value=80)).value))
 
-    s = FactStore(); merge(s, cand()); retract(s, s.active("stack.return_offset")[0].id, "wrong")
+    s = FactStore(); merge(s, cand())
+    retract(s, s.active("stack.return_offset")[0].id, "t0", "wrong", "operator")
     rows.append(("only a **retracted** candidate with the same dedup key",
                  merge(s, cand(at="t3")).value))
+
+    s = FactStore(); merge(s, cand())
+    try:
+        merge(s, dict(cand(at="t4"), state=State.RETRACTED))
+        rows.append(("anything, and the incoming state is not active", "unreachable"))
+    except SchemaError:
+        rows.append(("anything, and the incoming state is not `active`",
+                     "SchemaError (only the state machine changes states)"))
 
     s = FactStore()
     try:

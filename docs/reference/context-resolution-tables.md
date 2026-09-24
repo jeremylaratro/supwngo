@@ -48,11 +48,19 @@ Legend: `≻` row dominates column, `≺` column dominates row,
 | an active candidate, same value, different method | `appended` |
 | an active candidate with a different value | `appended` |
 | only a **retracted** candidate with the same dedup key | `appended` |
+| anything, and the incoming state is not `active` | `SchemaError (only the state machine changes states)` |
 | anything, and the incoming candidate fails validation | `SchemaError (precondition, not a case)` |
 
 ### Per-key allowed scopes
 
-| fact key | allowed scopes | depends_on | verification class |
+`allowed scopes` is **enforced** by validation (invariant I4).
+`depends_on` and `verification class` are **declarations for the
+Phase-2 document layer**: this module has no loaded binary and no
+tooling, so it performs no verification and does not pretend to.
+They are listed here so the declaration is reviewable, not because
+resolution consults them.
+
+| fact key | allowed scopes | depends_on | verification class (declared) |
 |---|---|---|---|
 | `heap.base` | process | `runtime` | `runtime` |
 | `libc.base` | process | `runtime` | `runtime` |

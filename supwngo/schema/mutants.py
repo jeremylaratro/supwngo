@@ -107,15 +107,48 @@ def _merge_matches_terminal(store: R.FactStore, incoming: Any) -> R.MergeDecisio
     return R.MergeDecision.APPENDED
 
 
-def _make_random_ids() -> Callable[[R.Candidate], str]:
-    """Round-1 finding 4: non-content-derived ids make merge order-dependent."""
+def _make_ids_not_a_function() -> Callable[[R.Candidate], str]:
+    """An id that is not a *function* at all: the same candidate gets a different
+    id on every call.  Invariant I2 catches this at every write, which is why the
+    order-dependence mutant below has to be memoised to get past validation --
+    and P10 is the property that names the defect directly."""
     counter = {"n": 0}
 
     def derive_id(c: R.Candidate) -> str:
         counter["n"] += 1
-        return "f_" + format(counter["n"], "012x")
+        return "f_" + format(counter["n"], "0%dx" % R._ID_HEX)
 
     return derive_id
+
+
+#: Shared by the pair below: content -> id, assigned in arrival order.
+_ARRIVAL_IDS: Dict[str, str] = {}
+
+
+def _derive_id_by_arrival_order(c: R.Candidate) -> str:
+    """Round-1 finding 4, in the only form that reaches the document: ids handed
+    out by a counter as candidates *arrive*.
+
+    Memoised on content so the id is a function (I2 is satisfied and nothing
+    crashes), but the *number* depends on arrival order -- so two permutations of
+    the same batch produce different ids, the candidate arrays sort differently
+    and the document bytes diverge.  Both halves are needed: with I2 alone the
+    defect is caught early, with the memo alone it is invisible.
+    """
+    key = R.canonical(c.project(R.ID_DIGEST_FIELDS))
+    if key not in _ARRIVAL_IDS:
+        _ARRIVAL_IDS[key] = "f_" + format(len(_ARRIVAL_IDS) + 1, "0%dx" % R._ID_HEX)
+    return _ARRIVAL_IDS[key]
+
+
+class _ArrivalOrderFactStore(R.FactStore):
+    """Scopes the arrival counter to one store, which is what makes the order
+    dependence observable across permutations rather than memoised away by the
+    first one."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        _ARRIVAL_IDS.clear()
 
 
 def _canonical_document_unsorted(store: R.FactStore) -> str:
@@ -248,6 +281,66 @@ def _current_pins_first_wins(store: R.FactStore) -> Dict[str, str]:
     return out
 
 
+def _validate_candidate_unfunnelled(raw: Any) -> R.Candidate:
+    """Round-2 finding 1: field-by-field checks with no funnel, so
+    ``observations=1`` escapes as a ``TypeError`` and merge stops being total in
+    its declared error type."""
+    return R._validate_candidate(raw)
+
+
+def _merge_observations_appends(existing, incoming):
+    """Observations as a plain list concatenation: re-merging an identical
+    candidate grows the array forever, so merge is no longer idempotent and the
+    document bytes depend on how many times a producer ran."""
+    return tuple(existing) + tuple(incoming)
+
+
+def _compare_specificity_reads_value(a: R.Candidate, b: R.Candidate) -> R.Ordering:
+    """Breaks the symmetry reduction the order universe depends on: if the
+    composed order reads a field outside the four ordered components, enumerating
+    representatives of those four is no longer exhaustive."""
+    base = R._compare_specificity_pristine(a, b)
+    if base is not R.Ordering.EQUAL:
+        return base
+    if R.canonical(a.value) == R.canonical(b.value):
+        return R.Ordering.EQUAL
+    return (R.Ordering.GREATER if R.canonical(a.value) > R.canonical(b.value)
+            else R.Ordering.LESS)
+
+
+def _resolve_always_refuses(store, key, ctx):
+    """A total, deterministic resolver that is also useless.  It satisfies
+    "nothing undeclared escapes" and "the answer does not depend on order", which
+    is exactly why those two claims alone are not enough."""
+    R.spec_for(key)
+    raise R.FactUnavailable(f"{key}: refusing on principle")
+
+
+def _maximal_takes_first(pool: Sequence[R.Candidate]) -> List[R.Candidate]:
+    """"Sort and take the first" -- here, take the first in *bucket* order, which
+    is what makes a maximal-element selection order-dependent."""
+    return list(pool[:1])
+
+
+def _is_stale_ignores_dead_sources(store, c, _seen=None) -> bool:
+    """Staleness that checks the digest but not the source's state, so a
+    retracted source leaves its dependents looking fresh and the single
+    computed-staleness mechanism silently stops working."""
+    seen = set() if _seen is None else _seen
+    if c.id in seen:
+        return False
+    seen.add(c.id)
+    for ref in c.derived_from:
+        src = store.by_id(ref.id)
+        if src is None:
+            return True
+        if R.candidate_digest(src) != ref.digest:
+            return True
+        if _is_stale_ignores_dead_sources(store, src, seen):
+            return True
+    return False
+
+
 def _emit_tables_from_parallel_constants() -> str:
     """Round-1 finding 13: a generator that agrees with itself byte for byte
     while disagreeing with the comparators it claims to render."""
@@ -272,8 +365,11 @@ MUTANTS: Dict[str, Mutant] = {
                {"dedup_key": _dedup_key_ignores_provenance}),
         Mutant("dedup_matches_terminal", "round-1 finding 3", "P1",
                {"merge": _merge_matches_terminal}),
-        Mutant("random_ids", "round-1 finding 4", "P2",
-               {"derive_id": _make_random_ids()}),
+        Mutant("ids_not_a_function", "round-1 finding 4 (half one)", "P10",
+               {"derive_id": _make_ids_not_a_function()}),
+        Mutant("ids_by_arrival_order", "round-1 finding 4 (half two)", "P2",
+               {"derive_id": _derive_id_by_arrival_order,
+                "FactStore": _ArrivalOrderFactStore}),
         Mutant("unsorted_candidate_array", "round-1 finding 4", "P2",
                {"canonical_document": _canonical_document_unsorted,
                 "FactStore": _UnsortedFactStore}),
@@ -322,5 +418,23 @@ MUTANTS: Dict[str, Mutant] = {
                {"current_pins": _current_pins_first_wins}),
         Mutant("tables_from_parallel_constants", "round-1 finding 13", "P15",
                {"emit_tables": _emit_tables_from_parallel_constants}),
+        # Round-2 finding 13: six properties had no bound mutant, so "every
+        # property is paired" was false.  These six close that, and
+        # ``test_every_property_has_a_mutant`` keeps it closed.
+        Mutant("validation_not_funnelled", "round-2 finding 1", "P1b",
+               {"validate_candidate": _validate_candidate_unfunnelled}),
+        Mutant("observations_append_without_dedup", "non-idempotent merge", "P3",
+               {"_merge_observations": _merge_observations_appends}),
+        Mutant("specificity_reads_value", "unsound symmetry reduction", "P5b",
+               {"compare_specificity": _compare_specificity_reads_value}),
+        Mutant("resolve_always_refuses", "round-2 finding 12", "P6",
+               {"resolve": _resolve_always_refuses},
+               note="total and deterministic, therefore passes a codomain check "
+                    "and an order-independence check -- P6 must require the "
+                    "successes as well"),
+        Mutant("maximal_takes_first", "sort-and-take-first selection", "P7",
+               {"maximal": _maximal_takes_first}),
+        Mutant("staleness_ignores_dead_sources", "v3's four mechanisms", "P17",
+               {"is_stale": _is_stale_ignores_dead_sources}),
     ]
 }
