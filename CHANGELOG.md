@@ -8,6 +8,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Format-string walkthrough family (`supwngo/exploit/walkthrough/families/fmtstr.py`,
+  registered in `registry._families()`), teaching both halves of the primitive:
+  **arbitrary read** (`%p`/`%s` disclosure — leaking the stack canary of the very
+  frame that is about to be overflowed, then spending it on a measured overflow)
+  and **arbitrary write** (the `%n` family — flipping a writable gate variable, or
+  redirecting a GOT entry under Partial RELRO). Verified by literally executing
+  every generated walkthrough against corpus targets `05_fmtstr_arbread` and
+  `06_fmtstr_arbwrite`, not by rendering them.
+  - The **format-argument index is MEASURED, never assumed**: a new measurement
+    layer (`supwngo/exploit/walkthrough/fmtstr_probe.py`) probes the live binary
+    with a self-labelling `#N#%N$p` chain behind an 8-byte marker and records the
+    exact command that produced the number; when the probe cannot pin it down the
+    family emits `FMT_INDEX` as `UNKNOWN` naming the step that resolves it, and
+    **withholds the `%n` write route entirely** rather than guessing. A wrong index
+    yields a walkthrough that is internally coherent and completely wrong.
+  - Also measured per target, each carrying its command as provenance: the input
+    echo capacity, the canary varargs slot (derived from the return-address slot,
+    two slots below it), the pre-canary padding (by a `*** stack smashing
+    detected ***` boundary sweep, confirmed twice on each side and cross-checked
+    against the frame displacements `objdump` reports — the generic cyclic probe
+    cannot measure this at all, because `__stack_chk_fail` aborts before `ret`),
+    and each write target's payload size against that echo capacity.
+  - Teaches write-size decomposition (`%hhn`/`%hn`/`%n`, why byte-at-a-time beats
+    one wide write, and the `%lln` zero-fill shortcut for a GOT slot), the mod-256
+    running-count arithmetic, why padding must precede the directive and the
+    address must follow it 8-byte aligned, and the difference between a read that
+    leaks a secret and a write that redirects control flow.
+  - Where a measurement contradicts a tool's summary the walkthrough **names the
+    disagreement** (the generic offset probe reporting nothing versus the measured
+    `SMASH_OFFSET`, and that the two names mean different quantities) instead of
+    silently preferring its own number.
+  - Route scores are named constants documented against every other family's
+    scores, because `registry` resolves ties by list order; the family abstains
+    outright on all 13 corpus targets with no observed format-string bug, and the
+    winners on the other 14 targets are unchanged.
+  - See `docs/plans/2026-09-24-walkthrough-family-fmtstr.md` (plan, peer review
+    responses, and the defects that only literal execution found) and
+    `tests/test_walkthrough_fmtstr.py` (44 tests; no `b"flag" in out` self-scoring
+    — verdicts are differentials against a benign run and a same-length control
+    payload that reads instead of writing).
 - Phase-1 benchmark corpus + measurement harness under `benchmark/`: 15 purposefully
   vulnerable, hand-verified x86-64 Linux ELF targets (`benchmark/corpus/<NN>_<slug>/`)
   spanning stack shellcode, ret2plt/system, PIE-leak ret2libc, canary leak+bypass,
