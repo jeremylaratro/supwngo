@@ -94,6 +94,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   payload-only verification, attempt ordering, label-driven leak parsing, missing
   technique implementations) and the per-target work they imply.
 
+### Removed
+- **Phase 5 — two superseded stack executors** (`pipeline/executors/stack_techniques.py`).
+  `negative_size_bypass` guessed the return-address offset from five hardcoded values and
+  delivered its negative length and its overflow as one blob (so the overflow was eaten by
+  the target's own `scanf` and never happened); `int_truncation_bypass` measures the offset
+  against the real input sequence instead. `stack_shellcode` wrote the shellcode inside the
+  overflowed buffer and jumped to a guessed stack address; `stack_shellcode` in
+  `shellcode_techniques.py` places it past the return address and uses a leaked one. Both
+  replacements verify by re-running the generated script, so neither can report success on
+  an output substring match.
+
 ### Changed
 - **Phase 5 — attempt ordering** (`pipeline/orchestrator.py`): `StrategySuggester` ranked
   `VARIABLE_OVERWRITE` at priority 1 for all 15 benchmark targets (its applicability test
