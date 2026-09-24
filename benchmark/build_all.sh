@@ -15,7 +15,30 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CORPUS="$HERE/corpus"
+# SUPWNGO_BENCH_CORPUS lets a caller point this builder at an alternate corpus
+# tree (e.g. benchmark/corpus_r2). Unset => today's benchmark/corpus.
+#
+# NOTE: per-target protection flags are a case statement below, keyed on the
+# target directory name, so an alternate corpus still needs its own entries
+# there (an unknown directory is refused, which run_bench.py surfaces as a
+# VOID "could not be provisioned" result rather than a silent mis-build).
+CORPUS="${SUPWNGO_BENCH_CORPUS:-$HERE/corpus}"
+
+# SUPWNGO_BENCH_FLAG, when set, makes the flag a PER-RUN SECRET instead of a
+# constant grepped out of the (git-committed) C source. It is both compiled
+# into the binary (every win()-style target guards its flag with
+# `#ifndef FLAG`, so -DFLAG overrides it) and written to flag.txt, so the
+# only ways to obtain it are to reach the code that prints it or to read
+# flag.txt from a shell the exploit actually got.
+#
+# This closes a measurement false positive: with a source-derived flag, the
+# "secret" is a public constant present in git AND in the binary's .rodata,
+# so a script that merely hardcodes the literal (or runs `strings`) scores
+# as a successful exploitation. See
+# docs/reports/HARNESS-SOUNDNESS-AUDIT-23SEP2026.md.
+#
+# Unset => legacy source-derived behaviour, preserved for manual/ad-hoc builds.
+BENCH_FLAG="${SUPWNGO_BENCH_FLAG:-}"
 
 # Flags shared by every target:
 #  -m64                 x86-64 only (this corpus's declared architecture scope)
@@ -105,10 +128,52 @@ build_one() {
             flags+=(-fno-stack-protector -no-pie -Wl,-z,relro,-z,now)
             ;;
         *)
-            echo "SKIP: unknown target directory $(basename "$dir")" >&2
-            return 1
+            # A target from a corpus round this case statement has never heard
+            # of. The per-target protection flags ARE the measurement, so we
+            # must not guess them -- building a canary=ON target with defaults
+            # would silently measure a different challenge. Instead the target
+            # declares them itself, in a `cflags` file beside its source, one
+            # gcc flag per line (blank lines and #-comments ignored):
+            #
+            #     benchmark/corpus_r2/03_your_target/cflags
+            #         -fno-stack-protector
+            #         -no-pie
+            #
+            # Absent that file we fail closed rather than build something
+            # plausible, so a corpus author gets a clear error instead of a
+            # quiet mis-measurement.
+            if [[ -f "$dir/cflags" ]]; then
+                local line
+                while IFS= read -r line || [[ -n "$line" ]]; do
+                    line="${line%%#*}"
+                    line="$(echo "$line" | tr -d '[:space:]')"
+                    [[ -n "$line" ]] && flags+=("$line")
+                done < "$dir/cflags"
+            else
+                echo "FAIL: $(basename "$dir") is not a known target and has no" >&2
+                echo "      $dir/cflags declaring its protection flags." >&2
+                echo "      Protections are part of the measurement, so this" >&2
+                echo "      builder will not guess them. See benchmark/README.md R8." >&2
+                return 1
+            fi
             ;;
     esac
+
+    # The flag this build will use. With SUPWNGO_BENCH_FLAG set it is a
+    # per-run secret (see the note at the top of this file); otherwise it
+    # falls back to the legacy source-derived constant.
+    local flag
+    if [[ -n "$BENCH_FLAG" ]]; then
+        flag="$BENCH_FLAG"
+        # Override the source's `#ifndef FLAG` default so win()-style targets
+        # print the per-run secret rather than the committed literal.
+        flags+=(-DFLAG="\"$flag\"")
+    else
+        flag="$(grep -oE 'FLAG\{[^}]*\}' "$src" | head -1 || true)"
+        if [[ -z "$flag" ]]; then
+            flag="FLAG{supwngo_bench_$(basename "$dir")}"
+        fi
+    fi
 
     echo "==> building $(basename "$dir")"
     gcc "${flags[@]}" -o "$out" "$src"
@@ -118,11 +183,6 @@ build_one() {
     # never prints a flag itself -- the intended solve path ends in an
     # interactive shell, from which the harness's verification step reads
     # this file. It is harmless (and unused) for the win()-style targets.
-    local flag
-    flag="$(grep -oE 'FLAG\{[^}]*\}' "$src" | head -1 || true)"
-    if [[ -z "$flag" ]]; then
-        flag="FLAG{supwngo_bench_$(basename "$dir")}"
-    fi
     printf '%s\n' "$flag" > "$dir/flag.txt"
 }
 

@@ -4,5 +4,10 @@
 corpus/*/*
 !corpus/*/*.c
 
-# Benchmark run output (timestamped) is generated, not committed.
-results/*/
+# Benchmark run output (timestamped) is generated, not committed. Everything
+# under results/ is reproducible from the corpus + the harness.
+results/*
+results_*/
+
+# run_bench.py's concurrency lock (see corpus_lock()) is runtime state.
+corpus*/.run_bench.lock
