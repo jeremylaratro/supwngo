@@ -59,6 +59,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the generated walkthroughs literally, step by step, to a shell or a win-function
   effect on benchmark targets `01_shellcode_stack`, `02_ret2plt_system`,
   `07_ret2libc_leak`, `09_srop` and `15_win_function` — one per shipped route.
+- Walkthrough family `integer` (`supwngo/exploit/walkthrough/families/integer.py`) —
+  teaches the two integer routes at full 0-to-pwn depth, and what distinguishes it is
+  that it teaches the **arithmetic**: where the signed/unsigned boundary sits, which cast
+  loses the sign, and the exact input value, the value it becomes, and the instruction
+  where that happens. `integer truncation into a size computation` (CWE-190/197) shows
+  that an input is exploitable exactly when it satisfies an *identity* — small enough to
+  pass the signed compare AND its low bits large enough to overrun — enumerates the whole
+  usable range, then breaks on the compare, the narrowing store and the call in a live
+  process to watch one instruction turn `-1` into a byte count of `255` where the guard
+  had accepted it as `<= 64`. `negative index (out-of-bounds write before the array)`
+  (CWE-129/787) shows why a negative index reaches memory *before* the buffer (the sign
+  extension keeps the displacement negative instead of astronomically positive), maps
+  index to frame address including what the enforced upper bound puts out of reach, and
+  proves the landing by comparing the store's effective address with the address of the
+  slot the program itself reads back — never against an absolute stack address. Both
+  routes are proposed only when the whole chain is proven in *this* binary: the guarded
+  value was written by `scanf`, the dangerous use sits on the branch's computed
+  *accepting* edge, and either the truncated value reaches that sink's own count register
+  with a local destination buffer, or the stored value is attacker-controlled and the
+  satisfying branch reaches a win-style call. Otherwise the family abstains or returns a
+  non-applicable route naming the missing link. Verdicts are differentials against **two**
+  controls — a benign input and one the target's own check refuses — never a flag search.
+  Validated by literally executing every generated step and both complete exploits against
+  benchmark targets `10_int_overflow` and `14_negative_index`. See
+  `docs/plans/2026-09-24-walkthrough-integer-family.md`.
 - `supwngo explain BINARY` — new CLI command that emits a walkthrough without running
   the exploitation pipeline (`-o/--output`, `--family`, `--offset`, `--no-probe`,
   `--libc`, `--remote`, `--markdown`, `--json`), and `supwngo solve --walkthrough`,

@@ -2732,7 +2732,8 @@ def _emit_walkthrough(
 )
 @click.option(
     "--family",
-    help="Force a technique family (rop_chain, syscall, stack_bof, triage) "
+    help="Force a technique family (rop_chain, syscall, integer, stack_bof, "
+         "triage) "
          "instead of taking the best-scoring route",
 )
 @click.option(
