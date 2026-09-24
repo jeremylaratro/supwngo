@@ -1,7 +1,11 @@
 # Schema split, unit 1 of 3: canonicalisation
 
 **Date:** 2026-09-24
-**Status:** PLAN — awaiting independent review. Not implemented.
+**Status:** PLAN rev 2 — under independent review (round 1 sent at rev 1).
+Not implemented. **Rev 2 corrects a blocking defect in rev 1's own §4**, found
+by attacking the seam contract as the review brief asks the reviewer to do; see
+§4a. Rev 1 is preserved in git history because the review in flight is against
+it and the audit trail matters more than a clean document.
 **Unit:** 1 of 3 (canonicalisation → audit-log validation → property breadth).
 **Parent:** `docs/plans/2026-09-24-standardized-context-schema.md` (v4 rev 4,
 HELD FOR A SPLIT), round-4 review at
@@ -124,12 +128,13 @@ restate:**
 
 | # | guarantee | enforced by |
 | --- | --- | --- |
-| C1 | `canonical` is **injective** over its accepted domain: distinct accepted values never share an encoding | P21, widened per §5 |
-| C2 | The accepted domain is **closed and declared** (`CANONICAL_TYPES`), and every value outside it is **refused**, never coerced | the new gate; refusal-coverage instrument |
+| C1 | `canonical` is **injective** over the **open** domain (evidence values). On the structural domain distinctness follows from the schema fixing the type per position — a different argument, see §4a and C7 | P21, widened per §5 |
+| C2 | The **open** domain is **closed and declared**, and every value outside it is **refused**, never coerced (§4a) | the new gate; refusal-coverage instrument |
 | C3 | `canonical` is a pure function of value, independent of the producer's Python types beyond the declared domain, so a fact serialised by another process reproduces the same digest | §4, option (c) rejected for exactly this |
 | C4 | The three digest projections are unchanged: `observations` and `state` remain in no digest | unit 3's P10 |
 | C5 | `Observation.digest()` distinguishes any two observations a caller can distinguish | follows from C1 + C2; the positive control is §2's merge case |
 | C6 | the refusal-coverage instrument declares its own scope: a site it cannot instrument is reported **out of scope**, never as uncovered | §6 |
+| C7 | at every **structural** position exactly one dataclass type may appear, so the field-mapping encoding cannot collide | a mechanical check over the dataclass field annotations, §4a |
 
 **Unit 2 (audit-log validation) depends on:** C1 and C5 only. Log records
 reference candidates by id, and ids do not contain observations (C4), so unit 2's
@@ -202,6 +207,128 @@ is disqualifying. It violates C3 by construction.
 **What would flip the recommendation:** a real caller that must carry structured
 non-JSON evidence. Then Option B for that one type, with reservation, and the
 domain stays closed around it.
+
+---
+
+## 4a. Rev 1's Option A was unimplementable — the diagnosis was positional, the remedy was global
+
+**This is a blocking defect in rev 1 of this plan, found by the author while
+attacking the seam contract C1–C6 that rev 1 had just published.** It is recorded
+rather than quietly rewritten, because the class it belongs to is more valuable
+than the instance.
+
+### What was wrong
+
+Rev 1's §4 Option A proposed closing `_jsonable`'s accepted domain: refuse
+`enum`, `tuple`, `set` and `dataclass`. Measured (serial), the module's **own**
+most load-bearing function depends on all three of the branches that would
+remove:
+
+```
+conditions type:   tuple -> (('aslr', 'on'),)        # a tuple OF tuples
+applies_to:        AppliesTo (dataclass) -> {'identity': None, 'scope': 'build',
+                                            'conditions': [['aslr', 'on']], ...}
+applies_to.scope:  Scope (enum)          -> 'build'
+state:             State (enum)          -> 'active'
+observations:      tuple of Observation dataclasses
+CONTENT_FIELDS:    ('key','value','provenance','applies_to','derived_from','method','by')
+```
+
+`applies_to` is in `CONTENT_FIELDS`, so `dedup_key` canonicalises a **dataclass**
+containing an **enum** and a **tuple of tuples**. Refusing those three types
+would not tighten the schema; it would break `dedup_key`, `derive_id`,
+`dep_digest` and `canonical_document` simultaneously. Option A as written could
+not have been implemented, and a plan that cannot be implemented is worse than one
+that is merely wrong, because its review budget is spent on the wrong question.
+
+### The class, and the sweep
+
+```
+CLASS  a fix whose scope is wider than the diagnosis that motivated it
+```
+
+§2 bounded the blast radius **positionally** and correctly — the collisions are
+reachable only where a *caller* supplies an arbitrary object, and
+`observations`/`state` are in no digest. §4 then proposed a remedy scoped to the
+**function**. Every value in the module passes through the same `_jsonable`, so a
+positional defect got a global fix. The diagnosis was right and the remedy did not
+inherit its scope.
+
+**Swept:** the other two rejected options are checked against the same class.
+Option B (tag four more types) is also global-scoped — it would add reserved keys
+that every mapping everywhere must now avoid, to solve a problem that exists at
+one position. Option C is global by construction. **So all three of rev 1's
+options were scoped to the function rather than the position, and the class
+claimed the whole section, not one bullet.** That is why this is recorded as a
+class: fixing Option A alone would have left the same error in the alternatives
+the next revision might have chosen.
+
+### The corrected method: close the domain per *position*, not per function
+
+The ambiguity is not "which Python types does `_jsonable` accept". It is **at
+which positions is the type open**. At every schema-internal position the type is
+fixed by the schema — a `Scope` is always a `Scope`, `conditions` is always a
+tuple of 2-tuples — so no other type can appear there and **no collision is
+possible**. The collision exists only where the caller supplies an arbitrary
+object.
+
+So split the function by position, not the domain by type:
+
+| function | used at | domain |
+| --- | --- | --- |
+| `_jsonable_structural` | the schema's own projections and document: `project(...)`, `AppliesTo`, `Observation`, `Ref`, `PinRecord`, `Conflict`, the enums | unchanged — enum/dataclass/tuple/set/Mapping, because the type at each position is schema-fixed |
+| `_jsonable_open` | **evidence values only** | closed: `str`, `int`, `bool`, `None`, `Mapping[str, ·]`, `list`, tagged `bytes`. `enum`, `tuple`, `set`, `dataclass`, `float` and everything else **refused** |
+
+This also *keeps* Option A's virtue — refuse rather than guess — and applies it
+exactly where guessing was happening.
+
+### C1 and C2 are restated; a new obligation falls out
+
+- **C1 (was: `canonical` is injective over its accepted domain).** Now: `canonical`
+  is injective over the **open** domain. On the structural domain injectivity is
+  not the argument at all — distinctness follows from the schema fixing the type
+  at each position, which is a *different* claim and must be established as one.
+- **C2** applies to the open domain only.
+- **C7 (new): at every structural position, exactly one dataclass type may
+  appear.** This is the residual risk the split creates and it must not be left
+  implicit: `_jsonable_structural` encodes every dataclass as a mapping of its
+  fields, so two *different* dataclass types with the same field names and values
+  would collide. Today they cannot share a position (`resolutions` holds only
+  `PinRecord`, `conflicts` only `Conflict`, and they sit under different document
+  keys) — but that is a fact about the current schema, not a guarantee, and it is
+  mechanically checkable from the dataclass field annotations. **C7 must ship with
+  that check**, or the split trades a measured collision for an unmeasured one.
+
+  C7 is **measured, not asserted** (serial). Over the module's 10 dataclasses:
+
+  ```
+  pairs with IDENTICAL field-name sets:          NONE
+  pairs where one field set is a strict SUBSET:  NONE
+  ```
+
+  The near miss worth naming: `Agreement('candidate_ids','key','value')` and
+  `Conflict('candidate_ids','cls','key')` share two of three field names, and
+  differ only in the third. That is exactly the kind of margin that vanishes in a
+  later edit with nobody noticing — which is why C7 ships as a check and not as
+  this paragraph.
+
+### What this costs and what it buys
+
+Cost: one more function and one more contract clause. Buys: the fix becomes
+implementable, `dedup_key` keeps working, and the refusal lands at the only
+position where a caller can create ambiguity. The five measured collisions all
+occur at that position, so the corrected remedy closes every one of them —
+verified by construction rather than by assertion, since after the split an enum,
+tuple, set or dataclass in an evidence value is refused before it can be encoded.
+
+### Honest note on the review in flight
+
+The round-1 review was dispatched against **rev 1**, so it is reviewing §4 as
+originally written. Whether it independently finds this is a useful calibration of
+the brief's fourth ask — *can a defect satisfy C1–C6 and still break the
+composition?* — since the answer turned out to be that C1 as written could not be
+satisfied by any implementable change. That will be recorded either way when the
+review lands.
 
 ---
 
