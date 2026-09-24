@@ -461,6 +461,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behaviour, and output excerpting.
 
 ### Fixed
+- **`ret2dlresolve` never tried the aligned stack parity**
+  (`supwngo/exploit/pipeline/executors/rop_techniques.py`). Every other ROP
+  executor sweeps both parities, because glibc's `do_system()` executes
+  `movaps` and faults unless RSP is 16-byte aligned at the call; the
+  dl-resolve path was treated as exempt. It is not — `_dl_fixup` and the
+  symbol it resolves execute aligned SSE stores too, so a chain that leaves
+  RSP 8-mod-16 faults *inside the dynamic linker*. The resulting
+  `SIGSEGV`/`si_code=SI_KERNEL`/`si_addr=NULL` looks nothing like a payload
+  problem and is easy to misread as a wrong relocation index, which is how it
+  went unnoticed: the forged `Elf64_Rela` was arriving correctly the whole
+  time. The executor now sweeps offset candidates × both parities and emits a
+  bare `ret` before the staging call when flipping.
 - `benchmark/run_bench.py`'s recorded verification output was unauditable:
   `output_tail` kept only `out[-4000:]` of `stdout + stderr` concatenated, so
   the tail was always the *end of stderr* — in practice pwntools/unicorn
