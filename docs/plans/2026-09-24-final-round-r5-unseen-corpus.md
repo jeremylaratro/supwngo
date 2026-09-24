@@ -102,6 +102,36 @@ Constraints:
   input-shape assumptions are a known weak point.
 - Reviewed for novelty against R1-R4 before it is sealed.
 
+### Flag delivery must vary WITHIN technique class
+
+Found while specifying R2's comparison instruments, and it is a requirement rather
+than a preference.
+
+On R1, `strings`-scrapeable and shell-obtaining turned out to be **the same
+property observed twice**: a target is scrape-clean precisely because it obtains a
+shell and reads `flag.txt` at runtime instead of carrying a compiled-in flag. So
+any attempt to subset R1 by scrape-cleanliness silently subsets it by exploitation
+style — the scrape-clean six are exactly its shell-obtaining targets, and the
+excluded seven are exactly its arbitrary-read/write primitive targets. That is
+systematic bias, not low power: it moves the point estimate in a direction that
+cannot be signed, rather than merely widening an interval.
+
+R2 fixed soundness by making delivery **uniform** (0/15 scrapeable, all reading
+`flag.txt` at runtime). Strictly better for soundness — and because it is uniform,
+it destroys the within-corpus contrast that would let anyone separate delivery
+mechanism from technique class. Two desirable properties in direct tension, and
+R2 optimised the first without knowing it cost the second. R2 is therefore
+permanently unable to separate those axes, whatever is later measured on it.
+
+**R5 requirement:** vary flag delivery *within* each technique class — some
+shell-obtaining targets with a compiled-in flag, some primitive targets reading
+`flag.txt` — so the corpus is both sound and analysable, and the confound is
+separable inside one corpus instead of only across corpora. Keep every target
+scrape-resistant; vary the *mechanism*, not the *integrity*.
+
+Do not let this be optimised back out in the name of soundness: a uniform corpus
+looks cleaner and measures less.
+
 ## Gate arithmetic and the denominator
 
 The VOID mechanism means 15 built targets is not 15 scored targets. R1 lost 2 of
