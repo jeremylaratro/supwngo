@@ -214,9 +214,19 @@ Dimension variance requires annotation — a property must *declare* what it var
 holds constant, because nothing can infer intent. Two things do not:
 
 - **Refusal-site coverage.** Patch each error class's `__init__` to record the raising
-  site, run the suite, diff against the AST. One artifact had **29 of 107 raise sites
-  never fired by any test**, including a branch whose own comment claimed
-  `# pragma: no cover - exercised via pytest.raises` while nothing exercised it.
+  site, run the suite, diff against the AST. One artifact had **28 of 106 in-scope
+  raise sites never fired by any test**.
+
+  **And the instrument must report what it cannot instrument as *out of scope*, never
+  as *uncovered*.** That sweep first reported 29 of 107 and accused a branch of
+  carrying a false `# pragma: no cover - exercised via pytest.raises` comment. The
+  comment was true; the sweep could not see the call because the site raises a builtin
+  `TypeError` and CPython refuses to patch `__init__` on an immutable type. **A
+  coverage tool returning a false negative is the same defect class as a gate that
+  cannot fail, aimed at the measuring device** — and it is more dangerous, because a
+  false accusation of missing coverage gets acted on. Any coverage or provenance
+  instrument needs a third state for "could not measure this site," and its count of
+  uncovered things is only trustworthy once that state is non-empty and enumerated.
 - **Variation that is not binding.** A declared-varying field is not real variation if
   another constraint pins it — varying `process_id` proves nothing while every
   candidate is BUILD-scoped. Check variation *relationally*, at instrumented call
