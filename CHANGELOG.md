@@ -65,6 +65,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   produce the flag, 1 = a step was unnecessary, 2 = setup problem). Result: **49/49 strict
   ablations blocked, 13/13 positive controls passed** — no further round-1 target measures
   less than it claims.
+- `docs/reports/CORPUS1-ABLATION-24SEP2026.md` — the ablation audit write-up: per-target
+  table of which steps were removed and the result, the method argument for why a `BLOCKED`
+  verdict is trustworthy (positive control from the same parametrised chain), the
+  clean-checkout portability proof, and three `RELAXATION` findings where a documented
+  detail turns out not to be required. One of those corrects an error in the 23 Sep report:
+  target 05's `%29$p` is **not** a decoy canary — the canary is per-thread (`%fs:0x28`) and
+  stamped identically into every frame (measured byte-identical across runs), so frame
+  attribution is not a step a solver must get right and 05's automatability rises to
+  MEDIUM-HIGH. The genuine trap is `%13$p`, a libc pointer that also ends in `0x00`, which
+  ablation confirms is blocked.
 - `docs/reports/CORPUS1-REFERENCE-EXPLOITS-23SEP2026.md` — the per-target ground-truth
   write-up behind those scripts (technique, offsets/addresses, what must be leaked and how
   it is applied, nondeterminism, and an honest automatability read per target), plus

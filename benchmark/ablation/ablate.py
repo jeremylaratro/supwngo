@@ -48,9 +48,10 @@ directory (including by absolute path from `/`). `--corpus-root` /
 `--manifest` override them for later rounds.
 
 Exit status 0 means every ablation FAILED to produce the flag -- that is the
-passing result. 1 means a chain step turned out to be unnecessary (or a positive
-control failed, so the run is not interpretable). 2 means a setup problem:
-unbuilt corpus, missing flag.txt, bad --corpus-root.
+passing result. 1 means a chain step turned out to be unnecessary, i.e. a corpus
+defect. 2 means the run could not measure something and so is not a clean bill of
+health: unbuilt corpus, missing flag.txt, bad --corpus-root, a failed positive
+control, or a target whose discovery step did not resolve.
 
 Out of scope: 11_heap_uaf_leak and 13_off_by_one are VOID (the flag is reachable
 by ordinary benign input, with no exploitation at all), so there is no chain
@@ -967,7 +968,18 @@ def main() -> int:
     for slug, why in VOID.items():
         print(f"\nskipped {slug}: VOID -- {why}")
 
-    return 1 if (leaks or setup_failed or surprises) else 0
+    # 1 is reserved for "a chain step turned out to be unnecessary", i.e. a
+    # corpus defect. A target we could not measure is a setup problem (2), so
+    # the two never get confused by a caller that only checks for nonzero.
+    if leaks or surprises:
+        print("\nFAIL: a chain step is not necessary -- that target measures "
+              "something easier than it claims.", file=sys.stderr)
+        return 1
+    if setup_failed:
+        print("\nINCOMPLETE: some targets could not be measured; the result "
+              "above is not a clean bill of health.", file=sys.stderr)
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

@@ -41,9 +41,11 @@ directory, including by absolute path from `/`. `--corpus-root` / `--manifest`
 point it at another round's corpus.
 
 **Exit status 0 means every ablation FAILED to produce the flag** — that is the
-passing result. `1` means a chain step turned out to be unnecessary (or a
-positive control failed, so the run isn't interpretable). `2` is a setup
-problem: unbuilt corpus, missing `flag.txt`, bad `--corpus-root`.
+passing result. `1` means a chain step turned out to be unnecessary, i.e. a
+corpus defect. `2` means the run couldn't measure something and so isn't a clean
+bill of health: unbuilt corpus, missing `flag.txt`, bad `--corpus-root`, a failed
+positive control, or an unresolved discovery step. `1` is reserved for defects so
+a caller checking only for nonzero never confuses the two.
 
 ## What makes the result trustworthy
 
