@@ -1,0 +1,4 @@
+# canary=OFF nx=ON pie=OFF relro=partial STATIC
+-fno-stack-protector
+-no-pie
+-static

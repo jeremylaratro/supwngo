@@ -173,6 +173,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are still attempted — just last.
 
 ### Added
+- Round-2 held-out benchmark corpus under `benchmark/corpus_r2/`, merged from
+  `feat/benchmark-corpus-r2-20260923` **only after** round 1 closed, so the
+  framework-hardening work could not have been tuned to it (the branch was kept
+  out of `integration/phases-0-4-7-20260923` for exactly that reason; rounds 3
+  and 4 remain held out): 15 fresh, hand-verified
+  x86-64 Linux ELF targets covering the same technique families as round 1
+  (stack shellcode, ret2plt/system, PIE-leak ret2libc, canary leak/bypass,
+  format-string read and write, integer/size-arithmetic bugs, heap bugs,
+  off-by-one, an indexing bug, and a ret2csu variant) but with genuinely
+  different code shapes, offsets, and gate mechanics, so a concurrent
+  framework-hardening effort cannot have been tuned to these specific files.
+  Includes `benchmark/build_all_r2.sh`, `benchmark/corpus_r2.yaml`, and
+  `benchmark/corpus_r2_reference/` (15 standalone pwntools reference
+  exploits plus `ablation.py`, which re-runs each target's intended chain
+  with one essential step removed and confirms none of the 15 leak their
+  flag). Two soundness fixes carried forward from a round-1 audit and
+  applied here from the start: (1) every target reads its flag from
+  `flag.txt` at **runtime** rather than compiling it in, so `strings`/
+  `ELF.search()` recover nothing (0/15 scrapeable, verified after 3
+  independent rebuild rotations, including one via the shared
+  `benchmark/build_all.sh`); (2) per-target protection flags are declared
+  in a `cflags` file beside each source (not a hardcoded case statement),
+  matching the shared `build_all.sh`'s fail-closed R9 fallback convention
+  so the two builders cannot silently disagree about what was built.
+  *Caveat recorded at merge time:* `benchmark/corpus_r2_reference/ablation.py`
+  contains **no positive control** — each case runs only the ablated chain and
+  asserts the flag is absent, so a broken driver, a changed prompt string or a
+  read timeout is indistinguishable from a genuinely blocked step. Its "0/15
+  leaked" result is therefore not by itself evidence the corpus is sound; see
+  `docs/plans/2026-09-24-benchmark-round2-cold-then-develop.md` §2.1.
 - Phase-1 benchmark corpus + measurement harness under `benchmark/`: 15 purposefully
   vulnerable, hand-verified x86-64 Linux ELF targets (`benchmark/corpus/<NN>_<slug>/`)
   spanning stack shellcode, ret2plt/system, PIE-leak ret2libc, canary leak+bypass,
