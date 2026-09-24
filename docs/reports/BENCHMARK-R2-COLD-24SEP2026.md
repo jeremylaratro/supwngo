@@ -162,6 +162,35 @@ A straight percentage comparison is the wrong instrument. Two better ones:
 > it is uniform, removes the within-corpus contrast that would let the two be
 > disentangled.
 
+#### Soundness and analysability pulled in opposite directions — and R2's limit is permanent
+
+This is the round's most transferable finding, so it is stated as a tension rather
+than as anyone's error:
+
+**R2's uniform 0/15 flag-delivery fix is strictly better for soundness, and
+*because* it is uniform it destroys the within-corpus contrast that would let anyone
+separate delivery mechanism from technique style.** R2 optimised the first axis
+without knowing it cost the second. That is a genuine tension between two desirable
+properties, and it was invisible until two corpora existed to compare — not a
+mistake to attribute.
+
+**The consequence is a fixed limit, not an open question.** If later rounds carry
+varied delivery and R2 is uniform, then **R2 will remain permanently unable to
+separate those two axes, no matter what is measured on it later.** No amount of
+step-3 development, re-running, or re-analysis can repair it: the contrast was never
+built into the corpus, so it cannot be recovered from the corpus. Any future claim
+of the form "supwngo does better on shell-obtaining targets than on primitive ones"
+**cannot be tested on R2 alone** — on R2 that comparison is identical to comparing
+its four runtime-`flag.txt` targets against its eleven runtime-`flag.txt` targets,
+which is to say it is not a contrast at all.
+
+The R5 specification is being amended to require varied delivery within technique
+class so that R5 is both sound *and* analysable, with the confound separable inside
+a single corpus rather than only across corpora. Recording the rationale here as
+well as in that spec, because a bare requirement without the reasoning reads as
+arbitrary to whoever implements it and would likely be optimised back out — uniform
+delivery looks cleaner to anyone who has not seen this analysis.
+
 None of this is offered as a reason to discount the cold number. It is a limit on
 what the R1→R2 **delta** can be attributed to.
 
@@ -188,6 +217,27 @@ seeing which passed, the objection would be fatal.
 Nonetheless, because one in-subset data point was visible when it was fixed, this
 instrument is **demoted to a tie-breaker and is never quoted as a headline.** The
 primary pairing carries the comparison.
+
+**Provenance attestation from the party who originated the criterion** (recorded
+because the causal history is held by them, not by the author of this report, and
+it is stronger evidence than the timing alone):
+
+> - The technique-class-matching criterion came from the coordinator's message, not
+>   from the report author inspecting scores.
+> - It was derived entirely from **R1's** structure — that scrape-cleanliness and
+>   shell-obtaining are the same property on R1 — with **no R2 target verdicts seen
+>   at the time**, not even `07`'s; the report carrying `07` and the message
+>   specifying the criterion crossed.
+> - The criterion is mechanical ("has no `print_flag`/`flag.txt` path"), so knowing
+>   `07` passed cannot change which targets satisfy it.
+
+The causal chain therefore does not run through R2 outcomes at any point. Bias would
+require the **criterion** to have been chosen to capture known passers; it was
+chosen to fix a selection-bias problem in R1's half of the comparison. This converts
+the disclosure from *"weak contamination, argued"* into *"weak contamination, with
+provenance documented by the party who caused it."* The demotion to tie-breaker
+stands regardless: n = 6 vs n = 4 could not carry a headline however clean its
+provenance.
 
 ### 1.5 Pre-registered discovery-stall triage
 
