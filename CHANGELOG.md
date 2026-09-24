@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Candidate provenance on `AttemptRecord`** (`supwngo/exploit/pipeline/contracts.py`,
+  `VariableOverwriteExecutor` in `supwngo/exploit/pipeline/executors/stack_techniques.py`).
+  A new structured `candidate_provenance` field (also added to `AttemptRecord.to_dict()`,
+  so it reaches `autopwn_json_probe.parsed.attempts` in `report.json`) records which
+  candidate value produced a technique's payload and where it came from --
+  `literal_magic_list` (drawn verbatim from a fixed list, e.g. `MAGIC_VALUES`) versus
+  `recovered_immediate` (decoded from the target's own instruction stream, with the
+  instruction address). `VariableOverwriteExecutor` -- a 126-combination sweep over 9
+  hardcoded "magic" constants with no recovery step -- is the first executor converted,
+  so a credited SUCCESS produced by the sweep is now self-identifying in the record
+  rather than indistinguishable from a genuinely recovered value. Deliberately kept out
+  of `notes`/`failure_reason` (which `templates.py` renders into generated exploit
+  scripts that `rep_divergence.py` hashes per rep) -- structured field and `to_dict()`
+  only.
 - **Benchmark harness — per-invocation `duration_sec` on both pipeline wrappers**
   (`benchmark/run_bench.py`, `run_one()`). `elapsed_sec` on a target's report spans TWO
   full `autopwn` invocations (the `--json` self-report probe and the `-o` script-generation
