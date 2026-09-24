@@ -38,6 +38,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   why four earlier runs were discarded as stale (benchmarked the pre-consolidation
   `EnhancedAutoExploiter` before this branch was rebased onto
   `integration/phases-0-4-7-20260923`).
+- `benchmark/reference_exploits/` — hand-written, standalone **pwntools** reference
+  exploits establishing ground truth for the benchmark corpus: one verified script per
+  in-scope target (01–12, 14, 15 = 14 targets), each self-checking (exits nonzero unless
+  the target's real flag appears in the target's own output), each documenting its
+  technique, measured protections, exact offsets, required leaks and nondeterminism in a
+  module docstring, plus `run_all.sh` for N-rep reliability runs and a README. **None of
+  them import or depend on `supwngo`**, so a failure indicates the target or host
+  toolchain changed rather than the framework. Result: **14/14 flag capture at 5/5 reps**,
+  and **14/14 still capture a freshly randomized `-DFLAG` secret** (rebuilt with per-target
+  flags parsed out of `build_all.sh`, which was not modified) — proving the exploits
+  genuinely exploit each bug rather than incidentally printing the corpus's
+  deterministic committed flag constant.
+- `benchmark/ablation/` — an ablation suite proving every step of each round-1 chain is
+  **necessary**, not merely that the chain works. Negative controls only establish that a
+  target isn't *trivially* solvable (which is how `11_heap_uaf_leak` slipped through: benign
+  input doesn't win, and a "working" exploit does, yet the use-after-free was never
+  required). For each meaningfully separable step, `ablate.py` runs the whole chain with
+  exactly that step removed and requires the flag not to appear. Each target has one
+  parametrised chain function whose defaults are the working exploit, so every ablation is
+  one flipped keyword on the same code and each target also gets a positive control — a
+  `BLOCKED` verdict therefore can't be an artifact of broken harness code. Targets are
+  rebuilt with a fresh random secret via `run_bench.build_with_secret()`, all emitted bytes
+  are checked, and the run holds `corpus_lock`. CLI mirrors the R4 harness (`--case`,
+  `--timeout`, `--list`, `--no-rebuild`, `--corpus-root`; exit 0 = every ablation failed to
+  produce the flag, 1 = a step was unnecessary, 2 = setup problem). Result: **49/49 strict
+  ablations blocked, 13/13 positive controls passed** — no further round-1 target measures
+  less than it claims.
+- `docs/reports/CORPUS1-ABLATION-24SEP2026.md` — the ablation audit write-up: per-target
+  table of which steps were removed and the result, the method argument for why a `BLOCKED`
+  verdict is trustworthy (positive control from the same parametrised chain), the
+  clean-checkout portability proof, and three `RELAXATION` findings where a documented
+  detail turns out not to be required. One of those corrects an error in the 23 Sep report:
+  target 05's `%29$p` is **not** a decoy canary — the canary is per-thread (`%fs:0x28`) and
+  stamped identically into every frame (measured byte-identical across runs), so frame
+  attribution is not a step a solver must get right and 05's automatability rises to
+  MEDIUM-HIGH. The genuine trap is `%13$p`, a libc pointer that also ends in `0x00`, which
+  ablation confirms is blocked.
+- `docs/reports/CORPUS1-REFERENCE-EXPLOITS-23SEP2026.md` — the per-target ground-truth
+  write-up behind those scripts (technique, offsets/addresses, what must be leaked and how
+  it is applied, nondeterminism, and an honest automatability read per target), plus
+  cross-cutting build facts that break automated exploitation on this corpus (CET/IBT
+  shifts every provided `gadget_*` symbol by a 4-byte `endbr64`, so `sym+1` is *not* a bare
+  `ret`; every libc call needs a 16-byte stack-alignment `ret`, twice when the chain
+  returns into `vuln()`; oversized `read()`s swallow follow-up writes without a delay), and
+  **three benchmark-soundness defects**: `13_off_by_one` is VOID (ordinary ≥32-byte input
+  alone triggers `win()`) and excluded; `11_heap_uaf_leak` is likewise VOID — `show(0)`
+  with no `delete` prints the flag from the *live* chunk, so no use-after-free is required;
+  and the flag is recoverable with `strings` from 8 of the 14 binaries (04, 05, 06, 10, 11,
+  12, 14, 15), which randomizing `-DFLAG` does **not** fix because the random flag is still
+  compiled into `.rodata`. Recommends having `win()` read `flag.txt` at runtime.
 
 ### Security
 - **`benchmark/run_bench.py` could report `SUCCESS` without any exploitation
