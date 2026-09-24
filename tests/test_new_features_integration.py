@@ -317,7 +317,16 @@ sys.exit(139)  # SIGSEGV exit code
         assert result.result in (TestResult.CRASH, TestResult.FAILED)
 
     def test_shell_detection(self):
-        """Test shell obtained detection."""
+        """Test shell obtained detection.
+
+        Phase 3 tightened ExploitTester's success heuristic to require a
+        receipt-token match (or a genuine flag) instead of trusting a
+        generic, easily-spoofed string like "uid=0(root)" on its own - see
+        ExploitTester._evaluate_output. A loose indicator match alone is
+        now only PARTIAL evidence; this test supplies the same kind of
+        unique per-attempt token PipelineVerifier mints and asserts it is
+        actually required (and honored) for SUCCESS/shell_obtained.
+        """
         from supwngo.exploit.tester import ExploitTester, TestResult
         from unittest.mock import Mock
 
@@ -327,11 +336,26 @@ sys.exit(139)  # SIGSEGV exit code
 
         tester = ExploitTester(binary)
 
-        # Script that indicates shell
-        script = """
+        token = "SUPWNGO_TEST_RECEIPT_9f3a1c"
+
+        # A generic "shell-shaped" indicator with no token/flag is no
+        # longer sufficient proof of exploitation on its own.
+        loose_script = """
 print("uid=0(root) gid=0(root)")
 """
-        result = tester.test_local(script, timeout=5)
+        loose_result = tester.test_local(loose_script, timeout=5)
+        print(f"\nLoose (untokened) result: {loose_result}")
+        assert loose_result.result != TestResult.SUCCESS
+        assert loose_result.shell_obtained == False
+
+        # The same output PLUS the requested receipt token echoed back
+        # (simulating an obtained shell proving it via `echo $TOKEN`) is
+        # genuine proof and should be SUCCESS.
+        script = f"""
+print("uid=0(root) gid=0(root)")
+print("{token}")
+"""
+        result = tester.test_local(script, timeout=5, token=token)
 
         print(f"\nShell detection result: {result}")
         assert result.result == TestResult.SUCCESS

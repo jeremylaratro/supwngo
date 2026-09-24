@@ -136,3 +136,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_find_gadget_to_set_reg`, and remains documented future work. `z3` stays a
   lazy/optional import (`Z3_AVAILABLE` guard), so its absence never blocks import
   of the module or the common (non-solver) exploitation path.
+- `supwngo/exploit/tester.py`'s `ExploitTester` accepted generic, easily-spoofed
+  output-string matches (`TestConfig.success_indicators` — `"got shell"`,
+  `"uid=0"`, etc.) as proof of exploitation success on their own. Tightened via a
+  new `ExploitTester._evaluate_output` (shared by `test_local`/`test_docker`) to
+  the same receipt-token verification pattern `PipelineVerifier`/
+  `verification.ExploitVerifier` already use: `test_local`/`test_docker`/
+  `test_remote` now accept an optional `token` parameter, and SUCCESS requires
+  either a genuine `flag_pattern` match or that unique per-attempt token being
+  echoed back in the output — a loose `success_indicators` match alone now only
+  downgrades a FAILED result to PARTIAL, never SUCCESS by itself.
+  `TestConfig.success_indicators`'s field/default list is unchanged for backward
+  compatibility. `tests/test_new_features_integration.py::test_shell_detection`
+  updated to demonstrate the tightened contract (a loose `"uid=0(root)"` match
+  alone no longer yields SUCCESS; supplying and echoing back a receipt token
+  does). Part of Phase 3 of `docs/plans/2026-09-23-effectiveness-and-usability.md`.
