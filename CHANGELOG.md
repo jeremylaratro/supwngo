@@ -102,6 +102,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolved base matched `/proc/<pid>/maps` ground truth exactly across multiple
   ASLR-randomized runs. Part of Phase 3 of
   `docs/plans/2026-09-23-effectiveness-and-usability.md`.
+- `supwngo/exploit/rop/z3_solver.py`'s `SolvedChain.build()` appended every gadget
+  address first and every popped stack value second as two separate flat blocks —
+  wrong for any chain with more than one gadget, since a ROP chain needs each
+  gadget's own popped values immediately following its address, not grouped at the
+  end. `SolvedChain` gained a `pop_values: List[List[int]]` field (per-gadget
+  grouping) that `build()` now interleaves correctly when populated, falling back
+  to the old flat layout (only correct for single-gadget chains) for the general
+  solver methods not yet repaired (see Changed, below).
 - `AutoLeakFinder.identify_leaked_value`'s libc-address range check
   (`0x7f0000000000`-`0x7f7fffffffff`) assumed an older, narrower ASLR entropy
   layout. On modern kernels (observed directly during this repair's benchmark
@@ -111,3 +119,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   high-mmap region below the already-checked stack range
   (`0x700000000000`-`0x7ffdffffffff`) — found and fixed as a direct blocker of the
   `_leak_via_got_rop` repair above, not a speculative change.
+
+### Changed
+- `supwngo/exploit/rop/z3_solver.py`'s `Z3ROPSolver.solve_call` never actually
+  invoked `Solver.check()` against a meaningfully-constrained model — despite the
+  name, it was a greedy first-match gadget picker. It is now a real (intentionally
+  v1-scoped) constraint search: boolean `use`/integer `order` variables per
+  candidate "clean pop-chain" gadget, an explicit "final setter per register"
+  choice with ordering constraints so a chosen chain can't have an earlier
+  gadget's pop clobber a register a later gadget already set for the same
+  purpose, and a chain is only returned when `solver.check() == sat`. Scoped, per
+  Phase 3 of the effectiveness/usability plan, to "solve a single function call
+  with N register arguments via a real z3 constraint search over available
+  gadgets" — the general write-what-where case (`solve_write`/`solve_syscall`/
+  `solve_execve`/`solve_mprotect`) is unchanged, still uses the old greedy
+  `_find_gadget_to_set_reg`, and remains documented future work. `z3` stays a
+  lazy/optional import (`Z3_AVAILABLE` guard), so its absence never blocks import
+  of the module or the common (non-solver) exploitation path.
