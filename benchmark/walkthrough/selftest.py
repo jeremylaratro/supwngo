@@ -197,6 +197,27 @@ def check_arithmetic() -> list[str]:
                                            + ["NOT_FOLLOWABLE"] * 2))),
                        "agent", 3, True, "verbatim")["gate"], "FAIL")
 
+    # --- the blockers added after independent review ----------------------- #
+    # Each of these was a way a gate could PASS on evidence that does not
+    # support one. They are asserted here because a blocker nobody exercises is
+    # indistinguishable from a blocker that does not work -- which is precisely
+    # how the `strace`/`strict_attribution` pair shipped broken once already: the
+    # signature had gained them while main() still called positionally, so both
+    # silently defaulted to "satisfied".
+    expect("a VOID discovered during the run -> no gate",
+           gate_result(compute_rates(res(*(["FOLLOWABLE"] * 9 + ["VOID"]))),
+                       "agent", 3, True, "verbatim")["gate"], None)
+    expect("no strace -> no gate",
+           gate_result(full, "agent", 3, True, "verbatim",
+                       strace=False)["gate"], None)
+    expect("--strict-attribution off -> no gate",
+           gate_result(full, "agent", 3, True, "verbatim",
+                       strict_attribution=False)["gate"], None)
+    expect("reps=1 -> no gate",
+           gate_result(full, "agent", 1, True, "verbatim")["gate"], None)
+    expect("reps at the minimum -> a gate is still stated",
+           gate_result(full, "agent", 2, True, "verbatim")["gate"], "PASS")
+
     # --- the prose redaction actually removes the answer ------------------- #
     sample = ("# teaching line\nOFFSET = 72\n"
               "p = process(BINARY)\np.send(b'A' * OFFSET)\n")
