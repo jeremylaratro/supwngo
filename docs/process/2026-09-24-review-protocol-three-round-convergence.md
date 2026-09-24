@@ -208,7 +208,31 @@ So per bound property: name the subtler mutation of the same rule, and either sh
 also goes red, or record it as a **known blind spot**. An unrecorded blind spot is
 indistinguishable from coverage.
 
-### 6.4 Two mechanical instruments that need no annotation
+### 6.4 Additive is not inert — check every artifact compared across runs
+
+"This field is write-only and has no control-flow surface" is the most common
+inertness claim in instrumentation work, and it is **false wherever the artifact
+containing the field is compared for equality across runs.**
+
+Measured, and caught by a class sweep before it landed: a per-attempt duration field
+was claimed inert on exactly that basis. But generated scripts render the record's
+free-text notes, and a cross-rep determinism checker hashes those scripts — its
+normaliser masked only 10+ digit decimals and 6+ digit hex, so a duration like
+`12.473` passed straight through. Injecting one made the checker report `DIVERGENT: 1`
+and exit 1, against a clean exit 0 on the real archived run.
+
+The consequence was not a failing test. **It would have destroyed the finding that
+ruled out probe truncation as the explanation for a published capability figure** —
+an instrumentation pass silently invalidating the evidence that the number it was
+built to explain is trustworthy. The claim had held on a sibling instrument only by
+luck, because that one had been bound to a structured field for an unrelated reason.
+
+So for any added field, enumerate every artifact it can reach, and for each ask
+whether anything **compares that artifact across runs, reps, or hosts**. If so the
+field is not inert: put it in a structured channel that comparison excludes, and state
+the invariant explicitly rather than leaving it to hold by accident.
+
+### 6.5 Two mechanical instruments that need no annotation
 
 Dimension variance requires annotation — a property must *declare* what it varies and
 holds constant, because nothing can infer intent. Two things do not:
