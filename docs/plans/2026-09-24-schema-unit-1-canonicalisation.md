@@ -1,7 +1,15 @@
 # Schema split, unit 1 of 3: canonicalisation
 
 **Date:** 2026-09-24
-**Status:** PLAN rev 4 — under independent review (round 1 sent at rev 1).
+**Status:** PLAN rev 4 — **round 1 review returned NOT-APPROVED**, recorded
+verbatim at `docs/plans/2026-09-24-schema-unit-1-review-round1.md`.
+RECURRENCES 5 / NEW 0 / INTRODUCED 3. **Held, not revised:** the standing rule
+is that a recurrence count above zero is reported — with the skipped sweep named
+— before the revision. The five skipped sweeps are named in the review record.
+Round 1 reviewed **rev 1**; §3a and §4a independently found two of its three
+INTRODUCED findings first, and its F5 is a *different* C1–C7 contract break from
+§3a's, so the contract needs **C9** (canonical-byte/candidate-ID stability) as
+well as C8.
 Not implemented. **Rev 2 corrects a blocking defect in rev 1's own §4**, found
 by attacking the seam contract as the review brief asks the reviewer to do; see
 §4a. **Rev 3 adds a sixth collision, live today, of exactly the class round 3's
