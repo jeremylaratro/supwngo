@@ -8,6 +8,171 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Phase 5 (reliability hardening) — stdio-safe multi-part payload delivery**
+  (`supwngo/exploit/pipeline/delivery.py`). Every native executor previously delivered
+  its payload as a *single* write (`subprocess.run(input=blob)` / one `sendline`), which
+  is silently wrong for any target that mixes buffered stdio input with a raw
+  `read(0, ...)`: `scanf("%d", &n)` fills glibc's 4096-byte stdin `FILE` buffer from
+  whatever is available, so a one-blob exploit is swallowed whole by the first `scanf`
+  and the following `read()` sees EOF — the overflow never happens and the target looks
+  unexploitable. The new module delivers input in parts with a settle delay between them
+  (as a human does at a prompt), and adds `find_return_offset()`, a stdio-safe dynamic
+  offset finder that binary-searches the smallest filler length that crashes the target
+  (no core dumps required — `kernel.core_pattern` is frequently not a plain file — and no
+  GDB batch run, which would re-introduce the single-blob problem). Also adds
+  `scan_hex_addresses()`/`classify_address()`, which recognise a leaked `%p` by its
+  actual rendering instead of requiring one of a fixed set of English labels before it,
+  and test address ranges narrowest-first so `0x7ffd…` stack addresses are no longer
+  mislabelled as libc.
+- **Phase 5 — generated exploit scripts are now the thing that gets verified**
+  (`supwngo/exploit/pipeline/script_builder.py`, `PipelineVerifier.verify_script()`).
+  `verify_payload()` can only express a single-blob exploit, so no multi-stage technique
+  could ever claim a verified SUCCESS (which is why `ret2libc`/`srop`/`format_string`
+  were hardcoded to return PARTIAL prose). Executors now build a standalone, runnable
+  pwntools script first and the pipeline runs *that script* fresh in its own interpreter,
+  with the attempt's unique receipt token piped in as `echo <token>`; SUCCESS requires
+  either the token coming back (only possible through a real obtained shell) or the
+  target printing a flag. A generated script's own `log.success()` lines are explicitly
+  not a success signal. This also closes the gap between "the pipeline says it worked"
+  and "the artifact the user is handed works" — they are now literally the same run.
+- **Phase 5 — `ret2plt` technique executor**
+  (`supwngo/exploit/pipeline/executors/rop_techniques.py`): calls `system("/bin/sh")`
+  through the binary's own PLT with **no information leak**, for a non-PIE target that
+  imports `system` and already contains a `"/bin/sh"` string. This closes the specific
+  gap named in `docs/reports/PHASE1-BASELINE-24SEP2026.md`: the pipeline's only
+  `system()` path was gated on "requires a real libc-base leak" even when no libc base
+  is needed at all. Tries both stack parities, since glibc's `do_system` executes a
+  `movaps` that faults unless RSP is 16-byte aligned at the call.
+- **Phase 5 — `int_truncation_bypass` and `negative_index_write` technique executors**
+  (`supwngo/exploit/pipeline/executors/input_shape_techniques.py`), for bugs driven by the
+  target's numeric input shape. `int_truncation_bypass` replaces what
+  `negative_size_bypass` was attempting: it measures the return-address offset against
+  *the same* input sequence the exploit uses (a negative length first, then the overflow,
+  delivered as separate parts) instead of guessing from five hardcoded offsets, and proves
+  the result by re-running the generated script rather than accepting an output substring
+  match that also counted the bare word `"win"`. `negative_index_write` handles an array
+  index that is only bounds-checked upwards, sweeping both the element distance and the
+  gate constant. Both work on statically linked targets: `has_scanf()` checks the symbol
+  table as well as the PLT, since a static binary has an empty PLT but still carries
+  `__isoc99_scanf`.
+- **Phase 5 — gate constants are now read out of the target's own code**
+  (`comparison_immediates()`): a "flip this variable to the magic value" bug is only
+  exploitable if you know the value, and the executors previously guessed from a
+  hardcoded list of nine CTF-folklore constants. The constants are in the binary's own
+  `cmp`/`test` instructions, so they are extracted from `objdump` output (most-plausible
+  first) with the old list kept only as a fallback.
+- **Phase 5 — `canary_leak_ret2win` technique executor**
+  (`supwngo/exploit/pipeline/executors/canary_leak_techniques.py`). A canary-protected
+  target that *hands you the canary* (an echo that over-reads past the filler, or a
+  format-string `%N$p`) is a two-stage exploit: leak, then overflow with the canary
+  replaced. Nothing in the pipeline could express that — `scanf_canary_bypass` assumed the
+  canary could be skipped over, and the single-blob verifier could not run two stages at
+  all. The new executor finds the leak source generically (windowed `%N$p` probing, or
+  sweeping echo fill sizes), identifies which leaked stack word is the canary by structure
+  rather than by position (glibc's canary always has a zero low byte and otherwise ≥56
+  random bits), and locates the canary's frame offset with an *abort-threshold oracle*:
+  the smallest filler that provokes `*** stack smashing detected ***` is the first byte of
+  the canary, which turns a 25-deep blind offset sweep into two probes.
+- **Phase 5 — `fmtstr_write_gate` technique executor**
+  (`supwngo/exploit/pipeline/executors/fmtstr_techniques.py`): format-string arbitrary
+  write (`%n`) against a gate variable, for the common shape where the target prints a
+  writable address and only checks the variable for non-zero. Locates the user buffer's own
+  `printf` argument index by probing for a marker, restricts write targets to genuinely
+  writable sections, and — the detail that makes `%n` work at all here — emits the `%N$n`
+  directive *before* the target address with the padding ahead of it, because a 64-bit
+  pointer's embedded NUL bytes terminate `printf`'s format parsing if the address comes
+  first.
+- **Phase 5 — `stack_shellcode` technique executor**
+  (`supwngo/exploit/pipeline/executors/shellcode_techniques.py`): NX-off stack shellcode
+  that uses a *leaked* stack address instead of guessing one, re-reading the leak at run
+  time so the script works under ASLR. Places the shellcode *after* the overwritten return
+  address rather than inside the buffer — shellcode that lands in the buffer is corrupted
+  by its own `push` instructions once `rsp` is pointing into it — and sweeps NOP-sled
+  sizes, landing mid-sled for slack.
+- **Phase 5 — `ret2libc_leak` technique executor**
+  (`executors/rop_techniques.py`): the two-stage GOT-leak ret2libc the Phase-1
+  baseline's `ret2libc` executor only *described*. Three details keep it general
+  rather than target-shaped: the leak target is the output function's own GOT slot
+  (calling `puts@plt` with `rdi = &got[puts]` prints puts' real address even under
+  lazy binding, because the PLT stub resolves the slot before the callee
+  dereferences `rdi`, so no reasoning about which imports are already resolved is
+  needed); the re-entry point for stage two is *derived* by `functions_calling()`,
+  which finds the function containing the overflowing read from objdump's
+  symbol-delimited disassembly; and a PIE image base is recovered by
+  `pie_base_offset()`, which identifies which symbol a printed code pointer belongs
+  to using the only invariant available — a PIE load base is page-aligned — instead
+  of assuming the target leaked any particular function. The same page-alignment
+  test then validates the libc leak, which is what makes the leak locatable without
+  depending on the target's prompts or on libc landing in a particular range.
+- **Phase 5 — `srop`, `ret2dlresolve`, and `tcache_poison_got` technique executors.**
+  `srop` (`executors/rop_techniques.py`) replaces a stub that refused to run unless
+  another technique had already found the offset and then returned PARTIAL without
+  verifying; it now builds a real `rt_sigreturn` frame, places it immediately after
+  the syscall address (where `rsp` points when the kernel reads it), and resolves
+  `pop rax`/`syscall` through pwntools rather than from a symbol address — which is
+  wrong by 4 bytes on a CET-enabled build, where the usable instruction sits behind
+  the `endbr64`. `ret2dlresolve` handles a target with *no* leak primitive at all by
+  forging an `Elf64_Rela` + symbol + name bytes and letting the linker resolve
+  `system` by name; the hard part it automates is composition — ROP-calling the
+  binary's own input function to stage those structures, then delivering them as a
+  separate input part. `tcache_poison_got`
+  (`executors/heap_techniques.py`) escalates a use-after-free write to an arbitrary
+  write, with the two glibc invariants read from the locally loaded libc rather than
+  assumed: safe-linking's `(chunk_address >> 12) ^ target` mangling (glibc >= 2.32)
+  and `malloc`'s 16-byte alignment check on tcache entries, which forces the target
+  address to be aligned down and the payload padded onto the GOT slot. It also frees
+  *two* chunks before poisoning, because with a single free the first allocation
+  empties the bin and the second never consults the poisoned pointer.
+- **Phase 5 — menu protocol discovery** (`executors/heap_techniques.py:discover_menu`).
+  The pre-existing heap executors could not exploit a menu-driven allocator because
+  they sent one blob and grepped the reply; what was missing was the ability to
+  *drive the program*. Menu option numbers are now read from the target's own printed
+  menu and mapped to roles (create/delete/edit/show), so no option number is
+  hardcoded per binary.
+- `benchmark/fixtures/positive-controls/` — two supwngo-generated exploit scripts that
+  genuinely obtain an interactive shell (`01_shellcode_stack`, `02_ret2plt_system`), checked
+  in unmodified as positive controls for changes to `run_bench.py`. Six corpus binaries
+  contain no flag at all, so their only route to one is `cat flag.txt` inside a shell the
+  exploit obtained; that makes them silently sensitive to what the harness writes to the
+  exploit's stdin, and a harness change can turn a working shell into a `FAILED`. These
+  fixtures make that regression cheap to detect. See the directory's README.
+- `docs/plans/2026-09-23-phase5-reliability-hardening.md` — the Phase 5 plan, recording
+  the five root causes found before any fix was written (single-blob delivery,
+  payload-only verification, attempt ordering, label-driven leak parsing, missing
+  technique implementations) and the per-target work they imply.
+
+### Removed
+- **Phase 5 — two superseded stack executors** (`pipeline/executors/stack_techniques.py`).
+  `negative_size_bypass` guessed the return-address offset from five hardcoded values and
+  delivered its negative length and its overflow as one blob (so the overflow was eaten by
+  the target's own `scanf` and never happened); `int_truncation_bypass` measures the offset
+  against the real input sequence instead. `stack_shellcode` wrote the shellcode inside the
+  overflowed buffer and jumped to a guessed stack address; `stack_shellcode` in
+  `shellcode_techniques.py` places it past the return address and uses a leaked one. Both
+  replacements verify by re-running the generated script, so neither can report success on
+  an output substring match.
+- **Phase 5 — the `SROPExecutor` stub** (`pipeline/executors/heap_and_bypass.py`),
+  replaced by `rop_techniques.SropExecutor`. It skipped itself unless another
+  technique had already populated `context.offset`, took its gadgets from
+  `context.gadgets` (which can hold a symbol address rather than a gadget address),
+  and returned PARTIAL without verifying, on the grounds that "sigreturn frames are
+  timing/alignment sensitive".
+- **Phase 5 — the template-only `ret2libc` executor**
+  (`pipeline/executors/stack_techniques.py`). It never built a chain: it returned
+  PARTIAL with a one-line prose description of the technique and a failure reason
+  pointing at an unimplemented leak-acquisition stage. `rop_techniques.
+  Ret2LibcLeakExecutor` now performs exactly those steps for real.
+
+### Changed
+- **Phase 5 — attempt ordering** (`pipeline/orchestrator.py`): `StrategySuggester` ranked
+  `VARIABLE_OVERWRITE` at priority 1 for all 15 benchmark targets (its applicability test
+  is nearly always true) and `RET2PLT` at 4, so every target paid ~126 blind magic-value
+  process spawns before the technique it actually needed was tried. Added explicit
+  `FIRST_TECHNIQUES` (precondition-specific and cheap) and `LAST_TECHNIQUES` (broad
+  brute-force sweeps) layers around the suggester's own ranking. The brute-force sweeps
+  are still attempted — just last.
+
+### Added
 - Phase-1 benchmark corpus + measurement harness under `benchmark/`: 15 purposefully
   vulnerable, hand-verified x86-64 Linux ELF targets (`benchmark/corpus/<NN>_<slug>/`)
   spanning stack shellcode, ret2plt/system, PIE-leak ret2libc, canary leak+bypass,
@@ -314,6 +479,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behaviour, and output excerpting.
 
 ### Fixed
+- **`tcache_poison_got` threw away the evidence of its own success**
+  (`supwngo/exploit/pipeline/executors/heap_techniques.py`). The generated
+  script triggered the hijacked GOT slot, drained the reply with
+  `io.recvrepeat(0.5)` for synchronisation, *discarded the return value*, and
+  then called `io.interactive()` — which had nothing left to display, because
+  `recvrepeat` consumes what it reads. Every step of the corruption (two
+  frees, safe-linking mangle, 16-byte-aligned target, allocation landing on
+  the GOT, the overwrite) was working; `win()`'s output was simply never
+  printed, so verification saw an empty run and the technique looked broken.
+  The trigger's output is now written to stdout.
+- **`tcache_poison_got` could pick a self-referential GOT target**
+  (same file). Redirecting a slot that `win()` itself calls — e.g. `puts@got`
+  for the usual `win() { puts(FLAG); }` — makes `win()` re-enter through the
+  slot it was reached by and recurse until the stack is gone, producing no
+  output at all and looking identical to a failed primitive. Callees of the
+  win function are now read from the binary's disassembly (`callees_of()`) and
+  excluded from the candidate list.
+- **`ret2dlresolve` never tried the aligned stack parity**
+  (`supwngo/exploit/pipeline/executors/rop_techniques.py`). Every other ROP
+  executor sweeps both parities, because glibc's `do_system()` executes
+  `movaps` and faults unless RSP is 16-byte aligned at the call; the
+  dl-resolve path was treated as exempt. It is not — `_dl_fixup` and the
+  symbol it resolves execute aligned SSE stores too, so a chain that leaves
+  RSP 8-mod-16 faults *inside the dynamic linker*. The resulting
+  `SIGSEGV`/`si_code=SI_KERNEL`/`si_addr=NULL` looks nothing like a payload
+  problem and is easy to misread as a wrong relocation index, which is how it
+  went unnoticed: the forged `Elf64_Rela` was arriving correctly the whole
+  time. The executor now sweeps offset candidates × both parities and emits a
+  bare `ret` before the staging call when flipping.
 - `benchmark/run_bench.py`'s recorded verification output was unauditable:
   `output_tail` kept only `out[-4000:]` of `stdout + stderr` concatenated, so
   the tail was always the *end of stderr* — in practice pwntools/unicorn
@@ -329,6 +523,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rebuilds the targets with a fresh secret flag, two concurrent runs over one
   corpus would clobber each other's binaries and `flag.txt` files and produce
   spurious `FAILED`s rather than an obvious crash.
+- **Phase 5 — our own timeout-kill was being counted as a target crash**
+  (`pipeline/delivery.py`). `deliver_parts()` read the exit status *after*
+  `io.close()`, which kills a process that is still running, so every probe against
+  a target that loops for more input (`while (1) { vuln(); }`) came back
+  `crashed=True` with `rc=-9`. Crash-threshold offset discovery therefore returned
+  the smallest length it tried — 8 — on every such target, and the resulting chains
+  failed in a way that looks exactly like having picked the wrong technique. The
+  status is now read before closing, and only genuine fault signals
+  (`SIGSEGV`/`SIGBUS`/`SIGILL`/`SIGFPE`/`SIGABRT`/`SIGTRAP`/`SIGSYS`, not `SIGKILL`)
+  count as a crash, with a short reap window so a fault that has not yet been
+  reaped is not misread as "still running".
+- **Phase 5 — `stack_shellcode` committed to a single measured offset** and so broke
+  when crash detection was corrected: the probe measures 80 on
+  `01_shellcode_stack` where the return address is at 72, and a wrong offset there is
+  indistinguishable from wrong shellcode placement. It now sweeps offset candidates
+  like the ROP executors do.
+- **Phase 5 — the measured offset is now treated as a candidate, not an answer**
+  (`executors/_shared.py:resolve_offsets()`). The crash threshold lands on the first
+  byte of whatever follows the buffer, and whether the return address is 8 bytes
+  further on depends on details not visible from outside (frame pointer, padding,
+  whether the probe's trailing newline overflows). Measured against targets with
+  independently known-correct offsets the probe is right most of the time, 8 off
+  otherwise, and on some targets not even deterministic between runs. Executors now
+  sweep the measurement and its 8-byte neighbours; because each candidate is proven
+  by re-running the generated script, a wrong one costs one cheap run instead of
+  being misdiagnosed as a wrong technique.
+- **Phase 5 — generated exploit scripts are now portable.** The script hardcoded the
+  target's absolute path as it was at generation time, so the artifact broke as soon as it
+  was copied anywhere (handed to a teammate, checked in as a fixture). It now falls back to
+  a binary of the same name sitting next to the script.
+- **Phase 5 — a generated script's process factory could be shadowed by the exploit body**
+  (`pipeline/script_builder.py`). The factory was named `start()`, and exploit bodies
+  routinely bind short local names; a multi-stage body that assigned e.g.
+  `start = echoed.find(fill)` between its first and second connection turned the second
+  `start()` call into `UnboundLocalError`, so a genuinely working two-stage exploit failed
+  at run time *after* the pipeline had verified the technique. Renamed to `open_target()`
+  and documented why the name is deliberately not a common local.
+- **Phase 5 — the profiling stage silently discarded most leaked pointers**
+  (`pipeline/profile_stage.py`). `_parse_address_leaks()` only recognised a printed `%p`
+  when it was introduced by one of a fixed set of English words
+  (`address|gift|leak|ptr|pointer|stack|heap|libc`, or a bare `at`/`is`/`=`), so the two
+  most common real phrasings in the benchmark corpus — `printf("buf @ %p")` and
+  `printf("chunk[%d] @ %p")` — were dropped outright, leaving every executor that depends
+  on a stack or heap leak with nothing to work from even though the target had handed the
+  address over. It now matches a pointer by its actual rendering via
+  `delivery.scan_hex_addresses()` and buckets it with `delivery.classify_address()`, which
+  also fixes an ordering bug that could label a `0x7ffd…` stack address as libc.
 - `CanonicalAutopwnEngine`'s verified-`SUCCESS` path could leave
   `engine.exploit_script` empty: only the template/`PARTIAL`-only executors
   (`srop`, `format_string`, `ret2libc`) ever populated
