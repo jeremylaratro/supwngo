@@ -310,6 +310,27 @@ crash. The next person to see this file will have the same question.
 
 ## PART 2 — THE COLD RESULT
 
+### 2.0 Lead finding — this outranks the scalar
+
+**R2 is a *paired* re-shaping of R1: each target keeps R1's technique family and
+changes only the surface mechanic. Of the 11 families R1 solved at 5/5, re-shaping
+broke 9 and left 2 standing — and the 2 survivors are exactly the two that require no
+primitive to be acquired before the redirect.**
+
+This is placed above the score deliberately. Holding technique family fixed while
+varying only the surface mechanic **removes corpus composition as an explanation
+entirely**, which no comparison between two different corpora can do. The scalar drop
+from 13/13 to 4/15 is consistent with many stories — different families, different
+difficulty mix, different denominators. The paired result is consistent with far
+fewer: nine families the pipeline demonstrably "had" at full reliability did not
+survive one change of mechanic *within the same family*.
+
+So the round's primary conclusion is not "the pipeline scores 4/15." It is: **R1's
+13/13 was substantially a fit to the surface shape of R1's targets rather than to the
+technique classes those targets were built to represent.** Full evidence and the
+per-pair table are in §2.10.2; the score follows below because it is the pre-registered
+endpoint, not because it is the most informative number.
+
 ### 2.1 The figure
 
 > ## **4 / 15**
@@ -377,7 +398,7 @@ no-PIE/no-canary, but so are 7 of the 11 failures (`02`, `06`, `08`, `09`, `11`,
 | technique class | cold score |
 |---|---|
 | return-address control → statically known target/chain (`07`, `10`, `13`, `15`) | **4/4** |
-| format string (`05`, `06`, `12`) | 0/3 |
+| format string (`05`, `06`, `12`) | 0/3 — **not a capability discovery; see below** |
 | heap (`09`, `11`) | 0/2 |
 | ret2plt/`strcat` composition (`02`) | 0/1 |
 | PIE defeat via write-then-leak (`03`) | 0/1 |
@@ -395,6 +416,24 @@ additional primitive first: a format-string write, heap metadata control, a leak
 defeat PIE, a canary disclosure, an integer-overflow size confusion, or an
 out-of-bounds index. That is a sharper and more useful finding than the scalar 4/15,
 and it is what §3 development should be aimed at.
+
+**Three of the eleven failures are a known unimplemented feature, not a discovery about
+capability.** The format-string bucket must not be described as "the pipeline failed on
+three format-string targets." The accurate statement is: **the pipeline cannot perform
+format-string writes, and says so in its own source.** From
+`supwngo/exploit/pipeline/executors/stack_techniques.py:234`:
+
+```python
+record.failure_reason = "format-string write automation is out of scope (Phase 5)"
+```
+
+That string is reported verbatim on `05`, `06` and `12`. A declared scope boundary and
+an unexpected capability gap are different findings with different implications — the
+first is a backlog item whose absence was known before the run, the second is
+information the benchmark produced. Counting the first as the second would inflate what
+this measurement discovered. The genuine discoveries in the failure set are the
+shape-fitted preconditions (§2.10.2) and the two targets where a real technique ran and
+failed.
 
 ### 2.3 Strict attribution equals default attribution — 4/15, derived not re-run
 
@@ -766,15 +805,31 @@ than find it; write before leaking; relay the canary rather than read it straigh
 Discovery proposes nothing because the shape it pattern-matches on is absent, and the
 technique behind it was never the thing being matched.
 
-**Caveat on R2's design, in the other direction.** Because R2 is a deliberate
-re-shaping of R1 rather than an independent sample, it is not a uniform random draw
-from the space of exploitation targets, and 4/15 should not be read as an estimate of
-performance on arbitrary binaries. It is an estimate of performance on *adversarially
-re-shaped variants of targets the pipeline already solves* — which is the harder and
-more informative question for detecting overfit, and a pessimistic one for absolute
-capability. This is a fourth axis on which R1↔R2 is not like-for-like, additional to
-the three in §1.4, and it was found by reading the corpus sources rather than being
-declared in the brief.
+**Caveat on R2's design, in the other direction — and it deserves the same prominence
+as the finding.** Because R2 is a deliberate re-shaping of R1 rather than an independent
+sample, it is **not** a uniform random draw from the space of exploitation targets.
+**4/15 estimates performance on adversarially re-shaped variants of targets the pipeline
+already solves. It is not an estimate of performance on arbitrary binaries and must not
+be quoted as one.**
+
+**Direction, stated as a reasoned expectation and explicitly not a finding — nothing
+measured here bears on it.** A deliberate re-shaping is aimed at the pipeline's specific
+assumptions: whoever wrote R2 `02` chose to build `"/bin/sh"` at runtime *because* R1
+`02` had it as a literal. Random novelty has no such aim and would miss those
+assumptions much of the time. On that reasoning I expect adversarial re-shaping to be
+**harder** than genuinely new targets of comparable technique content, which would make
+**4/15 closer to a lower bound than to a point estimate** for performance on new
+binaries.
+
+Two reasons to hold that loosely. It assumes the re-shapings are well aimed, which the
+paired table supports but does not prove — a re-shaping could also accidentally land on
+a mechanic the pipeline handles better, as `13` plausibly did. And "comparable technique
+content" is doing real work in that sentence: a genuinely new corpus could be harder for
+reasons unrelated to shape. **The only way to settle it is R3/R4/R5**, which is one more
+reason not to spend them carelessly.
+
+This is a fourth axis on which R1↔R2 is not like-for-like, additional to the three in
+§1.4. It was found by reading the corpus sources, not declared in the brief.
 
 ### 2.11 What happens next, and what this figure is not
 
@@ -805,6 +860,32 @@ failure is to debug:
    the cleanest gaps, which is precisely why they are the lowest leverage: the pipeline
    already reached the technique stage on both, so fixing them moves 2 while fixing
    discovery could move 9.
+
+#### Binding requirements on the post-development report
+
+Two statements are **permanent properties of this round, not open questions**, and must
+appear in `BENCHMARK-R2-POST-DEV-24SEP2026.md` rather than being left implicit:
+
+1. **The post-development R2 figure is not a generalization number.** It is training
+   performance. R2's capacity to measure generalization was consumed by the cold run and
+   cannot be restored by any later work. After step 3, only R3/R4/R5 can measure
+   generalization.
+2. **R2 can never separate flag-delivery mechanism from technique class.** R2's fix for
+   R1's delivery defect was uniform across all 15 targets — correct for soundness, and it
+   destroys the within-corpus contrast the separation requires. No development repairs
+   this; it is a fixed property of the corpus (residual limit 6).
+
+#### Consequence for R5's design, recorded here because this round produced it
+
+If R2 is a paired re-shaping of R1, then **R5 must be independently conceived rather
+than a re-shaping of anything**, and its novelty review must explicitly check for
+pairing against every earlier round. The two designs measure different properties and
+both are worth having — paired re-shaping is the stronger instrument for detecting
+overfit, independent conception is the only way to estimate performance on genuinely new
+targets — but only if they are never conflated afterwards. A paired corpus mistaken for
+an independent one would read as a generalization estimate when it is an overfit probe,
+and an independent corpus mistaken for a paired one would understate the overfit
+evidence available.
 
 §2.10.2 is the reason this ordering must be *generalization* and not per-target repair:
 nine technique families already failed to survive one change of surface mechanic. Fixes
