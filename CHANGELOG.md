@@ -253,8 +253,116 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the flag is recoverable with `strings` from 8 of the 14 binaries (04, 05, 06, 10, 11,
   12, 14, 15), which randomizing `-DFLAG` does **not** fix because the random flag is still
   compiled into `.rodata`. Recommends having `win()` read `flag.txt` at runtime.
+- **`benchmark/run_bench.py` now runs N reps per target (`--reps`, default 5) and
+  reports BOTH `solved` and `reliability`.** Exploit delivery is not
+  deterministic, so a single rep can understate capability for reasons unrelated
+  to whether the framework can exploit the target — measured 4/96 delivery
+  failures on one probe under 24-way contention against 0/40 unloaded, i.e. the
+  flake rate rises with load, which is exactly when a benchmark tends to run.
+  `solved` is "credited in at least one rep"; `reliability` is k/N. Neither is
+  the score alone — quoting best-of-N without reliability overstates the result,
+  quoting one rep understates it — and `summary.txt` says so, calls out
+  intermittently-solved targets explicitly, and reports how many targets have no
+  reliability figure. `reps` is recorded in `report.json` beside `jobs` and
+  `strict_attribution`. Reps run sequentially within a target (each rebuilds the
+  binary with a fresh secret, so concurrent reps would race), and a `VOID`
+  settles a target immediately rather than being re-rolled, since the controls
+  and provisioning checks are deterministic. Each rep gets its own results
+  subdirectory so an intermittent target's evidence is not overwritten.
 
 ### Fixed
+- **`benchmark/soundness_probes/drive.py` never exercised behavioural
+  attribution, so the tool that validates the harness could not fail.** It called
+  `classify()` without the `attribution=` argument that `run_one()` always
+  passes, testing a code path the harness does not use. It reported "no holes"
+  while the single most important check was absent — false assurance, which is
+  worse than no test. It also still branched on a `WEAK ATTRIBUTION` marker that
+  behavioural attribution had superseded, so once that string disappeared the
+  driver began reporting a spurious `*** FALSE POSITIVE -- NEW HOLE ***` for
+  `pure_python_scrape.py` on `15_win_function`. **The harness itself was never
+  affected:** driven through the real path that probe is `VOID`
+  /`script_gamed_the_check` with `credited_writers: []` in both default and
+  strict mode. The driver now witnesses and classifies exactly as `run_one()`
+  does, checks **both** default and strict (rejection only under strict would
+  mean a default run is scoreable by a script that never exploited anything),
+  prints the attribution chains as the load-bearing evidence, exits non-zero on
+  any failure, and refuses to claim anything about false negatives when no
+  genuine-exploit probe was run.
+- **`benchmark/run_bench.py` recorded only one rep's secret flag, making the
+  other reps' verdicts unfalsifiable.** Every rep rebuilds the target with a
+  fresh secret, but the rep-aggregated record can carry only one of them, so for
+  a 5-rep target the verdicts for reps 2-5 could not be re-derived from their own
+  archived `strace.log` — an auditor would not know which string to search for,
+  and a wrong verdict in a later rep would have been permanently undetectable.
+  Independent re-checkability is the one property this harness exists to provide.
+  Found when a cross-check over all 17 archived traces reported reps 2-5 as
+  `no_flag` purely because it was matching rep 1's secret against their traces.
+  `attempts[]` now records each rep's own `secret_flag`.
+- `benchmark/run_bench.py`'s multi-rep records now carry `elapsed_sec_total`.
+  A rep-aggregated result inherits `elapsed_sec` from one representative attempt,
+  so summing that field across a `--reps 5` report understated the run's real
+  cost by about 5x — a 5-rep run appeared to cost the same as a 1-rep run
+  (1685s vs 1659s). `elapsed_sec` keeps its old meaning for comparability with
+  single-rep reports, and per-rep times were already in `attempts[]`.
+- **`benchmark/run_bench.py`'s headline success rate did not admit it was a
+  best-of-N figure.** With `--reps 5`, `OVERALL: 2/3 SUCCESS (66.7%)` counted a
+  target that succeeded once in five attempts identically to one that succeeded
+  five times out of five — and the headline is the number that gets quoted
+  downstream, so deferring the disclosure to the `SOLVED vs RELIABILITY` block
+  further down the file did not help. Same failure mode as a silently shrunken
+  VOID denominator: a true-but-incomplete number that reads as better than
+  reality. The headline now states that SUCCESS means credited in at least 1 of N
+  reps, and splits the successes into fully-reliable versus intermittent. A
+  single-rep run makes no best-of-N claim.
+- `benchmark/run_bench.py`'s serial multi-rep progress output did not say which
+  target it was reporting on. Suppressing `run_one`'s per-step chatter for
+  `--reps > 1` is right — five copies per target buries the result — but it left
+  the reps loop printing anonymous `-> SUCCESS: solved=True reliability=1/3`
+  lines, so a serial `--reps 5` run (the default rep count) produced verdicts the
+  operator could not match to targets. The loop now prints a per-target header, a
+  line per rep, and a verdict line that repeats the slug. Parallel runs are
+  unchanged and stay silent, which is what keeps 8 workers from splicing their
+  output together.
+- **A stdin delivery race in `benchmark/soundness_probes/real_exploit_02_explicit.py`
+  made a genuine exploit fail under load.** The target does one
+  `read(0, buf, 300)`, and `read()` returns as soon as any data is available, so
+  an unsynchronised script races it two ways: the payload can be consumed before
+  it has fully arrived, or — because `sendline()` is a separate pipe write — the
+  same `read()` can swallow the payload *together with* the shell commands,
+  spawning a shell whose stdin is already empty. That produces the confusing
+  pair `shell_proven=True, flag_found=False`. Measured 4/96 failures under 24-way
+  contention and 0/40 unloaded; synchronising on the prompt and letting the
+  payload be consumed alone gives 0/96. Raising the `recvall` deadline alone only
+  halved it (2/96), so the deadline was a contributing factor and the
+  synchronisation is the fix. Worth generalising: any target with a single large
+  `read()` will punish a fire-and-forget delivery layer, and it fails in a way
+  that looks like a capability limit rather than a race.
+- **`benchmark/attribution.py` reached three wrong verdicts about who wrote the
+  flag.** The process tree was reconstructed correctly; the reasoning over it
+  was wrong. All three fixes make attribution *more* accurate, not more
+  permissive, and `tests/test_bench_attribution.py` pins each with a fixture (5
+  of its 11 tests fail against the pre-fix module):
+  - **False VOID against real exploitation.** The target was identified by its
+    *current* image, but `execve` in place replaces a pid's image without ending
+    the process — a shellcode or SROP solve execs a shell in the target's own
+    pid, so that pid reads `dash` and the target appears never to have run.
+    `system()` forks and so kept its name, which is why this hid: it
+    systematically under-credited only the hardest techniques.
+  - **False accusation of cheating against a working exploit.** A `write`
+    record split by strace's `<unfinished ...>`/`<... resumed>` pair matched
+    nothing in either half, so the real writer vanished, while pwntools'
+    `io.interactive()` relay thread echoed the same bytes in one complete line
+    and was reported as the writer — yielding `script_gamed_the_check`. Because
+    it depends on whether the kernel interleaves another pid's line mid-write,
+    it was non-deterministic: identical code disagreed between runs minutes
+    apart. Split records are now rejoined per pid before any matching, and a
+    `CLONE_THREAD` writer is resolved to the process it belongs to.
+  - **False SUCCESS (pre-existing).** Because the target was identified by its
+    latest image, a script that scraped the flag, printed it, and *then* exec'd
+    the target was credited — exactly the channel attribution exists to close.
+    Credit now requires an ancestor to have exec'd the target *strictly before*
+    the write, which is also what keeps the first fix above from turning a false
+    VOID into a false SUCCESS.
 - `benchmark/run_bench.py`'s `report.json` now records `strict_attribution` and
   `jobs` — the worker count the run *actually used*, clamped to the target count,
   since `run_targets()` goes serial for a single target and a report claiming 8

@@ -432,11 +432,231 @@ Three properties that keep this honest:
   (having `win()` read `flag.txt`) became *less* urgent: a scrapeable
   `.rodata` literal is no longer sufficient to score.
 
+### Three attribution defects found after the fix landed (24 Sep)
+
+The first implementation reconstructed the tree correctly but reasoned about it
+in three wrong ways. All three were found by running it against real exploits,
+and all three fixes make attribution *more* accurate rather than more
+permissive. Fixtures for each are in `tests/test_bench_attribution.py`; 5 of
+its 11 tests fail against the pre-fix module.
+
+| # | Defect | Wrong verdict it produced |
+|---|--------|---------------------------|
+| A | The target was identified by its *current* image, but `execve` in place replaces a pid's image without ending the process. A shellcode/SROP solve execs a shell in the target's own pid, so that pid reads `dash` and the target appears never to have run. | **False VOID** against real exploitation, concentrated on exactly the hardest techniques. `system()` forks, so it kept its name and worked — which is why this hid for so long. |
+| B | A `write` record split by strace's `<unfinished ...>` / `<... resumed>` pair matched nothing in either half, so the real writer vanished; meanwhile pwntools' `io.interactive()` relay thread echoed the same bytes in one complete line and was blamed. | **False `script_gamed_the_check`** — an accusation of cheating against a working exploit. Non-deterministic, since it depends on whether the kernel interleaves another pid's line mid-write, so identical code disagreed between runs minutes apart. |
+| C | Consequence of identifying the target by its latest image: a pid that scraped the flag, printed it, and *then* exec'd the target was credited, because by the end of the trace its image **was** the target. | **False SUCCESS.** Pre-existing, and the most serious of the three in kind — it is precisely the channel attribution exists to close. Found while reasoning about what fixing A would break. |
+
+The fix for A and C is one rule, and neither half works alone:
+
+> A flag-bearing write is credited iff some ancestor of the writing process
+> (including the process itself) `execve`d the target **strictly before** that
+> write.
+
+`including the process itself` fixes A. `strictly before` fixes C — and is what
+stops the fix for A from converting a false VOID into a false SUCCESS. Writes
+are grouped per `(pid, exec-epoch)` so bytes a pid wrote as one program are
+never pooled with bytes it wrote as another, while a flag straddling two
+`write()` calls in the same epoch still joins up.
+
+For B, split records are rejoined per pid before anything is matched, and a
+`CLONE_THREAD` writer is resolved to the process it belongs to — a thread of the
+driver *is* the driver, and a thread of the target is still the target.
+
 Residual gap: a script could deliberately write the flag into the target's own
 output channel. That requires real effort rather than a shortcut, and
 `shell_exec_by_target` corroborates the six shell-based targets independently,
 but it is not structurally prevented. Witnessing the target's control flow
 directly (a breakpoint on `win()`) would close it.
+
+### The validation tool could not fail (24 Sep)
+
+The most uncomfortable finding of the audit, because it is about the instrument
+that checks the instrument.
+
+`benchmark/soundness_probes/drive.py` exists to prove the harness rejects
+non-exploiting channels. It called `classify()` **without** the `attribution=`
+argument that `run_one()` always passes — so it never ran behavioural
+attribution, the single most important check in the harness, and reported
+"no holes" while testing a code path the harness does not use.
+
+A validation tool that cannot fail is worse than no tool: it converts an
+untested property into a claimed one. It is the same error as a negative control
+that has never been shown capable of firing.
+
+It surfaced only because a second, unrelated change made it *visibly* wrong. The
+driver also branched on a `WEAK ATTRIBUTION` marker string that behavioural
+attribution had superseded; once that string stopped being emitted, the driver
+began reporting a spurious `*** FALSE POSITIVE -- NEW HOLE ***` for
+`pure_python_scrape.py` on `15_win_function`. Had that marker never changed, the
+bypass could have gone unnoticed indefinitely.
+
+**The harness itself was never affected**, and that was checked rather than
+argued. Driven through the real path, the same probe is rejected:
+
+| mode | status | cause | `credited_writers` |
+|---|---|---|---|
+| default | `VOID` | `script_gamed_the_check` | `[]` |
+| strict | `VOID` | `script_gamed_the_check` | `[]` |
+
+Why the gap survived: `attribution_sweep.py` exercised attribution in isolation
+and `drive.py` exercised `classify()` end to end, so each half was covered and
+**the combination `run_one()` actually uses was not**. Coverage of the parts is
+not coverage of the composition.
+
+The driver now witnesses and classifies exactly as `run_one()` does, checks both
+default and strict (rejection only under strict would mean a default run is
+scoreable by a script that never exploited anything), prints the attribution
+chains as the load-bearing evidence rather than just the status, exits non-zero
+on failure, and refuses to say anything about false negatives when no
+genuine-exploit probe ran.
+
+Post-fix, with attribution genuinely exercised:
+
+- `13_off_by_one`, `15_win_function` — `FAILURES: 0`, all four non-exploiting
+  probes rejected in **both** modes.
+- `02_ret2plt_system` — both genuine exploits credited in both modes, with chains
+  like `cat <- dash <- dash <- ret2plt_system <- python3.11`.
+- `real_exploit_02.py` shows the pwntools relay thread correctly **uncredited**
+  (`(inherited) [thread] <- python3.11`) — defect B's fix working in a live run,
+  not only in a fixture.
+
+#### Open item: the `11/13` hardening figure was measured with the defective attribution
+
+`integration/phases-0-4-7-20260923` contains `8ac3295` (attribution introduced)
+but **not** `88aa470` (the three defect fixes). The hardening branch's
+`74224af feat(exploit): round-1 hardening -- 11/13 credited, zero genuine
+failures` was therefore scored by a module with all three defects live.
+
+The errors do **not** point the same way, so the figure cannot simply be adjusted:
+
+| Defect | Direction | Why it plausibly applies to that run |
+|---|---|---|
+| A — in-place `execve` read as "target never ran" | **understates** (false `VOID`, shrinking both numerator and denominator) | That branch added exactly the affected techniques: `feat(exploit): add SROP, ret2dlresolve, and tcache-poisoning executors` and `add leaked-stack shellcode executor`. Shellcode/SROP solves end via in-place `execve`. |
+| B — split `write` records blamed the relay thread | **understates**, non-deterministically (false `script_gamed_the_check`) | Fires whenever the kernel interleaves another pid's line mid-`write`; two identical runs disagreed minutes apart. |
+| C — scrape-then-`execve` credited | **overstates** (false `SUCCESS`) | Unknown for that run. See below. |
+
+`benchmark/results/*` is gitignored, so that run's `strace` logs are not in git
+and the pre/post comparison below **cannot** be extended to them. The "C never
+fired" evidence covers the 7 traces on this branch only. Nothing here says the
+`11/13` is wrong; it says it is **not yet measured by a sound instrument**, and
+that "zero genuine failures" is the specific claim most exposed — B manufactures
+a cheating verdict, so a real one could equally have been dismissed as noise.
+
+**Recommendation:** re-run that branch's corpus after `88aa470` lands, and quote
+the post-fix number. Until then the two figures are not comparable, and neither
+is this branch's `1/13` — which measures *unhardened* `autopwn`, since none of
+the 12 hardening commits are in this worktree.
+
+#### Did defect C inflate any score already reported? No — checked, not assumed
+
+C was a false-SUCCESS defect, so the obvious question is whether any number this
+branch has already published was wrong. That cannot be answered by reasoning
+about it, so it was measured: both the pre-fix and post-fix `attribute()` were
+run over **every `strace.log` archived under `benchmark/results/`** (7 traces).
+
+- **0 verdict changes** between the two implementations.
+- **0 occurrences of the C shape** — no trace contains a pid that wrote the flag
+  and only later `execve`d the target.
+
+So C was a real hole in the instrument but it never fired, and no previously
+reported figure is inflated by it. This is worth stating explicitly because
+"we fixed a false-SUCCESS bug" invites the reader to discount past numbers; here
+the evidence says they do not need discounting. It also cuts the other way: the
+absence of the shape in 7 traces is *not* evidence that the hole was harmless,
+only that nothing exercised it.
+
+### A delivery race made a working exploit look like a capability limit
+
+Found while validating the reference probes, and it is a false **negative**
+rather than a false positive — the direction that quietly *understates* a score.
+
+`02_ret2plt_system` does a single `printf("Input: "); read(0, buf, 300)`. `read()`
+returns as soon as *any* data is available, so an unsynchronised exploit script
+races it two ways: the payload can be consumed before it has fully arrived, or —
+because `sendline()` is a separate pipe write — the same `read()` can swallow the
+payload *together with* the follow-up shell commands, spawning a shell whose
+stdin is already at EOF.
+
+The signature is the confusing pair `shell_proven=True, flag_found=False`: the
+exploit demonstrably worked, and the flag was still not captured.
+
+Rate, measured rather than estimated (this matters — the first estimate made here
+was wrong by an order of magnitude and was corrected):
+
+| condition | failures |
+|---|---|
+| standalone, unloaded | 0/40 |
+| under `strace` | 0/20 |
+| under 24-way contention | **4/96 (4.2%)** |
+| after the fix, 24-way contention | **0/96** |
+
+Raising the `recvall` deadline alone only halved it (2/96), so the deadline was a
+contributing factor and the synchronisation is the actual fix: wait for the
+prompt, send the payload, let that `read()` consume it *alone*, then send the
+commands.
+
+**Generalisation worth carrying to the other three corpora:** any target with one
+large `read()` will punish a fire-and-forget delivery layer, the failure is
+load-dependent (so it appears when the box is busy — i.e. when a benchmark is
+most likely to be running), and it presents as a capability boundary rather than
+a race. A harness that reports one attempt per target will therefore drift
+*downwards* under load, and the drift is invisible.
+
+#### Consequence for the harness: two numbers, not one
+
+`--reps N` (default 5) now reports both:
+
+| | meaning |
+|---|---|
+| `solved` | credited in **at least one** rep — exploitable at all? |
+| `reliability` | **k/N** reps credited — how dependably? |
+
+Neither is the score alone. `solved` without `reliability` is best-of-N
+cherry-picking; a single rep understates. `summary.txt` states this, names the
+targets solved intermittently, and prints how many targets have **no**
+reliability figure so a shrunken denominator cannot pass unnoticed. A single-rep
+run reports no reliability rather than a misleading `1/1`, a `VOID` settles a
+target instead of being re-rolled (the controls are deterministic), and each rep
+gets its own results directory so an intermittent target's evidence survives.
+The `OVERALL` headline itself states that the rate is best-of-N and splits the
+successes into fully-reliable versus intermittent, because the headline is the
+number that gets quoted and a disclosure further down the file does not travel
+with it.
+
+#### What 5 reps actually bought on this corpus: nothing, and that is the finding
+
+Measured, so it is worth stating plainly rather than assuming the feature paid
+for itself:
+
+| | `--reps 1` | `--reps 5` default | `--reps 5` strict |
+|---|---|---|---|
+| solved | 1/13 | **1/13** | **1/13** |
+| intermittent targets | (not measurable) | **0** | **0** |
+| wall clock | ~4 min | ~21 min | ~21 min |
+
+Per-target, both 5-rep runs agree exactly: `15_win_function` **5/5**, the ten
+other scorable targets **0/5**, two `VOID` (`11_heap_uaf_leak`
+`corpus_missing_liveness_gate`, `13_off_by_one` `corpus_trivially_solvable`)
+settled after one rep. Default and strict agreeing is expected here rather than
+reassuring: the one success is behaviourally witnessed
+(`win_function <- python3.11`), so there is no unwitnessed success for
+`--strict-attribution` to exclude.
+
+`15_win_function` is 5/5; the other twelve are 0/5. **No target flaked**, so reps
+changed the score by nothing and cost 5x.
+
+That is still worth having, for two reasons. It converts "1/13, possibly an
+unlucky roll" into "1/13, and the twelve failures reproduce 5/5" — a materially
+stronger claim, and the cheapest available defence against quoting a number that
+one bad roll produced. And the reason nothing flaked here is that twelve targets
+fail *before* delivery: there is no working exploit to race. Delivery races can
+only bite once exploits start working, so reps become **more** load-bearing as
+capability rises, not less — which is precisely the regime the next three corpora
+are meant to enter.
+
+Recommendation for the other corpora: keep N=5 while a score is being driven
+upwards, and treat any target whose `reliability` is not `N/N` as a delivery bug
+to fix rather than a capability result to report.
 
 ## Residual limitation (superseded in part — read the section above first)
 

@@ -247,8 +247,8 @@ class TestCorpusParameterisation:
                     keys = got
                     break
         assert keys, "could not find main()'s report dict"
-        for required in ("jobs", "strict_attribution", "corpus_root", "manifest",
-                         "timeout", "targets_run"):
+        for required in ("jobs", "reps", "strict_attribution", "corpus_root",
+                         "manifest", "timeout", "targets_run"):
             assert required in keys, (
                 f"report.json omits {required!r}; a run artifact must record the "
                 f"settings that change what its verdicts mean"
@@ -652,3 +652,235 @@ class TestExcerpt:
         assert got.startswith("FLAGSTART")
         assert got.endswith("ENDWARNING")
         assert "omitted" in got
+
+
+class TestRepsAndReliability:
+    """A single rep under-reports capability, and best-of-N without a
+    reliability figure overstates it. Both numbers, or neither is honest."""
+
+    TARGET = {"slug": "07_t", "technique": "x", "difficulty": "medium"}
+
+    def _fake_run_one(self, monkeypatch, statuses):
+        """Each call returns the next status in `statuses`."""
+        calls = []
+
+        def fake(corpus, target, timeout, results_dir, strict_attribution=False,
+                 tmpdir=None, echo=True):
+            st = statuses[len(calls)]
+            calls.append(results_dir)
+            rec = {"slug": target["slug"], "difficulty": target["difficulty"],
+                   "status": st, "reason": f"reason-{st}", "elapsed_sec": 1.0}
+            if st == "VOID":
+                rec["void_cause"] = "corpus_trivially_solvable"
+            return rec
+
+        monkeypatch.setattr(rb, "run_one", fake)
+        return calls
+
+    def _run(self, monkeypatch, tmp_path, statuses, reps):
+        calls = self._fake_run_one(monkeypatch, statuses)
+        res = rb.run_reps(None, self.TARGET, 1.0, tmp_path, False, reps,
+                          echo=False)
+        return res, calls
+
+    def test_intermittent_target_is_solved_but_not_fully_reliable(
+            self, monkeypatch, tmp_path):
+        res, _ = self._run(monkeypatch, tmp_path,
+                           ["FAILED", "SUCCESS", "FAILED", "SUCCESS", "FAILED"], 5)
+        assert res["status"] == "SUCCESS", "one credited rep means it IS solvable"
+        assert res["reps_credited"] == 2
+        assert res["reps"] == 5
+        assert res["reliability"] == 2 / 5
+        assert "reliability 2/5" in res["reason"], (
+            "the reliability must travel WITH the verdict, not only in a table")
+
+    def test_fully_reliable_and_never_solved_are_distinguished(
+            self, monkeypatch, tmp_path):
+        good, _ = self._run(monkeypatch, tmp_path, ["SUCCESS"] * 5, 5)
+        assert good["status"] == "SUCCESS" and good["reliability"] == 1.0
+        bad, _ = self._run(monkeypatch, tmp_path, ["FAILED"] * 5, 5)
+        assert bad["status"] == "FAILED" and bad["reliability"] == 0.0
+
+    def test_a_void_settles_the_target_and_stops_further_reps(
+            self, monkeypatch, tmp_path):
+        """VOID comes from deterministic checks (controls, provisioning), so
+        re-rolling it would only burn time -- and a reliability figure over a
+        truncated rep count would misdescribe what happened."""
+        res, calls = self._run(monkeypatch, tmp_path,
+                               ["VOID", "SUCCESS", "SUCCESS", "SUCCESS", "SUCCESS"], 5)
+        assert res["status"] == "VOID"
+        assert res["void_cause"] == "corpus_trivially_solvable"
+        assert len(calls) == 1, "must not keep repping a VOID target"
+        assert res["reliability"] is None, (
+            "no reliability figure for a target we stopped measuring")
+
+    def test_single_rep_reports_no_reliability_rather_than_a_fake_one(
+            self, monkeypatch, tmp_path):
+        res, _ = self._run(monkeypatch, tmp_path, ["SUCCESS"], 1)
+        assert res["status"] == "SUCCESS"
+        assert res["reliability"] is None, (
+            "1/1 would read as 100% reliable, which one rep cannot establish")
+        assert res["reps"] == 1
+
+    def test_each_rep_gets_its_own_results_dir(self, monkeypatch, tmp_path):
+        """Otherwise rep N overwrites rep N-1's script and strace log, and the
+        evidence for an intermittent target is lost."""
+        _res, calls = self._run(monkeypatch, tmp_path, ["FAILED"] * 3, 3)
+        assert len(calls) == 3
+        assert len(set(map(str, calls))) == 3, f"reps shared a dir: {calls}"
+
+    def _summary(self, tmp_path, results):
+        return rb.write_summary(results, tmp_path / "s.txt", 10.0,
+                                rb.Corpus(root=rb.DEFAULT_CORPUS_DIR,
+                                          manifest=rb.DEFAULT_CORPUS_YAML))
+
+    @staticmethod
+    def _headline(text):
+        """Just the OVERALL paragraph -- from `OVERALL:` to the blank line.
+
+        Deliberately NOT "the first half of the file": the disclosure has to be
+        attached to the quoted number, and a looser slice would pass on text
+        found anywhere in the summary.
+        """
+        lines = text.splitlines()
+        start = next(i for i, ln in enumerate(lines)
+                     if ln.startswith("OVERALL:"))
+        end = next((i for i in range(start + 1, len(lines))
+                    if not lines[i].strip()), len(lines))
+        return "\n".join(lines[start:end])
+
+    def test_every_rep_records_its_own_secret_so_verdicts_stay_checkable(
+            self, monkeypatch, tmp_path):
+        """Each rep rebuilds the target with a FRESH secret, and the aggregate
+        can carry only one of them.
+
+        Without a per-rep secret, the verdict for rep 3 cannot be re-derived from
+        rep 3's own archived strace.log -- an auditor would not know which string
+        to search for, so a wrong verdict in a later rep would be permanently
+        unfalsifiable. That is the one property this harness exists to provide.
+        """
+        calls = []
+
+        def fake(corpus, target, timeout, results_dir, strict_attribution=False,
+                 tmpdir=None, echo=True):
+            calls.append(results_dir)
+            n = len(calls)
+            return {"slug": target["slug"], "difficulty": target["difficulty"],
+                    "status": "SUCCESS", "reason": "r", "elapsed_sec": 1.0,
+                    "secret_flag": f"FLAG{{rep{n}}}"}
+
+        monkeypatch.setattr(rb, "run_one", fake)
+        res = rb.run_reps(None, self.TARGET, 1.0, tmp_path, False, 3, echo=False)
+
+        secrets = [a["secret_flag"] for a in res["attempts"]]
+        assert secrets == ["FLAG{rep1}", "FLAG{rep2}", "FLAG{rep3}"], (
+            f"each rep must record the secret it actually used; got {secrets}")
+        assert len(set(secrets)) == 3, "per-rep secrets must not be collapsed"
+
+    def test_multi_rep_record_reports_the_targets_real_cost(
+            self, monkeypatch, tmp_path):
+        """`elapsed_sec` on an aggregate is inherited from ONE attempt, so
+        summing it across a multi-rep report understates the run's cost by about
+        the rep count. That is not hypothetical -- it produced a 5-rep run that
+        appeared to cost the same as a 1-rep run. elapsed_sec_total is the real
+        figure; per-rep times stay in attempts[].
+        """
+        res, _ = self._run(monkeypatch, tmp_path, ["FAILED"] * 4, 4)
+        assert res["elapsed_sec_total"] == 4.0, (
+            f"expected 4 reps x 1.0s; got {res['elapsed_sec_total']}")
+        assert res["elapsed_sec"] == 1.0, (
+            "elapsed_sec stays the representative attempt, for comparability "
+            "with single-rep reports")
+        assert sum(a["elapsed_sec"] for a in res["attempts"]) == 4.0
+
+    def test_overall_headline_admits_it_is_best_of_n(self, tmp_path):
+        """The headline rate is the number that gets quoted downstream.
+
+        With reps > 1, `OVERALL: 1/2 SUCCESS (50.0%)` is a BEST-OF-5 figure. If
+        the headline does not say so, the disclosure further down the file does
+        not help -- nobody who quotes the percentage reads that far. This is the
+        same failure mode as a shrunken VOID denominator: a true-but-incomplete
+        number that reads as better than reality.
+        """
+        results = [
+            {"slug": "01_a", "difficulty": "easy", "status": "SUCCESS",
+             "reason": "r", "reps": 5, "reps_requested": 5,
+             "reps_credited": 5, "reliability": 1.0},
+            {"slug": "02_b", "difficulty": "easy", "status": "SUCCESS",
+             "reason": "r", "reps": 5, "reps_requested": 5,
+             "reps_credited": 1, "reliability": 0.2},
+            {"slug": "03_c", "difficulty": "hard", "status": "FAILED",
+             "reason": "r", "reps": 5, "reps_requested": 5,
+             "reps_credited": 0, "reliability": 0.0},
+        ]
+        head = self._headline(self._summary(tmp_path, results))
+
+        assert "BEST-OF-5" in head.upper(), (
+            f"headline must disclose best-of-N; got:\n{head}")
+        assert "1 fully reliable" in head and "1 INTERMITTENT" in head, (
+            "the headline must split reliable from intermittent successes, "
+            f"since 5/5 and 1/5 are different claims; got:\n{head}")
+
+    def test_single_rep_headline_makes_no_best_of_n_claim(self, tmp_path):
+        """The converse: with one rep there is no best-of-N, and saying so would
+        be noise that trains readers to skip the disclosure."""
+        results = [
+            {"slug": "01_a", "difficulty": "easy", "status": "SUCCESS",
+             "reason": "r", "reps": 1, "reps_requested": 1,
+             "reps_credited": 1, "reliability": None},
+        ]
+        head = self._headline(self._summary(tmp_path, results))
+        assert "BEST-OF" not in head.upper(), (
+            f"no best-of-N claim belongs in a single-rep run; got:\n{head}")
+
+    def test_serial_multi_rep_progress_names_the_target(
+            self, monkeypatch, tmp_path, capsys):
+        """With reps > 1 the per-rep chatter from run_one is suppressed, so the
+        reps loop itself has to say which target it is talking about.
+
+        Without this, a serial `--reps 5` run prints a stream of anonymous
+        `-> FAILED reliability=0/5` lines and the operator cannot tell which
+        target produced which verdict -- the progress output becomes unusable
+        at exactly the setting that is now the default.
+        """
+        self._fake_run_one(monkeypatch, ["FAILED", "SUCCESS", "FAILED"])
+        rb.run_reps(None, self.TARGET, 1.0, tmp_path, False, 3, echo=True)
+        out = capsys.readouterr().out
+
+        assert out.count(self.TARGET["slug"]) >= 2, (
+            f"target slug must appear in the header AND the verdict; got:\n{out}")
+        assert "rep 1/3" in out and "rep 3/3" in out, (
+            f"each rep needs its own progress line; got:\n{out}")
+        verdict = [ln for ln in out.splitlines() if "reliability=" in ln]
+        assert len(verdict) == 1, f"exactly one verdict line; got {verdict}"
+        assert self.TARGET["slug"] in verdict[0], (
+            f"the verdict line itself must name the target; got {verdict[0]!r}")
+
+    def test_parallel_mode_stays_quiet_so_workers_do_not_interleave(
+            self, monkeypatch, tmp_path, capsys):
+        """echo=False is how run_targets keeps 8 workers from splicing their
+        output together; reps must not reintroduce chatter behind its back.
+
+        run_targets prints one authoritative line per target on completion, so
+        anything run_reps emits under echo=False is unattributable noise from an
+        unknown worker.
+        """
+        self._fake_run_one(monkeypatch, ["FAILED"] * 3)
+        rb.run_reps(None, self.TARGET, 1.0, tmp_path, False, 3, echo=False)
+        captured = capsys.readouterr()
+        assert captured.out == "", f"leaked stdout under echo=False: {captured.out!r}"
+
+    def test_reliability_line_renders_both_numbers(self, monkeypatch, tmp_path):
+        results = [
+            {"slug": "01_a", "difficulty": "easy", "status": "SUCCESS",
+             "reason": "r", "reps": 5, "reps_credited": 5, "reliability": 1.0},
+            {"slug": "02_b", "difficulty": "easy", "status": "SUCCESS",
+             "reason": "r", "reps": 5, "reps_credited": 2, "reliability": 0.4},
+        ]
+        text = rb.write_summary(results, tmp_path / "s.txt", 10.0,
+                                rb.Corpus(root=rb.DEFAULT_CORPUS_DIR,
+                                          manifest=rb.DEFAULT_CORPUS_YAML))
+        assert "5/5" in text and "2/5" in text
+        assert "reliability" in text.lower()
+        assert "INTERMITTENTLY" in text, (
+            "a partially-reliable target must be called out, not averaged away")
