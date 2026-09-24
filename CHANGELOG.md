@@ -38,6 +38,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   why four earlier runs were discarded as stale (benchmarked the pre-consolidation
   `EnhancedAutoExploiter` before this branch was rebased onto
   `integration/phases-0-4-7-20260923`).
+- Walkthrough engine (`supwngo/exploit/walkthrough/`) — generates an in-depth,
+  zero-to-pwn strategy walkthrough embedded in a runnable pwntools script, to replace
+  the near-useless `offset = 0  # TODO` stub that a failed `autopwn` used to emit. Each
+  walkthrough is binary-specific and evidence-backed: every constant carries a
+  provenance line (MEASURED / DERIVED / ASSUMED / UNKNOWN) saying how it was obtained,
+  every step is independently runnable (`python3 wt.py 2`, `python3 wt.py offset`) and
+  ships EXPECT / VERIFY / TROUBLESHOOTING blocks, and the protections section explains
+  what each measured mitigation *forces* rather than merely listing it. A decision tree
+  records the PRIMARY route plus FALLBACK and RULED-OUT routes with the condition that
+  would make each viable. Three families ship: `stack_bof` (ret2shellcode, ret2win),
+  `rop_chain` (ret2plt/ret2system, ret2libc via a GOT leak) and `syscall`
+  (ret2syscall, SROP), plus a `triage` family that degrades honestly when no route
+  scores — it names each missing fact, its plausible range, and the numbered step that
+  resolves it, and the assembled exploit raises rather than substituting a fake value.
+  The generated scripts depend on pwntools alone (not on supwngo), teach the
+  gadget-vs-symbol (`endbr64`), `movaps` alignment and pointer-vs-string traps, derive
+  the reader's own libc via `ELF(BINARY).libc` instead of baking in the generating
+  machine's path, and never present flag scraping as a route. Validated by following
+  the generated walkthroughs literally, step by step, to a shell on benchmark targets
+  `02_ret2plt_system`, `07_ret2libc_leak` and `09_srop`.
+- `supwngo explain BINARY` — new CLI command that emits a walkthrough without running
+  the exploitation pipeline (`-o/--output`, `--family`, `--offset`, `--no-probe`,
+  `--libc`, `--remote`, `--markdown`, `--json`), and `supwngo solve --walkthrough`,
+  which additionally feeds the Phase-4 hand-off report in so the walkthrough opens with
+  what automation already tried and why it failed. Default output directory is
+  `./walkthrough_output/`.
 
 ### Fixed
 - `CanonicalAutopwnEngine`'s verified-`SUCCESS` path could leave
