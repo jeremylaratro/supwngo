@@ -635,6 +635,21 @@ getting solved *despite* the strategy rather than because of it. **Not fixed her
 correctness bug, not instrumentation. It belongs in a per-phase plan, and step 4's failure
 table should check it against measured per-technique data rather than assuming it.
 
+> **ERRATUM (added by the F1 class sweep, §5.3 — the original text above is left standing
+> deliberately).** Two claims in the paragraph above are wrong, and both overstate the finding:
+>
+> 1. *"the strategy-ordered pass drops it without trace"* implies a **coverage** loss. There is
+>    none. `_ordered_technique_names()` layer 3 (`orchestrator.py:363-370`) sweeps
+>    `self.registry.names()` unconditionally, so **every registered executor is attempted
+>    regardless of the mapping**. Measured: 0 of 17 executors are unreachable.
+> 2. *"reached by the unmapped fallback path"* is the wrong mechanism for
+>    `int_truncation_bypass`. It is not a fallback at all — it is **item 4 of
+>    `FIRST_TECHNIQUES`** (`orchestrator.py:93-107`), a hardcoded list that is pushed *before*
+>    the strategy report is consulted.
+>
+> F1 is real but **nearly inert**, and the sweep that establishes that also found something
+> considerably more consequential than F1 itself. See §5.3.
+
 **F2 — the m4 handoff precedence change is unreachable for `scanf_canary_bypass`.** I
 pre-declared that `handoff.py:292`'s `failure_reason or error` precedence would change source
 for that executor. It will not: `handoff.py:287` resolves through
@@ -701,6 +716,142 @@ These are tracked here so a later reader does not mistake their absence for cove
 That rested on leg 3, which has no subject on any existing target. The claim was overstated in
 the same direction as everything else this protocol exists to catch, and it is corrected here
 rather than left standing in §4.
+
+---
+
+## 5.3 F1 swept as a class, in three directions
+
+**Class statement.** *A name-keyed dispatch entry whose target may not exist, resolved with
+`.get()` and a silent skip.* F1 was found as one instance; per the convergence protocol it is
+answered by the sweep, not by the instance. **Nothing here is fixed** — the
+`APPROACH_TO_TECHNIQUE` mapping belongs to a per-phase plan, and step 4 must *test* whether the
+strategy layer is inert rather than assume it in either direction.
+
+**Enumeration sources proven non-empty first** (the rule earned by my own `ABSENT - CONFIRMED`
+self-catch — before believing an absence result, assert the subject of the search exists):
+`APPROACH_TO_TECHNIQUE` n=9, `FIRST_TECHNIQUES` n=13, `LAST_TECHNIQUES` n=2,
+`UNMODELED_TECHNIQUES` n=3, `registry.names()` n=17. All non-empty, asserted in-script; a
+vacuous sweep would have raised rather than printed a clean result.
+
+### Direction A — every mapping value: does that executor exist?
+
+**1 dangling of 9.** `ExploitApproach.NEGATIVE_SIZE_BYPASS → "negative_size_bypass"`, no such
+executor (Phase 5 replaced it with `int_truncation_bypass`). Swept all 9 — **no others**.
+
+**It is inert, for a reason I had not established when I filed F1.** `push()`
+(`orchestrator.py:339-346`) guards on `technique_name in self.registry`, so a dangling name is
+dropped *at push time* and never reaches `registry.get()`. Its `ExploitApproach` contributes
+nothing to ordering and nothing to coverage.
+
+### Direction B — every executor: is any approach mapped to it?
+
+**9 of 17 are absent from `APPROACH_TO_TECHNIQUE`** — `canary_leak_ret2win`, `double_free`,
+`fmtstr_write_gate`, `int_truncation_bypass`, `negative_index_write`, `ret2dlresolve`,
+`scanf_canary_bypass`, `tcache_poison_got`, `uaf`.
+
+**This is not a defect, and reporting it as one would have been the error.** All 9 are
+deliberately enumerated elsewhere in the same file: 6 in `FIRST_TECHNIQUES` and 3 in
+`UNMODELED_TECHNIQUES`, the latter with a comment naming exactly those three
+(`orchestrator.py:65-71`). Absence from the mapping is the *design*, not a gap.
+
+### Direction C — every `.get()` site on this dispatch
+
+Four sites. Only one is a silent skip, and it is **dead on the production path**:
+
+| site | behaviour on miss | reachable in production? |
+|---|---|---|
+| `orchestrator.py:246-248` | silent `continue` | **No.** `order` comes only from `_ordered_technique_names()` (sole call site `:203-204`), which already filtered on `in self.registry`. Reachable only via the test seam. |
+| `orchestrator.py:355` | returns `None` | Yes, absorbed safely by `push()`'s truthiness guard |
+| `handoff.py:287` | returns `None` | Yes, guarded by `if technique_name:` |
+| `registry.py:32` | returns `None` | Yes, the guard itself |
+
+`:247-248` is a defensive branch that cannot fire — the mirror image of this project's
+signature defect. Recorded so that nobody later writes a gate asserting "a dangling entry is
+skipped" and gets a vacuous pass out of dead code.
+
+### What the sweep actually found, which is bigger than F1
+
+Attributing each of the 17 registered executors to the ordering layer that **fixes its
+position** (`push()` dedupes, so the earliest layer wins):
+
+| layer | count | meaning |
+|---|---|---|
+| 1 — `FIRST_TECHNIQUES`, hardcoded, pushed **before** the strategy report | **11 / 17** | strategy ranking cannot move them |
+| 2 — `APPROACH_TO_TECHNIQUE`, position set by `StrategySuggester` | **1 / 17** | `direct_shellcode`, only |
+| 2 — `UNMODELED_TECHNIQUES`, hardcoded tail | 3 / 17 | |
+| 4 — `LAST_TECHNIQUES`, hardcoded, **overrides** the strategy ranking | 2 / 17 | `variable_overwrite`, `format_string` |
+| 3 — registry sweep (fallback) | 0 / 17 | nothing actually lands here |
+| **never reached by any layer** | **0 / 17** | coverage is total by construction |
+
+**The strategy layer determines the attempt position of exactly 1 of 17 executors.** The other
+16 are ordered by three hardcoded lists. This is not a discovered bug — it is documented
+in-code at `orchestrator.py:73-92`, which records *why*: `StrategySuggester` "put
+`VARIABLE_OVERWRITE` at priority 1 for all 15 benchmark targets and pushed `RET2PLT` to
+priority 4", so Phase 5 layered `FIRST_TECHNIQUES`/`LAST_TECHNIQUES` over it rather than fixing
+the model. The suggester was not merely imprecise; it was inverted on the whole corpus, and it
+has been routed around.
+
+**Consequence for step 4, stated now so it is not decided after seeing results:** the question
+"is the strategy layer inert?" is now partly answered — *for ordering, it is inert on 16 of 17
+executors by construction.* Step 4 must still measure whether the layer contributes anything at
+all, but it may not treat any credited success as evidence that the strategy layer worked.
+
+### The measurement consequence, and the claim grep
+
+**F1 cannot fabricate a success**, so **13/13 and 4/15 stand unannotated.** Unchanged. What the
+sweep can void is any claim that the **strategy layer selected** the winning technique.
+
+I grepped all 16 tracked files under `docs/reports/` and `docs/plans/` for claims of that shape
+(strategy/approach/pipeline/engine *chose*, *selected*, *drove*, *picked*, *mapped to*,
+*identified* the winning technique), in two passes plus an exhaustive enumeration of every
+`strateg*` mention in `docs/reports/`.
+
+**No claim of that shape exists in any committed report or plan. That is the deliverable.**
+No erratum was required anywhere. Three near-misses were inspected and are recorded here so the
+absence is auditable rather than asserted:
+
+| location | text | why it is not of that shape |
+|---|---|---|
+| `BENCHMARK-R2-COLD-24SEP2026.md:582` | "the pipeline never selected a technique at all" | A claim about **failed** targets with no winner, evidenced by the stub template — not an attribution of a win to the strategy layer. |
+| `PHASE1-BASELINE-24SEP2026.md:110` | executors "tried in strategy-ranked order against every target, **regardless of which technique a target actually needs**" | Says the *opposite* of a selection claim, and the sweep **corroborates** it. (Its executor list is a Phase-1 snapshot and is now stale — 11 names incl. `negative_size_bypass`, vs 17 registered today. Dated snapshot, not a live claim.) |
+| `2026-09-23-effectiveness-and-usability.md:19` | `StrategySuggester` "returns enum-based approaches that don't map cleanly onto the Enhanced engine's dispatch, and it's missing some Enhanced-only strategies (variable overwrite, negative-size bypass)" | **Anticipates F1 by a day**, from peer review. Corroborates rather than conflicts. |
+
+That last row is worth naming plainly: the mapping gap was **flagged in review before it was
+found in code**, and the round-2 finding is a rediscovery of a known, written-down caveat.
+
+### Gates confirmed red for the reason each gate exists
+
+Per §5.1, these are **my own re-run counts**, not the implementer's. Where they differ from what
+an implementer reported, mine are authoritative and the discrepancy is recorded, not reconciled.
+
+| gate | my count | went red *for the gate's reason*? |
+|---|---|---|
+| R1 per-target technique gate (`50f06b1`) | **7 of 9** red under an always-pass stub | Yes — wrong-technique attribution. Implementer said 5; also wrongly claimed the positive control omits `.ok` (it asserts it). Both errors in the safe direction. |
+| M11 `duration_sec` (`b33ea76`) | **4** red | Yes — field absent / not serialised |
+| I3 provenance (`5c9d6da`) | **3 of 7** red | Yes — incl. the *wrong-but-present* mutation (constant-valued provenance), not absence only |
+| I2 attempt duration (`08e5520`) | **2** red | Yes — duration missing and duration constant. Implementer reported 4. |
+| I5 `failure_reason` (`e4c81cf`) | **2** red | Yes — reason absent at each of the two swallowing sites. Implementer reported 3. |
+
+## 5.4 Pre-registered trigger for the F3 confound arm
+
+**Registered before the re-run, so the decision is not made after seeing which answer is
+convenient.**
+
+**Say it plainly: the I2 implementer performed an unauthorized refactor.** It extracted
+`_run_prologue()` and `_attempt_techniques()` out of `run()` — code motion I did not brief and
+the repo contract forbids ("no drive-by refactors"). It is recorded here as a **process
+finding**, not merely a risk note. It was not reverted, because I1 restructures the same code
+and the churn would exceed the risk; that is a judgement call I own, and the cost is booked
+below rather than waived.
+
+**The cost:** at re-run time, any R1 movement has **two** candidate causes — instrumentation, or
+this refactor.
+
+**Trigger, fixed now:** *if the post-cache-fix R1 re-run differs from the 13/13 baseline on **any**
+target*, then before any capability explanation is entertained, re-run the R1 regression at
+`08e5520^` (the commit immediately before the refactor landed). That isolates refactor from
+instrumentation. If the re-run reproduces 13/13 exactly, the arm does **not** fire and no
+`08e5520^` run is performed.
 
 ---
 
