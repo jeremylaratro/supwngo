@@ -455,6 +455,20 @@ a single-rep run reports **no** reliability rather than a misleading `1/1`, and
 each rep gets its own results subdirectory so an intermittent target's evidence
 survives. `reps` is recorded in `report.json`.
 
+The `OVERALL` headline also states that its rate is best-of-N and splits the
+successes into fully-reliable versus intermittent. That belongs on the headline
+rather than only in the table below it, because the headline is the line that
+gets quoted and a disclosure elsewhere in the file does not travel with it.
+
+**Each rep records its own secret** in `attempts[]`, which is what keeps a
+multi-rep verdict falsifiable. Every rep rebuilds the target with a fresh flag,
+so without the per-rep secret you could not re-derive rep 3's verdict from rep
+3's own `strace.log` — you would not know which string to search for, and a wrong
+verdict in a later rep would be undetectable after the fact. `attempts[]` also
+carries each rep's status, reason and elapsed time, and `elapsed_sec_total` is the
+target's real cost across reps (`elapsed_sec` remains one representative
+attempt, so it stays comparable against a single-rep report).
+
 Builds are deliberately **not** cached. `gcc` on a single small C file is
 milliseconds against ~2 minutes of `autopwn` per target, so caching would save
 under 1% while risking the thing that matters most: for the win()-style targets
