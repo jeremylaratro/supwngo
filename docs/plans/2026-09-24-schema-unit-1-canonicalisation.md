@@ -1,11 +1,14 @@
 # Schema split, unit 1 of 3: canonicalisation
 
 **Date:** 2026-09-24
-**Status:** PLAN rev 3 — under independent review (round 1 sent at rev 1).
+**Status:** PLAN rev 4 — under independent review (round 1 sent at rev 1).
 Not implemented. **Rev 2 corrects a blocking defect in rev 1's own §4**, found
 by attacking the seam contract as the review brief asks the reviewer to do; see
 §4a. **Rev 3 adds a sixth collision, live today, of exactly the class round 3's
-bytes fix claimed to have closed** — see §2a. Rev 1 is preserved in git history
+bytes fix claimed to have closed** — see §2a. **Rev 4 answers the review brief's
+fourth question in the affirmative: yes, a defect can satisfy every one of C1–C7
+and still break the composition of units 1 and 2, and one is in the code now**
+— see §3a, which adds C8. Rev 1 is preserved in git history
 because the review in flight is against it, and the audit trail matters more
 than a clean document.
 **Unit:** 1 of 3 (canonicalisation → audit-log validation → property breadth).
@@ -229,6 +232,7 @@ restate:**
 | C5 | `Observation.digest()` distinguishes any two observations a caller can distinguish | follows from C1 + C2; the positive control is §2's merge case |
 | C6 | the refusal-coverage instrument declares its own scope: a site it cannot instrument is reported **out of scope**, never as uncovered | §6 |
 | C7 | at every **structural** position exactly one dataclass type may appear, **and no structural dataclass field is named a reserved tag** (§2a) | one mechanical check over the dataclass field annotations, §2a + §4a |
+| C8 | no consumer resolves a candidate id by **picking**: one id-index construction, duplicates rejected, `by_id` raises rather than returning the first match (§3a) | a test asserting every named consumer **errors** on a duplicate id |
 
 **Unit 2 (audit-log validation) depends on:** C1 and C5 only. Log records
 reference candidates by id, and ids do not contain observations (C4), so unit 2's
@@ -246,6 +250,142 @@ HIGHs (P6/P24/P25/P26 binding, P15 prefix families, P17 staleness causes, P12
 prefix defaults, P16 multi-key pins, P14's dedup projection, P5b's id
 perturbation) and the relational-projection annotation checker. This unit fixes
 P21 only, and records the rest as unit 3's inventory.
+
+
+### 3a. Yes — a defect can satisfy all of C1–C7 and still break the composition
+
+The review brief asks the reviewer: *can a defect satisfy every one of C1–C6 and
+still break the composition of unit 1 and unit 2?  If it cannot, say so plainly;
+if it can, that is a blocking finding and it belongs in unit 1.*  It belongs here.
+
+`_validate_log(store, index)` — the whole of unit 2's I7 and I8 — has an
+**undeclared precondition**: `index` must be injective on candidate id.  It has
+two call sites and the precondition is enforced at one of them.
+
+```python
+# validate_store, line 916 -- enforces it, and names the invariant
+            if c.id in seen_ids:                                      # I6
+                raise SchemaError(f"I6 duplicate candidate id {c.id}")
+
+# current_pins, line 1690 -- does not
+    _validate_log(store, {c.id: c for c in store.all_candidates()})
+```
+
+A dict comprehension keeps the **last** value for a repeated key. So on a
+duplicate id `validate_store` refuses the store and `current_pins` accepts it,
+having quietly dropped a candidate — and the candidate it drops is not the one
+`FactStore.by_id` returns, which is the **first** match (line 813).
+
+Measured, serially, on one store. The transcript is reproduced in full
+because the scratch script that produced it is ephemeral and this is the
+evidence; item 6 of §8 turns it into a test that lives in the repo:
+
+```
+store holds [superseded, active] with ONE id, log holds NO supersede record
+
+validate_store   -> SchemaError: I6 duplicate candidate id f_061afc3e10c1…
+current_pins     -> NO ERROR, returned {}
+by_id            -> superseded   (first wins)
+comprehension    -> active       (last wins)
+
+I8 iterates index.values(); len = 1 for 2 candidates in the store
+states present in the store : ['superseded', 'active']
+states visible to I8        : ['active']
+```
+
+I8's own docstring states its purpose: *"a terminal state with no record is a
+state change that happened outside the state machine, which is exactly what the
+log exists to make impossible to hide."*  At this call site it is hidden — not by
+failing, but by **having nothing left to check**. An absence assertion whose
+domain shrank in silence is the shape of all nine recorded incidents in this
+project, and this one is reached through the read path, where `current_pins` is
+deliberately revalidating *because* a pin is the one mechanism allowed to
+override a measurement.
+
+**Why this answers the brief's question.** The defect is entirely orthogonal to
+canonicalisation. `canonical` can be perfectly injective, C1 through C7 can all
+hold, and nothing about this changes: it is a property of how an index is
+*constructed*, not of how a value is *encoded*. So C1–C7 are satisfiable
+alongside it, which is exactly the composition failure the split was supposed to
+give an owner.
+
+```
+FINDING  HIGH (latent, not live): `_validate_log`'s index-injectivity
+         precondition is undeclared and enforced at one of two call sites, so
+         I8's domain can shrink without an error
+WHERE    supwngo/schema/resolve.py:1690 (`current_pins`) against :916
+         (`validate_store`, I6); `FactStore.by_id` :813
+CLASS    a hazard mitigated at its source and never at the consumers it was
+         diagnosed as endangering
+SWEEP    the module names the endangered consumers itself, twice. Take those
+         names as the enumeration and check each one's behaviour on a duplicate
+         id.
+```
+
+Line 315–317: *"a colliding id makes `by_id`, pins, dependency lookup and witness
+selection ambiguous — so the width is not cosmetic."*  Line 329–331: *"Without
+`generation`, retract + re-merge yielded two candidates with one id, which broke
+`by_id`, dependency lookup, the conflict record and candidate ordering all at
+once."*  Both times the remedy was applied at the source — widen the id, add
+`generation` to the digest — so that collisions become improbable or
+content-impossible.  Neither time was any of the four named consumers made safe.
+
+| the consumer the module named | behaviour on a duplicate id today |
+| --- | --- |
+| `by_id` (:813) | returns the **first** match, silently |
+| pins → `current_pins` (:1690) | builds the index by comprehension, **last** wins, silently — **and disagrees with `by_id`** |
+| dependency lookup | `_validate_conflicts` :1082 `index.get(ref.id)` takes whatever index it was handed; `is_stale` :1946 `store.by_id(ref.id)` takes first-match — **two dependency lookups that can disagree with each other** |
+| witness selection | :1821 `store.by_id(pins[key])`, first-match |
+
+```
+RESULT   4 of 4 named consumers resolve a duplicate id silently and arbitrarily,
+         and they do not all resolve it the same way. `validate_store` is the
+         only site that detects rather than picks. Swept the module for every
+         id-keyed mapping and every `by_id` call; no fifth consumer.
+LABEL    RECURRENCE — the class is named in the module's own comments at :316
+         and :330, and the sweep those comments imply was never run. Two
+         instance fixes, no class fix.
+```
+
+**Reachability, stated honestly.** The public path is shut *today*: a duplicate
+id requires a canonicalisation collision on `ID_DIGEST_FIELDS`, and every field
+in that projection is a closed position — measured, `FactSpec.value_type` is only
+ever `int`, `bool` or `str`, so `value` cannot collide, and `applies_to` is
+normalised by `_validate_conditions` into a sorted tuple of `(str, str)`.  So
+this is **latent, not live**.  Two things make it worth fixing here anyway:
+
+1. It becomes reachable the moment unit 2 does what it is chartered to do.
+   Asserting the seven in-process log properties means exercising `_validate_log`
+   against stores built for the purpose, and the obvious way to build its index
+   is the comprehension — the way `current_pins` already models.  Unit 2 would
+   then be asserting seven properties of a **weaker function** than the one
+   `validate_store` calls, and every one of them would pass.
+2. Checking it in `validate_store` only is the same shape as §2a's
+   `_BYTES_TAG`: a rule enforced at some of the sites that can reach it.
+
+**The remedy is structural, not documentary.**  Do not write the precondition
+down — a precondition is an instruction to a future caller, and this finding
+*is* the record of a future caller not following one.  Move the guard inside:
+`_validate_log` builds its own index from the store, with the I6 check, so there
+is one construction and no precondition to honour.  `current_pins` and
+`validate_store` then cannot diverge because there is nothing left to get
+different.  This is the same move as answering the cache hazard with immunity
+instead of a re-run: prefer making the hazard unreachable to asking everyone to
+avoid it.
+
+> **C8.** No consumer resolves a candidate id by picking. There is exactly one
+> id-index construction and it rejects duplicates; `by_id` raises on a duplicate
+> rather than returning the first match. Enforced by a test that asserts every
+> named consumer *errors* on a duplicate id — not that it returns the right one,
+> because "the right one" is the assumption that produced this finding.
+
+Cost: one moved check and one changed `by_id` signature contract. Unit 2 gets a
+function whose seven properties are worth asserting.
+
+**Side effect of running this sweep:** it independently **verifies** §2's
+blast-radius claim, which rev 1 asserted. `value` is closed, so a
+canonicalisation collision cannot reach `dedup_key` or an id — the damage really
+is confined to the observation union, as §2 says. That claim is now measured.
 
 ---
 
@@ -516,7 +656,12 @@ its own blind spots, which is now a requirement rather than a hope.
 
 - `supwngo/schema/resolve.py` — `_jsonable`/`canonical` domain, the evidence gate
   at L712, `CANONICAL_TYPES`, and `DIMENSIONS` gains `evidence_value_type`.
-- `supwngo/schema/mutants.py` — three new subtler mutants (§5).
+- `supwngo/schema/mutants.py` — four new subtler mutants (§5), including
+  `bytes_tag_guards_mappings_only` from §2a.
+- `supwngo/schema/resolve.py` — **C8 (§3a)**: `_validate_log` builds its own
+  id-index with the I6 duplicate check, so `current_pins` and `validate_store`
+  cannot diverge; `by_id` raises on a duplicate instead of returning the first
+  match. A moved check and a narrowed return contract, not new machinery.
 - `tests/test_context_resolve_properties.py` — P21 widened to vary type at fixed
   JSON shape; the refusal-coverage gate and its allowlist; the `ABSENT.__bool__`
   control.
@@ -534,6 +679,18 @@ its own blind spots, which is now a requirement rather than a hope.
 4. Each new mutant shown red **serially**, reported with the classification the
    meta-test uses (a crash is not a proof).
 5. Refusal coverage recomputed and reported as a ratio, not a boolean.
+6. **C8's gate, and it must be shown red first.** Build the §3a store —
+   `[superseded, active]` under one id, no supersede record — and assert that
+   *every* named consumer errors: `validate_store`, `current_pins`, `by_id`,
+   and both dependency lookups. Red for the right reason means the subtler
+   mutation is not "delete the I6 check" but **"keep I6 in `validate_store`
+   and leave `current_pins` building its index by comprehension"** — i.e.
+   today's behaviour, which is why this test must fail before the fix.
+   Assert the consumer *errors*, never that it returns the right candidate:
+   "the right one" is the assumption that produced the finding.
+7. C7's two clauses ship as one mechanical check over the dataclass field
+   annotations (§2a): one type per structural position, and no field named a
+   reserved tag.
 
 ## 9. Risks
 
@@ -542,6 +699,16 @@ its own blind spots, which is now a requirement rather than a hope.
 - **The refusal-coverage allowlist can rot into a dumping ground.** Mitigation:
   each entry carries a reason, and the count is printed with the enumeration
   bounds so growth is visible.
+- **C8 widens this unit beyond canonicalisation, and that is a real cost.**
+  §3a's defect is not a canonicalisation defect; it surfaced while attacking
+  this unit's seam contract, and the brief says a contract-breaking defect
+  belongs here rather than deferred into unit 2. The alternative — defer it —
+  is worse for the measured reason that unit 2 would build its seven log
+  properties on top of it and every one would pass. But it is scope growth,
+  it is named as such, and §4a's class (*a fix whose scope is wider than the
+  diagnosis that motivated it*) applies to me as much as to rev 1: C8 is
+  deliberately confined to index construction and `by_id`'s return contract,
+  and touches no encoding.
 - **This unit cannot fix the annotation's false claims** — that is unit 3, and
   three of the seven false entries (P2, P3, P16) are about dimensions this unit
   does not own. Recorded, not fixed here.
