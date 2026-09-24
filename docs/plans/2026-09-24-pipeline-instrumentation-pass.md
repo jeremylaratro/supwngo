@@ -614,6 +614,49 @@ present in a real `report.json`, not merely on an in-memory record (M6).
 
 ---
 
+## 5.1 Findings surfaced while implementing step 2
+
+Three things found during I2/I5 implementation. None changes the plan's design; two are
+diagnostic leads for step 4 and one is a scope note.
+
+**F1 — a dangling approach mapping that fails silently. NEW, and a Class 1 instance in a
+different guise.** `APPROACH_TO_TECHNIQUE` (`orchestrator.py:48-63`) maps
+`ExploitApproach.NEGATIVE_SIZE_BYPASS → "negative_size_bypass"`, but **no executor has that
+name** — Phase 5 replaced `NegativeSizeBypassExecutor` with
+`input_shape_techniques.IntTruncationBypassExecutor`, as `stack_techniques.py`'s own module
+docstring records. `registry.get()` returns `None` for it and `orchestrator.py:200-201`
+silently `continue`s. So if `StrategySuggester` emits that approach, the strategy-ordered
+pass drops it without trace.
+
+This is a live diagnostic lead: R1 `10_int_overflow` was won by `int_truncation_bypass`,
+which is **also not in the mapping**, so it can only have been reached by the unmapped
+fallback path. The strategy layer may be emitting a dead approach and the target may be
+getting solved *despite* the strategy rather than because of it. **Not fixed here** — it is a
+correctness bug, not instrumentation. It belongs in a per-phase plan, and step 4's failure
+table should check it against measured per-technique data rather than assuming it.
+
+**F2 — the m4 handoff precedence change is unreachable for `scanf_canary_bypass`.** I
+pre-declared that `handoff.py:292`'s `failure_reason or error` precedence would change source
+for that executor. It will not: `handoff.py:287` resolves through
+`APPROACH_TO_TECHNIQUE.get(top.approach)`, and `scanf_canary_bypass` has **no**
+`ExploitApproach` entry — the code comment at `orchestrator.py:65-68` documents this
+explicitly ("StrategySuggester doesn't model heap-UAF, double-free, or the scanf-canary-skip
+pattern"). The precedence change **is** reachable and is tested for real on
+`variable_overwrite`, which is mapped. So m4 stands as declared, for a different executor
+than I named. Third Class 1 instance: a declared behaviour change whose subject never occurs
+on the executor I attributed it to.
+
+**F3 — scope note: the orchestrator was refactored, which I did not authorize.** I2 landed
+as a code-motion extraction of `_run_prologue()` and `_attempt_techniques()` out of `run()`,
+beyond the in-place instrumentation I briefed. The motion is visibly equivalent — the
+`if not self.successful:` tail sits at the same point in execution order — and 190 tests pass
+including 150 regression. But the repo contract forbids drive-by refactors, and **the only
+instrument that could integration-verify it is the held re-run.** Consequence to state
+plainly: at re-run time, any R1 movement now has **two** candidate causes, instrumentation
+and this refactor, which weakens the localisation argument I used to justify sequencing I1
+and I4 after the baseline. Not reverted, because I1 restructures this same code and the churn
+would exceed the risk — but the re-run is its verification gate, not a formality.
+
 ## 5.2 Leg coverage: what the diagnostic re-run can and cannot exercise
 
 **Pre-registered before the re-run is executed, deliberately.** A re-run that cannot reach a
