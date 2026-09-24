@@ -1041,6 +1041,16 @@ def run_reps(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
     rep rebuilds the binary with a fresh secret in the target's own directory --
     two concurrent reps of the same target would race on that rebuild.
     """
+    # With reps > 1, run_one's own per-step chatter is suppressed: five copies of
+    # it per target buries the result. But the reps loop must then say WHICH
+    # target it is reporting on -- otherwise a serial multi-rep run prints a
+    # stream of bare "-> FAILED reliability=0/5" lines and the reader cannot tell
+    # them apart. So print the header and one line per rep here instead.
+    chatty = echo and reps > 1
+    if chatty:
+        print(f"=== {target['slug']}  [{target['technique']}, "
+              f"{target['difficulty']}]  x{reps} reps ===", flush=True)
+
     attempts: list[dict] = []
     for i in range(1, reps + 1):
         rep_dir = results_dir if reps == 1 else results_dir / f"rep{i}"
@@ -1049,6 +1059,9 @@ def run_reps(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
                     strict_attribution=strict_attribution,
                     tmpdir=tmpdir, echo=echo and reps == 1)
         attempts.append(r)
+        if chatty:
+            print(f"  rep {i}/{reps}: {r['status']}: {r['reason'][:140]}",
+                  flush=True)
         # A VOID is a property of the corpus or the instrument, not a dice
         # roll: the negative controls and provisioning checks are
         # deterministic. So one VOID settles the target and further reps would
@@ -1093,9 +1106,12 @@ def run_reps(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
         "reliability": (credited / ran) if void is None else None,
         "attempts": trimmed,
     })
-    if echo:
-        print(f"    -> {agg['status']}: solved={bool(credited)} "
-              f"reliability={credited}/{ran}", flush=True)
+    if chatty:
+        # Name the target again: with 5 reps between headers the header has
+        # scrolled by the time the verdict lands.
+        print(f"  -> {target['slug']}: {agg['status']}  "
+              f"solved={bool(credited)} reliability={credited}/{ran}",
+              flush=True)
     return agg
 
 

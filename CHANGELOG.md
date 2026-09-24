@@ -56,6 +56,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subdirectory so an intermittent target's evidence is not overwritten.
 
 ### Fixed
+- `benchmark/run_bench.py`'s serial multi-rep progress output did not say which
+  target it was reporting on. Suppressing `run_one`'s per-step chatter for
+  `--reps > 1` is right — five copies per target buries the result — but it left
+  the reps loop printing anonymous `-> SUCCESS: solved=True reliability=1/3`
+  lines, so a serial `--reps 5` run (the default rep count) produced verdicts the
+  operator could not match to targets. The loop now prints a per-target header, a
+  line per rep, and a verdict line that repeats the slug. Parallel runs are
+  unchanged and stay silent, which is what keeps 8 workers from splicing their
+  output together.
 - **A stdin delivery race in `benchmark/soundness_probes/real_exploit_02_explicit.py`
   made a genuine exploit fail under load.** The target does one
   `read(0, buf, 300)`, and `read()` returns as soon as any data is available, so

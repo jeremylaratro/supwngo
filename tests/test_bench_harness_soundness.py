@@ -729,6 +729,43 @@ class TestRepsAndReliability:
         assert len(calls) == 3
         assert len(set(map(str, calls))) == 3, f"reps shared a dir: {calls}"
 
+    def test_serial_multi_rep_progress_names_the_target(
+            self, monkeypatch, tmp_path, capsys):
+        """With reps > 1 the per-rep chatter from run_one is suppressed, so the
+        reps loop itself has to say which target it is talking about.
+
+        Without this, a serial `--reps 5` run prints a stream of anonymous
+        `-> FAILED reliability=0/5` lines and the operator cannot tell which
+        target produced which verdict -- the progress output becomes unusable
+        at exactly the setting that is now the default.
+        """
+        self._fake_run_one(monkeypatch, ["FAILED", "SUCCESS", "FAILED"])
+        rb.run_reps(None, self.TARGET, 1.0, tmp_path, False, 3, echo=True)
+        out = capsys.readouterr().out
+
+        assert out.count(self.TARGET["slug"]) >= 2, (
+            f"target slug must appear in the header AND the verdict; got:\n{out}")
+        assert "rep 1/3" in out and "rep 3/3" in out, (
+            f"each rep needs its own progress line; got:\n{out}")
+        verdict = [ln for ln in out.splitlines() if "reliability=" in ln]
+        assert len(verdict) == 1, f"exactly one verdict line; got {verdict}"
+        assert self.TARGET["slug"] in verdict[0], (
+            f"the verdict line itself must name the target; got {verdict[0]!r}")
+
+    def test_parallel_mode_stays_quiet_so_workers_do_not_interleave(
+            self, monkeypatch, tmp_path, capsys):
+        """echo=False is how run_targets keeps 8 workers from splicing their
+        output together; reps must not reintroduce chatter behind its back.
+
+        run_targets prints one authoritative line per target on completion, so
+        anything run_reps emits under echo=False is unattributable noise from an
+        unknown worker.
+        """
+        self._fake_run_one(monkeypatch, ["FAILED"] * 3)
+        rb.run_reps(None, self.TARGET, 1.0, tmp_path, False, 3, echo=False)
+        captured = capsys.readouterr()
+        assert captured.out == "", f"leaked stdout under echo=False: {captured.out!r}"
+
     def test_reliability_line_renders_both_numbers(self, monkeypatch, tmp_path):
         results = [
             {"slug": "01_a", "difficulty": "easy", "status": "SUCCESS",
