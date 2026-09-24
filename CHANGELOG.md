@@ -173,6 +173,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are still attempted — just last.
 
 ### Added
+- `benchmark/sample_load.sh` — samples loadavg and the concurrent `run_bench.py`
+  count for the duration of a benchmark run. A single pre-run load snapshot cannot
+  detect contention that *arises during* a run, and this host cannot be reserved
+  (other agents run the harness concurrently). Since exploit delivery is
+  contention-sensitive, a reliability k/N split taken under an unrecorded load spike
+  is not interpretable; the profile is reported alongside the numbers so an
+  excursion-overlapping rep can be flagged as a contention suspect rather than read
+  as a capability signal. Deliberately uses `ps aux | grep "[r]un_bench.py"` rather
+  than `pgrep -f`, which matches its own command line.
 - `benchmark/redact_report.py` — redacts a benchmark `report.json` so it can be
   committed as evidence. `report.json` is gitignored because it embeds every rep's
   per-run secret flag, but a digest of a file no reader can obtain cannot expose
