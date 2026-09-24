@@ -212,14 +212,21 @@ def test_scores_stay_below_one():
     "family, expected",
     [
         # The full cross-family ordering, highest first, as of the fmtstr +
-        # integer consolidation. Listed per family so that a family changing one
-        # of its own scores fails here with the whole picture in the message
-        # rather than only in the tie check.
+        # integer consolidation and the heap family. Listed per family so that a
+        # family changing one of its own scores fails here with the whole picture
+        # in the message rather than only in the tie check.
         ("integer", [0.97, 0.96, 0.45]),
         ("rop_chain", [0.95, 0.85, 0.60, 0.35]),
         ("fmtstr", [0.92, 0.91, 0.82, 0.55]),
         ("stack_bof", [0.90, 0.75, 0.30]),
         ("syscall", [0.88, 0.80]),
+        # heap ships detection only: it characterises a primitive without
+        # claiming control of execution, so it must lose to every technique
+        # family (lowest of those is integer's partial route at 0.45) and beat
+        # the generic discovery workflow (triage at 0.15). 0.25 rather than
+        # 0.30/0.35, which are taken by non-applicable routes that the
+        # uniqueness invariant covers anyway.
+        ("heap", [0.25]),
         ("triage", [0.15]),
     ],
 )

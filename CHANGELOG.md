@@ -355,6 +355,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `tests/test_walkthrough_fmtstr.py` (44 tests; no `b"flag" in out` self-scoring
     — verdicts are differentials against a benign run and a same-length control
     payload that reads instead of writing).
+- Heap walkthrough family (`supwngo/exploit/walkthrough/families/heap.py`,
+  `supwngo/exploit/walkthrough/heap_probe.py`) — **detection and characterisation
+  only.** It answers "what is the primitive, and what would weaponising it
+  require", and deliberately stops there: it does not build a payload and does not
+  claim a shell it has not demonstrated. Scored 0.25, above `triage`'s 0.15
+  (measured facts about *this* allocator beat a generic discovery workflow) and
+  below every technique family (knowing a primitive's shape is not controlling
+  execution). Reports which menu operations reach `malloc`/`free`, the request
+  sizes in play, whether a freed pointer stays readable *or* writable, whether the
+  allocator handed a freed chunk straight back, and whether safe-linking is in
+  effect — each with the command that measured it.
+  - **Every heap fact is tri-state: present, absent, or not-determined.** This
+    family is the one whose primary output is an *absence claim*, and the existing
+    discovery helpers collapse absence into failure — `discover_menu()` returns
+    `{}` for both "no menu" and "timed out", `libc_version()` returns `None` for
+    three different reasons after which callers assume safe-linking, and
+    `deliver_parts` swallows a probe timeout into empty output. A probe that times
+    out, errors, or exhausts its budget yields `UNKNOWN` carrying the reason and
+    what would resolve it — never an absence. `Observation.absent()` **refuses to
+    construct an absence** unless a positive control proved the probe could see
+    the thing on that target, which makes the default failure mode "I do not know"
+    instead of "there is nothing here". The generated walkthrough renders the
+    three states with different markers and different verbs, because a reader acts
+    differently on "no use-after-free was observed" and "the use-after-free probe
+    did not complete".
+  - Where the tcache verdict rests on the request size being under glibc's
+    documented `0x408` ceiling but LIFO reuse could not be observed, the
+    walkthrough emits a second `ProtectionVerdict` naming the discrepancy
+    (`INFERRED ONLY`) rather than presenting the inference as an observation.
+  - Both facts that silently void an otherwise-correct heap exploit appear in
+    full: glibc honours a poisoned tcache entry only while `counts[tc_idx] > 0`
+    (which is why a poisoning sequence frees *two* chunks), and a single
+    `leave; ret` loads `rbp`, not `rsp`, so a stack pivot needs a second pass.
+  - `tests/test_walkthrough_heap.py` (52 tests). The not-determined path is proven
+    to fire by making runs genuinely fail — a real zero timeout and a real spawn
+    error — not by asserting on a hand-built observation; `0.0` rather than a small
+    non-zero timeout because at 1 ms the target wins the race five times in six
+    (measured), so the obvious version of that test is flaky in the direction that
+    hides the bug. Both generated walkthroughs are executed end to end. See
+    `docs/plans/2026-09-24-walkthrough-heap-family.md` for the 13-mutation table
+    (13/13 red) and the two mutations that were green against the whole corpus and
+    turned out to be inert rather than safe.
 - Two cross-family invariants for walkthrough route selection, enforced as tests
   rather than left to review. `registry.generate_walkthrough` selects with `max()`,
   which keeps the **first** maximum, so two routes sharing a score make the winner

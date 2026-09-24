@@ -40,12 +40,18 @@ CORPUS = Path(__file__).resolve().parent.parent / "benchmark" / "corpus"
 #: as measured after consolidating the ``fmtstr`` and ``integer`` families onto
 #: the walkthrough engine.
 #:
-#: The five ``triage`` entries are not filler -- they are the abstention design
-#: working.  04 (canary leak) and 08 (ret2dlresolve) have no family yet; 11 and
-#: 12 are heap targets and the heap family is the next one to land; 13 is an
+#: The three ``triage`` entries are not filler -- they are the abstention design
+#: working.  04 (canary leak) and 08 (ret2dlresolve) have no family yet; 13 is an
 #: off-by-one whose single overwritten byte no shipped family claims.  Each is a
 #: target a family could plausibly capture by accident, which is exactly why
 #: they are pinned.
+#:
+#: 11 and 12 moved from ``triage`` to ``heap`` when the heap family landed, and
+#: they are the only two entries that moved.  That is the whole point of pinning
+#: all fifteen: a detection-only family scoring 0.25 sits just above the triage
+#: floor, so the risk it carries is not that it loses -- it is that it quietly
+#: outbids a *real* technique on some target that merely calls ``malloc``.  The
+#: thirteen unmoved rows are the evidence it did not.
 EXPECTED: dict[str, tuple[str, str]] = {
     "01_shellcode_stack": ("shellcode_stack", "stack_bof"),
     "02_ret2plt_system": ("ret2plt_system", "rop_chain"),
@@ -57,8 +63,8 @@ EXPECTED: dict[str, tuple[str, str]] = {
     "08_ret2dlresolve": ("ret2dlresolve", "triage"),
     "09_srop": ("srop", "syscall"),
     "10_int_overflow": ("int_overflow", "integer"),
-    "11_heap_uaf_leak": ("heap_uaf_leak", "triage"),
-    "12_heap_tcache_poison": ("heap_tcache_poison", "triage"),
+    "11_heap_uaf_leak": ("heap_uaf_leak", "heap"),
+    "12_heap_tcache_poison": ("heap_tcache_poison", "heap"),
     "13_off_by_one": ("off_by_one", "triage"),
     "14_negative_index": ("negative_index", "integer"),
     "15_win_function": ("win_function", "stack_bof"),

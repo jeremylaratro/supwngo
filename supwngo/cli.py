@@ -2733,7 +2733,7 @@ def _emit_walkthrough(
 @click.option(
     "--family",
     help="Force a technique family (rop_chain, syscall, integer, stack_bof, "
-         "fmtstr, triage) "
+         "fmtstr, heap, triage) "
          "instead of taking the best-scoring route",
 )
 @click.option(

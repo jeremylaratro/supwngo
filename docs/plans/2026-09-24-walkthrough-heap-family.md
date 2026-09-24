@@ -254,3 +254,108 @@ moves. That prediction is checked against the 15-target sweep, not assumed —
   negative.
 - **Host contention.** Other agents hold gated measurements. No benchmark harness
   run, no parallel sweep; per-target runs and unit tests only.
+
+---
+
+## Outcome (recorded 2026-09-24, after implementation)
+
+Shipped as planned: **Option A, characterise-only.** The stretch goal (a guided
+tcache-poisoning route) was **not taken** — see "what would flip it" below.
+
+### What execution found that review did not
+
+The plan's item 9 said "full suite green". That was necessary and not
+sufficient. Two defects survived a green suite, a careful reading of the
+generated source, and my own review, and both died on the first *execution* of a
+generated walkthrough:
+
+1. **An inline `splice()` placeholder printed verbatim.** `log.info("Characterisation
+   of @@NAME@@")` — `_PLACEHOLDER_RE` is anchored to a whole line, so the
+   placeholder was neither substituted *nor* flagged, because the leftover check
+   reused the same whole-line regex. The script ran fine and printed
+   `Characterisation of @@NAME@@` to the operator. Fixed in the family, and
+   `splice()` itself now checks leftovers with a deliberately broader regex so
+   the next family cannot repeat it. This is a shared-infrastructure fix, not a
+   heap fix.
+2. **Verdict labels truncated mid-word and duplicated.** `_render_observation`
+   passed `obs.summary[:60]` as the label and the full summary as the detail,
+   producing `glibc 2.35 mangles tcache freelist pointers: the stored valu:
+   glibc 2.35 mangles tcache freelist pointers: the stored value is …`. Replaced
+   with an `OBSERVATION_LABELS` map keyed by the observation name.
+
+Both were invisible in source and obvious in output. Item 9 of the method is
+amended: **a walkthrough is not verified until it has been executed.**
+
+### A design defect the tests found
+
+Item 8 of the plan — "`propose()` returns `max()` over candidate routes, not an
+`if/elif` chain" — was **wrong for this family**, and following it introduced a
+bug. `_detection_route` and `_nothing_observed_route` do not compete: they
+partition on `any_present`. Ranking them by score put two `0.0` routes in a tie,
+`max()` kept the first, and `_nothing_observed_route` — the route that explains
+*why* nothing was found and what would change it — became unreachable. The
+family still returned a correct applicability verdict, with a useless one-line
+reason, so nothing else would have noticed.
+
+This is the same tie-resolves-on-position failure that the cross-family score
+uniqueness invariant exists to prevent, one level down. The `max()` guidance
+applies to routes that genuinely compete; mutually exclusive routes must branch,
+with a comment saying so.
+
+### Mutation table
+
+Every mutation was applied to product code, the new tests run, then reverted.
+13 of 13 killed. Two came back green on the first pass and were **inert, not
+safe** — each was resolved with a direct unit test rather than assumed harmless.
+
+| id | mutation | result |
+| --- | --- | --- |
+| M1 | `Observation.absent` drops the positive-control gate | RED |
+| M2 | `from_failed_run` returns ABSENT instead of UNKNOWN | RED |
+| M3 | `run_target` ignores the caller's timeout | RED |
+| M4 | `HOST_WIDE` no longer excludes the host-read `safe_linking` fact | RED (see note) |
+| M5 | detection outbids a technique family (0.25 -> 0.50) | RED |
+| M6 | verdict label reverts to a truncated copy of the detail | RED |
+| M7 | inline `@@NAME@@` restored AND `splice`'s leftover check weakened | RED |
+| M8 | UNKNOWN renders with the same marker as a measured absence | RED |
+| M9 | `propose()` reverts to `max()` over two tied 0.0 routes | RED |
+| M10 | discrepancy verdict always claims OBSERVED | RED |
+| M11 | `HeapFacts.uaf` prefers the read over the write | RED (see note) |
+| M12 | `splice` leftover check reverts to the whole-line regex | RED |
+| M13 | the `counts[tc_idx]` invariant is dropped from the text | RED |
+
+**M4 and M11 were green against the whole 15-target corpus.** Neither is
+harmless; both were inert by coincidence:
+
+- **M4.** `safe_linking` is read from the host glibc and would be the single
+  PRESENT fact on any binary whose `libc_path` resolves but whose menu does not,
+  making the family applicable to a target it learned nothing about. No corpus
+  target is in that state: the two heap targets have a usable menu, and target 14
+  — which imports `malloc`/`calloc`/`realloc`/`free` — resolves no `libc_path`,
+  so its `safe_linking` is UNKNOWN. Pinned by a unit test on `any_present`.
+- **M11.** Preferring the write over the read is unobservable here because no
+  corpus target offers both a show *and* an edit operation, so no target has both
+  UAF directions PRESENT at once. Pinned by a unit test on `HeapFacts.uaf`.
+
+The general lesson: a corpus-driven suite cannot cover an invariant no corpus
+member reaches, and "the mutation stayed green" is a question, not a result.
+
+### Route sweep
+
+Of the 15 targets, exactly **two moved**: 11 and 12, from `triage` to `heap`.
+The other 13 are unchanged. That is the property that matters for a
+detection-only family scoring just above the triage floor — the risk is not that
+it loses, it is that it quietly outbids a real technique on any target that
+merely links an allocator. Target 14 links four allocator functions and still
+routes to `integer`.
+
+### The stretch goal, and what would flip it
+
+Not taken. Both facts a poisoning route must carry are in the walkthrough's
+step 4 as prose with precondition checks, and no payload is built. The reason is
+the line the plan set: a heap route must not claim a shell it cannot
+demonstrate. What would flip the decision is a *differential* verdict for a
+poisoning attempt — a benign run and a same-length control that fails — since
+without one, "it worked" reduces to self-scoring on the target's own output.
+Target 12 is the only corpus member with the write primitive to attempt it on,
+and one target is not enough to tell a working route from a lucky one.
