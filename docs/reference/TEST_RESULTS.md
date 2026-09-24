@@ -1,5 +1,14 @@
 # supwngo Framework Test Results
 
+> **⚠️ Methodology caveat — read before citing these numbers.** The precision/recall/accuracy and
+> "18/18 (100%)"-style figures in this document measure vulnerability-**detection** against a
+> small, hand-built local corpus (10 custom C programs), not autonomous end-to-end exploitation,
+> and not a pinned/reproducible/blind-evaluated harness. They should not be read as, or cited
+> alongside, an autopwn success rate. Kept for historical/comparative value, not deleted;
+> `docs/plans/2026-09-23-effectiveness-and-usability.md` Phase 1 (reproducible benchmark corpus +
+> measurement harness) is the process that will supersede ad hoc results like these with honest,
+> reproducible numbers.
+
 ## Summary
 
 Testing performed on 10 custom vulnerable C programs and several CTF challenge binaries.

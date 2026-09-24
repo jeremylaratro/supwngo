@@ -91,8 +91,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   previously-private, unreconciled `_rank_strategies` inline strategy list.
   Part of Phase 2 of `docs/plans/2026-09-23-effectiveness-and-usability.md`
   (auto-exploit engine consolidation).
+- Added `docs/roadmaps/PARKED.md`, listing speculative-breadth work explicitly out of scope for
+  the current effectiveness/usability effort (CFI/CET/MTE/PAC/shadow-stack/COOP bypass, exotic
+  heap techniques beyond common UAF/tcache, Windows/macOS/embedded/containers expansion,
+  distributed/cloud fuzzing, the enterprise REST/GraphQL API, LLM/RL-based exploit generation),
+  corrected per the module-triage audit: `kernel/` is called out as live and NOT parked (wired
+  into the CLI via `supwngo kernel <module.ko>`), and `reporting/` is flagged as a future wire-in
+  candidate rather than frozen indefinitely. Added a scope-note banner to the top of
+  `docs/roadmaps/ROADMAP.md` pointing to it, since most of that document's phases are exactly the
+  parked work.
+- Added methodology caveats to `docs/roadmaps/ROADMAP.md` (the unsupported "~60%" auto-exploit
+  success-rate KPI), `docs/reference/WRITEUP_CAPABILITY_ASSESSMENT.md` (the "45/46 (98%)"/"13/13
+  (100%)" figures, which measure hand-fed technique execution, not autonomous exploitation), and
+  `docs/reference/TEST_RESULTS.md` (precision/recall/accuracy figures, which measure detection on a
+  small local corpus, not exploitation). None of the historical numbers were changed or removed;
+  each caveat points to `docs/plans/2026-09-23-effectiveness-and-usability.md` Phase 1 as the
+  process that will supersede them with honest, reproducible numbers.
+- Flagged the three-way license conflict (`LICENSE`=CC BY-NC-SA 4.0, `README.md`=PolyForm
+  Noncommercial 1.0.0, `pyproject.toml`/`setup.py`=MIT) with a prominent note in README.md's
+  License section. This is a maintainer/legal decision and is intentionally **not** resolved
+  here — see `docs/plans/2026-09-23-effectiveness-and-usability.md` Phase 7.
 
 ### Fixed
+- README.md's Documentation section linked to `docs/DEVELOPMENT.md` and
+  `docs/MANUAL_EXPLOITATION_GUIDE.md`, neither of which exists at those paths after a prior docs
+  reorg moved both files to `docs/internal/`. Links now point to `docs/internal/DEVELOPMENT.md`
+  and `docs/internal/MANUAL_EXPLOITATION_GUIDE.md`.
 - Package failed to `import` at all on Python 3.11 (the advertised `>=3.8` range) due to
   syntax errors in four files. `supwngo/exploit/seccomp.py` and one code path in
   `supwngo/exploit/auto.py` used an f-string containing a backslash inside the expression
