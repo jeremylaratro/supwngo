@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Phase-1 benchmark corpus + measurement harness under `benchmark/`: 15 purposefully
+  vulnerable, hand-verified x86-64 Linux ELF targets (`benchmark/corpus/<NN>_<slug>/`)
+  spanning stack shellcode, ret2plt/system, PIE-leak ret2libc, canary leak+bypass,
+  format-string arbitrary read/write, ret2libc-via-leak, ret2dlresolve, SROP, integer
+  truncation, heap UAF read, heap UAF-write/tcache poisoning, off-by-one, negative-index
+  OOB write, and a ret2win sanity baseline, with a documented spread of canary/NX/PIE/RELRO/
+  linking protection combinations; an idempotent `benchmark/build_all.sh` builder with the
+  exact protection flags per target; `benchmark/corpus.yaml`, a manifest recording each
+  target's ground-truth (checksec-verified) protections, intended solve path, difficulty,
+  and hand-verified status — all 15 targets were hand-verified end-to-end with real
+  pwntools exploit scripts, exceeding the plan's 5-6-target minimum; and
+  `benchmark/run_bench.py`, a harness that builds the corpus if needed, runs supwngo's live
+  `autopwn` CLI per target with a configurable timeout, and determines SUCCESS only by
+  genuinely re-executing the generated exploit script fresh and checking for the
+  target-specific flag (never by pattern-matching autopwn's own log/success claims),
+  writing a timestamped `report.json` + human-readable summary under `benchmark/results/`
+  and supporting `--target`/`--timeout` flags. See
+  `docs/plans/2026-09-23-effectiveness-and-usability.md` (Phase 1) and `benchmark/README.md`.
+
 ### Fixed
 - `CanonicalAutopwnEngine`'s verified-`SUCCESS` path could leave
   `engine.exploit_script` empty: only the template/`PARTIAL`-only executors

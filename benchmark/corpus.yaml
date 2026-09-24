@@ -1,0 +1,313 @@
+# Phase-1 benchmark corpus manifest.
+#
+# Protections listed under `protections:` are GROUND TRUTH, verified via
+# `checksec` against each built binary (see benchmark/README.md for the
+# full checksec transcript and notes on the two known discrepancies below)
+# -- not just the build flags' original intent, since real toolchain
+# defaults occasionally diverge from what was asked for:
+#
+#   - 03_pie_leak_ret2libc and 13_off_by_one were built with only
+#     `-pie -fPIE` (no explicit -z now/-z relro flags), but this Ubuntu
+#     22.04 gcc/ld toolchain apparently defaults PIE links to Full RELRO
+#     regardless. Verified this does not affect solvability for either
+#     target (neither technique touches the GOT).
+#   - 14_negative_index is STATICALLY linked, and `checksec` reports
+#     "Canary found" for it. This is a checksec false positive specific
+#     to static binaries: checksec's canary heuristic just greps for the
+#     `__stack_chk_fail` symbol, which is always present in a statically
+#     linked glibc image (pulled in by other glibc internals compiled
+#     with stack-protector) regardless of whether *this binary's own
+#     code* was compiled with -fstack-protector. Verified via
+#     `objdump -d --disassemble=vuln`: vuln() has no canary
+#     store/check sequence and never calls __stack_chk_fail. The real,
+#     load-bearing protection state for target 14's own code is
+#     canary=OFF, matching -fno-stack-protector as built.
+#
+# difficulty tiers: easy | medium | hard
+
+targets:
+  - slug: 01_shellcode_stack
+    technique: stack_shellcode
+    protections:
+      canary: false
+      nx: false
+      pie: false
+      relro: partial
+      linking: dynamic
+    solve_path: >-
+      No protections at all; overflow buf, place shellcode AFTER the
+      overwritten return address (not inside buf itself -- RSP lands
+      there post-ret, and a naive in-buf placement self-corrupts via the
+      shellcode's own push instructions), point the return address there.
+    difficulty: easy
+    hand_verified: true
+
+  - slug: 02_ret2plt_system
+    technique: ret2plt_system
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    solve_path: >-
+      No leak needed: system@plt and a "/bin/sh" string already exist in
+      the binary. ROP: pop-rdi gadget loads "/bin/sh", call system@plt,
+      with one extra bare-ret gadget inserted first to fix 16-byte stack
+      alignment before the libc call (do_system() uses movaps).
+    difficulty: easy
+    hand_verified: true
+
+  - slug: 03_pie_leak_ret2libc
+    technique: pie_leak_ret2libc
+    protections:
+      canary: false
+      nx: true
+      pie: true
+      relro: full
+      linking: dynamic
+    solve_path: >-
+      vuln() is called 3x from main(). Round 1: printf("%p", vuln) leaks a
+      PIE-relative text address, giving the PIE base. Round 2: ROP leaks
+      puts()'s real libc address via puts(puts@got), returning into
+      vuln() again. Round 3: ret2libc call to system("/bin/sh") using the
+      now-known libc base, with an alignment-fixer gadget.
+    difficulty: medium
+    hand_verified: true
+
+  - slug: 04_canary_leak_bypass
+    technique: canary_leak_bypass
+    protections:
+      canary: true
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    solve_path: >-
+      First read() fills buf exactly to the canary boundary; the program
+      then echoes buf + all 8 raw canary bytes back via write() (not a
+      %s-style leak -- the canary's own leading byte is always 0x00 by
+      design, so a NUL-terminated read would leak nothing). Recover the
+      full 8-byte canary from the echo, then overflow a second time with
+      the correct canary in place, redirecting to win().
+    difficulty: medium
+    hand_verified: true
+
+  - slug: 05_fmtstr_arbread
+    technique: fmtstr_arbread
+    protections:
+      canary: true
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    solve_path: >-
+      printf(name) is a direct format-string vulnerability. Discover
+      (not hardcode) which %N$p argument index lines up with the stack
+      canary -- empirically %25$p -- reconstruct the 8-byte canary from
+      the leak, then perform an ordinary second-stage overflow using the
+      recovered canary to redirect to win().
+    difficulty: medium
+    hand_verified: true
+
+  - slug: 06_fmtstr_arbwrite
+    technique: fmtstr_arbwrite
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    solve_path: >-
+      printf(buf) with buf user-controlled; the program leaks
+      &unlocked directly. A raw address prefix would embed a NUL byte
+      (0x40405c has one) that truncates printf's format-string parsing
+      before %n is ever reached, so the %n directive goes FIRST
+      (8-byte aligned, "AAAA%7$n") with the target address placed
+      second, at the buf offset that argument index 7 reads from --
+      overwrite `unlocked` with any nonzero value to unlock win().
+    difficulty: medium
+    hand_verified: true
+
+  - slug: 07_ret2libc_leak
+    technique: ret2libc_leak
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    solve_path: >-
+      No static system()/"/bin/sh" exists in the binary at all. vuln() is
+      called 3x. Round 1: ROP leaks puts()'s real libc address via
+      puts(puts@got), returning into vuln(). Round 2: ret2libc call to
+      system("/bin/sh") using the recovered libc base, with an
+      alignment-fixer gadget.
+    difficulty: medium
+    hand_verified: true
+
+  - slug: 08_ret2dlresolve
+    technique: ret2dlresolve
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    solve_path: >-
+      No leak primitive exists at all (only read() is a real libc import;
+      every other message uses a raw syscall). Resolve and call
+      system("/bin/sh") by NAME via the dynamic linker's own lazy-bind
+      machinery: ROP-call read() a second time to plant a forged
+      Elf64_Rela + fake Elf64_Sym + symbol-name bytes at a known .bss
+      address (read() is the only write primitive available), then jump
+      to PLT0 with a forged relocation index. Needs a 16-byte-aligned
+      target for the forged Rela (free@got-style raw GOT addresses are
+      not always aligned) and the same movaps stack-alignment fixer as
+      the ret2libc targets before the resolved system() call executes.
+    difficulty: hard
+    hand_verified: true
+
+  - slug: 09_srop
+    technique: srop
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    solve_path: >-
+      Only a `pop rax; ret` and a `syscall; ret` gadget are guaranteed
+      present -- not enough register control for a hand-built execve()
+      chain, but exactly what SROP needs. Set rax=15 (rt_sigreturn), hit
+      the syscall gadget, and let the kernel restore a fully
+      attacker-controlled register state (a pwntools SigreturnFrame) from
+      the stack: rax=59 (execve), rdi -> a fixed (non-PIE) "/bin/sh"
+      string, rsi=0, rdx=0, rip -> the syscall gadget again so it fires
+      execve immediately on resume. The overflow read is sized generously
+      (400 bytes) because a full SROP frame (248 bytes, including the
+      FP/xsave area) does not fit in a plain 64/72-byte-scale read.
+    difficulty: hard
+    hand_verified: true
+
+  - slug: 10_int_overflow
+    technique: integer_overflow
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    solve_path: >-
+      `len_in` is checked only against an upper bound (`len_in > 64`); a
+      negative len_in bypasses it. The value actually used for the read
+      count is `(unsigned char)len_in` -- an 8-bit truncation, not a
+      64-bit sign-extension (a raw sign-extended negative int reinterpreted
+      as size_t is always near 2**64, which the kernel's access_ok() check
+      rejects with EFAULT before touching the buffer, regardless of
+      whether the call goes through glibc's read() wrapper or a raw
+      syscall -- not exploitable that way on real Linux). len_in=-1
+      truncates to 255, well past the 64-byte buffer while staying a
+      safely-mappable count; overflow to win().
+    difficulty: medium
+    hand_verified: true
+
+  - slug: 11_heap_uaf_leak
+    technique: heap_uaf_read
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    solve_path: >-
+      Menu-driven notes. delete() frees a chunk but never clears the
+      stored pointer; show() prints a chunk's contents with no
+      already-freed check. Note index 0 is pre-populated with the flag
+      (offset 16 bytes in, past where tcache's key/safe-linking-next
+      fields land once freed). delete(0) then show(0) reads the
+      still-resident flag bytes straight out of the freed chunk.
+    difficulty: medium
+    hand_verified: true
+
+  - slug: 12_heap_tcache_poison
+    technique: heap_tcache_poison
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    solve_path: >-
+      Same dangling-pointer bug as target 11, plus edit(), which writes
+      into a chunk with no already-freed check (a UAF *write*). free two
+      same-size chunks A then B (tcache count=2, head=B). Corrupt B's
+      mangled `next` field *while B is still the head* (before any pop,
+      keeping tcache's count field consistent with entries[]) to point at
+      (free@got - 8) -- free@got itself is not 16-byte aligned, which
+      trips glibc's tcache_get() "unaligned tcache chunk" abort, so the
+      forged pointer targets 8 bytes earlier and writes two words, the
+      second landing exactly on free@got. Pop twice to receive free@got
+      as an allocation, write win()'s address into it, then trigger any
+      free() call to jump into win() through the corrupted GOT entry.
+    difficulty: hard
+    hand_verified: true
+
+  - slug: 13_off_by_one
+    technique: off_by_one
+    protections:
+      canary: false
+      nx: true
+      pie: true
+      relro: full
+      linking: dynamic
+    solve_path: >-
+      `buf` and `guard` are grouped in a struct so their relative layout
+      is guaranteed by the C standard (ascending declaration order, no
+      compiler reordering). `s.buf[n] = 0` is called with n possibly ==
+      sizeof(buf) (32), a single byte past buf's end, zeroing guard's low
+      byte. Send exactly 32 bytes to trigger it; win() is called directly
+      once guard's low byte is zero -- no leak or ROP needed (PIE is on
+      here purely for protection-variety, it does not affect solvability).
+    difficulty: easy
+    hand_verified: true
+
+  - slug: 14_negative_index
+    technique: negative_index_oob_write
+    protections:
+      canary: false  # see file-level note: checksec falsely reports
+                      # "Canary found" for this statically-linked binary;
+                      # ground truth verified via disassembly (see above).
+      nx: true
+      pie: false
+      relro: partial
+      linking: static
+    solve_path: >-
+      `idx` is checked only against an upper bound (`idx < 8`); a
+      negative idx is accepted. `flag` is declared immediately before
+      `arr` in a struct (guaranteeing arr starts exactly 8 bytes after
+      the struct base once alignment padding is accounted for), so
+      arr[-1] aliases flag's 4 bytes plus padding. Send idx=-1,
+      val=0x1337 to set flag and trigger win() directly -- no leak or
+      ROP needed (statically linked purely for protection/linking
+      variety, does not affect solvability).
+    difficulty: easy
+    hand_verified: true
+
+  - slug: 15_win_function
+    technique: ret2win_baseline
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: full
+      linking: dynamic
+    solve_path: >-
+      Sanity baseline: plain stack overflow, redirect the return address
+      straight to a hidden win() function. No leak, no protections
+      standing in the way beyond NX (irrelevant since no shellcode is
+      needed). Should be trivially solvable by any working automated
+      pipeline; a FAILED result here indicates a fundamental harness or
+      tool problem, not a genuinely hard target.
+    difficulty: easy
+    hand_verified: true
