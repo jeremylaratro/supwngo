@@ -173,6 +173,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are still attempted — just last.
 
 ### Added
+- `benchmark/redact_report.py` — redacts a benchmark `report.json` so it can be
+  committed as evidence. `report.json` is gitignored because it embeds every rep's
+  per-run secret flag, but a digest of a file no reader can obtain cannot expose
+  selective transcription of the numbers into a prose report. This replaces each
+  secret with a placeholder, leaving structure, per-rep statuses, reasons,
+  attribution verdicts and timings independently checkable, and **fails closed**:
+  it refuses to write the output if any `FLAG{<32 hex>}`-shaped string survives,
+  via a check independent of the substitution itself.
 - Round-2 held-out benchmark corpus under `benchmark/corpus_r2/`, merged from
   `feat/benchmark-corpus-r2-20260923` **only after** round 1 closed, so the
   framework-hardening work could not have been tuned to it (the branch was kept
