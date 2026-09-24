@@ -379,6 +379,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rebuilds the targets with a fresh secret flag, two concurrent runs over one
   corpus would clobber each other's binaries and `flag.txt` files and produce
   spurious `FAILED`s rather than an obvious crash.
+- **Phase 5 — the profiling stage silently discarded most leaked pointers**
+  (`pipeline/profile_stage.py`). `_parse_address_leaks()` only recognised a printed `%p`
+  when it was introduced by one of a fixed set of English words
+  (`address|gift|leak|ptr|pointer|stack|heap|libc`, or a bare `at`/`is`/`=`), so the two
+  most common real phrasings in the benchmark corpus — `printf("buf @ %p")` and
+  `printf("chunk[%d] @ %p")` — were dropped outright, leaving every executor that depends
+  on a stack or heap leak with nothing to work from even though the target had handed the
+  address over. It now matches a pointer by its actual rendering via
+  `delivery.scan_hex_addresses()` and buckets it with `delivery.classify_address()`, which
+  also fixes an ordering bug that could label a `0x7ffd…` stack address as libc.
 - `CanonicalAutopwnEngine`'s verified-`SUCCESS` path could leave
   `engine.exploit_script` empty: only the template/`PARTIAL`-only executors
   (`srop`, `format_string`, `ret2libc`) ever populated
