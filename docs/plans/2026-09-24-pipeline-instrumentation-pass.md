@@ -506,6 +506,79 @@ rather than comments would not be covered by the stripping.
 
 ---
 
+## 4.4 Class sweeps (per `docs/process/2026-09-24-review-protocol-three-round-convergence.md`)
+
+Two defect **classes** were found as instances in review. Both are swept here before any
+code lands, rather than fixed at their instance and left to re-emerge.
+
+### Class 1 — "a gate whose subject never occurs" (M10's class)
+
+**Sweep method:** full per-technique × per-outcome census over every attempt in both archived
+`report.json` files (17 techniques × 5 outcomes). A proof leg whose subject shows a zero cell
+has no naturally occurring instance.
+
+| instance | evidence | status |
+|---|---|---|
+| **`variable_overwrite` provenance** (M10, the original) | 12 FAILED, **0 SUCCESS** — a winning candidate never occurs | Fixed: Fixtures A + B (§4 I3) |
+| **`scanf_canary_bypass` never executes at all** — NEW | **12 SKIPPED, 0 FAILED, 0 PARTIAL, 0 SUCCESS** across both runs | **Two of I5's three proof legs have no natural subject** — see below |
+| **`ERROR` outcome occurs zero times** — NEW | 0 of all attempts in either run | I1's raise leg and I4's spawn-failure state need induced fixtures — see below |
+
+**I5 — I called it "the best of the five" and that rested on a leg whose subject never
+occurs.** Its first leg (the `variable_overwrite` sweep exhausting) is real: 12 FAILED. But
+`scanf_canary_bypass` is SKIPPED on all 12 occurrences, so its body never runs, so **neither**
+the `except Exception` path (`heap_and_bypass.py:105-107`) **nor** `_test_scanf_bypass()`
+returning `False` ever happens on any existing target. Both legs require an **induced
+fixture** (a canary + `scanf` target that reaches the executor), and neither may be reported
+as validated by the diagnostic re-run — the re-run cannot exercise them.
+
+**I1 and I4 — the `ERROR` column is empty, so the raise paths are dead in practice.**
+`orchestrator.py:205-207` (the `is_applicable` raise) and `:222-224` (the `attempt()` raise)
+never fire on any existing target, and `deliver_parts`'s third state,
+`DeliveryResult(error=...)` at `delivery.py:183-190`, likewise. These are induced-fixture
+proofs by construction, which is legitimate — but the plan must not claim the re-run
+validates them, and each needs its fixture named.
+
+**Standing rule this yields:** every proof leg is labelled **naturally occurring** (a cell in
+the census is non-zero) or **induced** (requires a fixture). An induced leg without a named
+fixture is an unfalsifiable gate.
+
+### Class 2 — "claimed inertness resting on an unstated invariant" (M8's class)
+
+**Sweep method:** for each change the plan calls inert or write-only, identify the condition
+the claim actually depends on and check whether it is stated.
+
+| claim | the condition it actually depends on | stated? |
+|---|---|---|
+| I5 behaviour-neutral | no consumer branches on `failure_reason`; script-audit strips comments | **yes** — both verified and stated |
+| I2b out of all four forbidden categories | `classify()` receives the *parsed* payload (`:917`), never the wrapper (`:950`) | **yes** |
+| I1 inert | `attempt()` reproduces the full predicate | **yes** — M8, now correct |
+| **I2 / I3 "write-only fields with no control-flow surface"** | **a new field must never reach a per-rep artifact that is compared across reps** | **NO — this was unstated** |
+
+**The unstated invariant, and why it matters.** `benchmark/rep_divergence.py:99-102` hashes
+`rep{N}/{slug}_generated.py` per rep, and `templates.py:145` renders `record.notes` into that
+script. So a duration or a provenance string placed in `notes` — the natural place, and where
+`input_shape_techniques.py:240` already puts prose provenance — makes **every rep's script
+differ**. The normaliser is deliberately narrow (`[0-9]{10,}` decimal, `0x[0-9a-fA-F]{6,}`
+hex), so a duration like `12.47` is **not masked**. Consequence:
+`rep_divergence.py` would report **DIVERGENT on all 15 targets** and destroy the instrument
+that established 15/15 deterministic — the evidence that ruled out probe truncation as the
+explanation for the cold figure.
+
+I bound I3 to a structured field earlier, but for a different reason (a gate cannot assert
+prose), and I never stated it for I2 at all. So it held by luck on one instrument and not at
+all on the other.
+
+> **Invariant, now explicit and applying to every instrument in this pass: new instrument
+> values go into structured fields and `to_dict()` only. None may enter `record.notes`, or
+> any other text rendered by `templates.py`, or any per-rep artifact.**
+
+**Gate for Class 2, red-provable:** after the instruments land, `rep_divergence.py` must
+still report **15/15 deterministic, 0 divergent** on the R2 re-run. Prove it can go red by
+deliberately writing a duration into `notes` on one executor and confirming divergence is
+reported — then revert.
+
+---
+
 ## 5. Every instrument must be shown to report the negative
 
 Two structural upgrades over the previous revision, both from the review:
@@ -527,7 +600,8 @@ present in a real `report.json`, not merely on an in-memory record (M6).
 | I2b | Assert probe `duration_sec` is present, non-zero, and **less than** the target's `elapsed_sec`; and that a deliberately slowed probe moves it. |
 | I3 | Assert the record names the winning candidate *and* its source, and that a different candidate yields a different record. Plus the **required-provenance gate**: delete provenance from a required executor and assert the gate goes red on *missing*, not just on mismatched. |
 | I4 | Patch a probe target to hang; assert the timeout surfaces and is distinguishable from an empty response. **Critically, prove it at a sweep-abandoning site** (`_find_buffer_arg_index` or `_probe_fmtstr_indices`) and assert window 1 of *n* is distinguishable from *n* of *n* — if the proof only passes at the two easy sites, B1's failure has not been fixed. |
-| I5 | Three-way differential: sweep-exhaust, raise, and `_test_scanf_bypass` returning `False`. The latter two are today indistinguishable, so this is a genuine positive control. |
+| I5 | Three-way differential. **Leg 1 (sweep-exhaust) is naturally occurring** — 12 FAILED `variable_overwrite` attempts. **Legs 2 and 3 (the `except Exception` path and `_test_scanf_bypass() → False`) are induced**: `scanf_canary_bypass` is SKIPPED on all 12 occurrences and never executes, so both require a fixture — a canary + `scanf` target that actually reaches the executor. Neither leg may be reported as validated by the diagnostic re-run (§4.4 Class 1). |
+| **all** | Every leg labelled **naturally occurring** or **induced**; every induced leg names its fixture. Plus the Class 2 gate: `rep_divergence.py` still reports 15/15 deterministic after the instruments land, red-proven by writing a duration into `notes` and confirming divergence (§4.4 Class 2). |
 
 ---
 
