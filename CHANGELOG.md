@@ -40,6 +40,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `integration/phases-0-4-7-20260923`).
 
 ### Fixed
+- **A stdin delivery race in `benchmark/soundness_probes/real_exploit_02_explicit.py`
+  made a genuine exploit fail under load.** The target does one
+  `read(0, buf, 300)`, and `read()` returns as soon as any data is available, so
+  an unsynchronised script races it two ways: the payload can be consumed before
+  it has fully arrived, or — because `sendline()` is a separate pipe write — the
+  same `read()` can swallow the payload *together with* the shell commands,
+  spawning a shell whose stdin is already empty. That produces the confusing
+  pair `shell_proven=True, flag_found=False`. Measured 4/96 failures under 24-way
+  contention and 0/40 unloaded; synchronising on the prompt and letting the
+  payload be consumed alone gives 0/96. Raising the `recvall` deadline alone only
+  halved it (2/96), so the deadline was a contributing factor and the
+  synchronisation is the fix. Worth generalising: any target with a single large
+  `read()` will punish a fire-and-forget delivery layer, and it fails in a way
+  that looks like a capability limit rather than a race.
 - **`benchmark/attribution.py` reached three wrong verdicts about who wrote the
   flag.** The process tree was reconstructed correctly; the reasoning over it
   was wrong. All three fixes make attribution *more* accurate, not more
