@@ -205,6 +205,59 @@ it was **6 recurrences / 0 new / 7 introduced**. Discovery had fully converged �
 round 4 found no class round 3 had not already named. The remedy was therefore *not*
 a better review; it was running the sweeps and containing remediation.
 
+#### 6.1a NEW is measured against the document set, not against the previous round
+
+A finding already written down in *any* prior review, plan, or caveat list is not
+NEW, even if the round that named it never saw that document. Classifying against
+"the previous round" only is how a project rediscovers its own recorded caveats and
+spends finding slots on them.
+
+**Measured instance.** Round 2 reported the dangling `NEGATIVE_SIZE_BYPASS →
+"negative_size_bypass"` mapping as a finding. A peer review had named it
+explicitly — by that name — **one day earlier**, in
+`docs/reviews/2026-09-23-effectiveness-and-usability.md:19`. The round-2 finding
+was a rediscovery of a written-down caveat. A second document,
+`PHASE1-BASELINE:110`, already stated the corroborating fact from the opposite
+direction ("executors run regardless of which technique a target actually needs").
+
+So the Author's inventory obligation (§3, item 1) extends past `grep`ping the code:
+**before labelling a finding NEW, grep the `docs/` tree for it.** The same one-line
+check that stops you proposing to build what exists stops you re-finding what you
+already knew. A recorded caveat that reaches a second review unfixed is a *triage*
+failure, not a discovery success, and mis-labelling it NEW hides that.
+
+#### 6.1b A sweep yields candidates, not findings
+
+The obligation to sweep a class creates its own failure mode: the sweep returns N
+hits and the temptation is to report N instances. **Every hit is a candidate until
+it is checked against the deliberate-design explanation.** Reporting an
+intentional absence as a gap costs exactly what a skipped sweep costs — a wasted
+round — and it discredits the sweeps that did find something.
+
+Measured, from one three-direction sweep:
+
+| direction | raw hits | after checking | why |
+| --- | --- | --- | --- |
+| A: mapping entries with no executor | 1 of 9 | **1, and inert** | a membership guard upstream drops the name before the lookup |
+| B: executors absent from the mapping | 9 of 17 | **0 defects** | all 9 are deliberately enumerated in two other lists, one of which names its three in a comment |
+| C: silent-skip lookup sites | 4 | **0 live** | the one silent skip is dead on the production path — its only caller pre-filters |
+
+Nine of ten raw hits were correct by design. Reporting direction B as a gap would
+have been the round's largest error, produced *by following the protocol*.
+
+Three consequences, all cheap:
+
+- **Assert every enumeration source is non-empty, in the script**, so a vacuous
+  sweep raises instead of returning "swept, no others." See
+  [[validation-that-cannot-fail]] instance 12 — an absence check whose subject did
+  not exist.
+- **Report reach, not just presence.** "1 dangling of 9" and "1 dangling of 9, and
+  a membership guard makes it unreachable" support different decisions. A finding
+  that states presence without reach cannot be prioritised.
+- **Record the dead defensive branches you found.** Not as defects — as a note, so
+  that nobody later writes a gate asserting "dangling entries are skipped" and
+  collects a vacuous pass out of code that cannot execute.
+
 ### 6.2 Remediation is a defect source, and new tests are its riskiest output
 
 Of those 7 introduced defects, **5 were inside the 8 properties the remediation
