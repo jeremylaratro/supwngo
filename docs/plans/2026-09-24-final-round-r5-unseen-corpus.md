@@ -50,6 +50,24 @@ balance on it as well, so the figure is decomposable into "reached the redirect"
 This is a finding about the measurement instrument, not about one round, and it
 applies to any future corpus.
 
+**Depth needs three buckets, not two.** The original decomposition — "reached the
+redirect" versus "had to acquire a primitive first" — implicitly assumed every
+depth >= 1 failure was a failure *to acquire*. A cross-rep divergence analysis of
+R2's 11 failures found otherwise: `01_stack_shellcode_relay` **did obtain its
+stack leak and still failed to place shellcode**. So the acquisition succeeded and
+the application of it failed, which is a different capability gap with a different
+fix and must not be pooled with "could not get a leak".
+
+R5 must therefore record, per failing target, which of three states it reached:
+
+1. never acquired the required primitive,
+2. acquired it and failed to apply it,
+3. never needed one (depth 0) and still failed.
+
+Without state 2 being separable, an R5 miss rate cannot be read as "cannot obtain
+primitives", which is the conclusion the two-bucket decomposition invites and
+which R2's target 01 already falsifies.
+
 ## Problem 1 (BLOCKING): there is no walkthrough scorer
 
 `benchmark/` contains **zero** references to walkthroughs. The autopwn number has
@@ -196,6 +214,35 @@ measurement.** R1 shipped 2 targets that handed over the flag without the
 vulnerability. Catching that on R5 *after* measuring would contaminate the one
 clean shot at an unseen number. Repair or replace VOID targets before the
 measurement run, not after.
+
+### Precondition: no credit may rest on a hardcoded constant sweep
+
+`VariableOverwriteExecutor` (`stack_techniques.py:59-93`) sweeps a fixed list of
+nine folklore constants (`0x1337`, `0xdeadbeef`, `0xcafebabe`, …) against 14
+buffer sizes, with no recovery step. Two further copies of the list exist at
+`input_shape_techniques.py:48` and `enhanced_auto.py:119`. R1's corpus gates on
+`0x1337` (`14_negative_index/negative_index.c:54`) and `0xdeadbeef`
+(`13_off_by_one/off_by_one.c:34`) — both in all three lists.
+
+The provenance question (were the lists seeded from the corpus?) is unanswerable
+and irrelevant. The defect is structural: **a brute-force list can credit any
+target whose gate happens to use one of its nine values, and that credit
+generalises to nothing.** R5's generator is isolated and may well pick
+`0xdeadbeef` for a gate; the sweep would then contribute to the 50% figure as
+though it were capability.
+
+Being inert on R1 and R2 does **not** clear this for R5 — different corpus,
+different constants. Required before the R5 measurement, whichever is cheaper:
+
+1. Source the executor's candidates from `comparison_immediates()`
+   (`input_shape_techniques.py:68`, which already recovers gate constants from the
+   target's own `cmp`/`test` instruction stream) instead of the fixed list — the
+   real capability, and it generalises to any exact-value gate; **or**
+2. Flag and report separately every R5 target credited via a constant sweep, so
+   the headline figure never silently includes one.
+
+Option 1 is preferred. The recovery function already exists and works; the gap is
+that this executor does not call it.
 
 ## Sequencing
 
