@@ -25,6 +25,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `notes`/`failure_reason` (which `templates.py` renders into generated exploit scripts
   that `rep_divergence.py` hashes per rep) -- structured field and `to_dict()`/engine
   attributes only.
+- **`failure_reason` populated at two previously-silent swallowing sites** (I5,
+  `supwngo/exploit/pipeline/executors/stack_techniques.py`,
+  `supwngo/exploit/pipeline/executors/heap_and_bypass.py`). `VariableOverwriteExecutor`
+  (the recorded cause of 11 of 11 R2 failures) now sets `failure_reason` when its
+  buffer-size x magic-value sweep is exhausted, stating what was tried, instead of only
+  logging it to prose `notes`. `ScanfCanaryBypassExecutor.attempt()` swallowed failure at
+  two distinct sites with no `failure_reason` at all -- an exception anywhere before a
+  verdict, and a real menu-driven probe (`_test_scanf_bypass()`) returning `False` -- both
+  now set one of two fixed, mutually-distinguishable constants
+  (`FAILURE_REASON_EXCEPTION` / `FAILURE_REASON_PROBE_UNCONFIRMED`) rather than converging
+  on the same text or staying blank; the raw exception message itself continues to live
+  only in `record.error` (never rendered by `templates.py`), so an attacker-influenced or
+  otherwise arbitrary string can never reach a generated script. **Behavior/output change:**
+  `failure_reason` is rendered into generated exploit scripts by
+  `templates.py:generate_universal_template` (`attempts_str`), so scripts for these two
+  swallowing sites now contain this new prose where they previously did not -- verified
+  against `run_bench.py`'s `_SCRAPES_BINARY_RE` script-cheat-detection vocabulary (no
+  `strings`/`objdump`/`readelf`/`xxd`) by a repo-wide AST-based literal scan in the new
+  test file, so this cannot trip a cheat verdict. Also pre-declares and tests a precedence
+  change this reachable for `variable_overwrite`: `handoff.py:292`'s
+  `record.failure_reason or record.error or None` now yields the new sweep-exhaustion text
+  instead of falling through to `None`/`record.error`. Note: `scanf_canary_bypass` has no
+  `ExploitApproach` entry in `strategy.py`'s `APPROACH_TO_TECHNIQUE`, so that same
+  `handoff.py:292` code path can never actually select it in practice (SKIPPED on all 12
+  real R1/R2 occurrences) -- covered separately by a test against the precedence
+  expression's shape directly rather than a full end-to-end `handoff.py` call, since no
+  real run reaches it. `scanf_canary_bypass`'s two legs are exercised by a new, genuine
+  (compiled, not mocked) induced fixture at
+  `tests/fixtures/i5_scanf_canary_bypass/scanf_canary_target.c`, following the layout of
+  `tests/fixtures/i3_candidate_provenance/` -- `benchmark/corpus/` and `benchmark/corpus_r2/`
+  are untouched.
 - **Candidate provenance on `AttemptRecord`** (`supwngo/exploit/pipeline/contracts.py`,
   `VariableOverwriteExecutor` in `supwngo/exploit/pipeline/executors/stack_techniques.py`).
   A new structured `candidate_provenance` field (also added to `AttemptRecord.to_dict()`,
