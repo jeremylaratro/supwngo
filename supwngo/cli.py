@@ -2395,6 +2395,70 @@ def race_analysis(ctx, binary, toctou, signals, thread_unsafe, templates, json_o
         console.print_json(json.dumps(result, indent=2))
 
 
+def _render_handoff_report(report) -> None:
+    """Render a `handoff.HandoffReport` (Phase 4) as a clear, structured
+    hand-off instead of the sparse "here's a generic template" output
+    `autopwn` used to fall back to. Matches the Table/Panel style already
+    used elsewhere in this file (see `analyze`/`rop`)."""
+    console.print("\n[bold yellow]Full auto-exploitation did not reach verified SUCCESS.[/bold yellow]")
+    console.print("[bold]Structured hand-off:[/bold]\n")
+
+    if report.attempts_detail:
+        table = Table(title="Attempts")
+        table.add_column("Technique", style="cyan")
+        table.add_column("Outcome", style="magenta")
+        table.add_column("Stage reached", style="white")
+        table.add_column("Failure reason", style="yellow")
+        for a in report.attempts_detail:
+            outcome_style = {
+                "SUCCESS": "[bold green]SUCCESS[/bold green]",
+                "PARTIAL": "[yellow]PARTIAL[/yellow]",
+                "FAILED": "[red]FAILED[/red]",
+                "SKIPPED": "[dim]SKIPPED[/dim]",
+                "ERROR": "[bold red]ERROR[/bold red]",
+            }.get(a.outcome, a.outcome)
+            table.add_row(a.technique, outcome_style, a.stage_reached, a.failure_reason or "-")
+        console.print(table)
+    else:
+        console.print("[dim](no technique attempts were recorded)[/dim]")
+
+    if report.blocking_unknowns:
+        console.print("\n[bold red]Blocking unknowns:[/bold red]")
+        for unknown in report.blocking_unknowns:
+            console.print(f"  ! {unknown}")
+
+    if report.strategy_warnings:
+        console.print("\n[bold yellow]Strategy warnings:[/bold yellow]")
+        for warning in report.strategy_warnings:
+            console.print(f"  ! {warning}")
+
+    if report.suggested_next_steps:
+        console.print("\n[bold green]Suggested next step:[/bold green]")
+        for step in report.suggested_next_steps:
+            console.print(Panel(
+                (f"[bold]{step.approach}[/bold] (priority {step.priority}, "
+                 f"confidence {step.confidence:.0%})\n{step.description}\n\n"
+                 + (f"Requirements: {', '.join(step.requirements)}\n" if step.requirements else "")
+                 + (f"Steps:\n" + "\n".join(f"  {i}. {s}" for i, s in enumerate(step.steps, 1)) + "\n"
+                    if step.steps else "")
+                 + (f"Notes:\n" + "\n".join(f"  - {n}" for n in step.notes) if step.notes else "")
+                 + (f"\n\nRelated attempt failure: {step.related_attempt_failure_reason}"
+                    if step.related_attempt_failure_reason else "")
+                 ).strip(),
+                title="Recommended strategy", border_style="green",
+            ))
+
+    if report.best_partial:
+        console.print(
+            f"\n[bold]Best partial artifact[/bold] "
+            f"({report.best_partial.kind}, source: {report.best_partial.source}):"
+        )
+        lines = report.best_partial.content.split('\n')
+        console.print(Panel('\n'.join(lines[:40]), border_style="blue"))
+        if len(lines) > 40:
+            console.print(f"[dim]... ({len(lines) - 40} more lines; use -o/--output to save in full)[/dim]")
+
+
 @cli.command()
 @click.argument("binary", type=click.Path(exists=True))
 @click.option("-o", "--output", type=click.Path(), help="Output exploit script to file")
@@ -2454,6 +2518,11 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output):
                 "has_alarm": engine.context.profile_has_alarm,
                 "leaked_addresses": {k: hex(v) for k, v in engine.context.leaks.items()},
             },
+            # Structured hand-off (Phase 4 of the effectiveness/usability
+            # plan) - always present for a stable schema, but only
+            # populated beyond `attempts_detail` when `success` is False.
+            # See supwngo/exploit/pipeline/handoff.py for the frozen shape.
+            "handoff": engine.handoff_report.to_dict(),
         }
         console.print_json(json.dumps(result, indent=2, default=str))
     else:
@@ -2486,17 +2555,14 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output):
                 console.print("\n[bold]Generated Exploit Script:[/bold]")
                 console.print(engine.exploit_script)
         else:
-            console.print("\n[yellow]Full exploitation failed. Generated template:[/yellow]")
+            _render_handoff_report(engine.handoff_report)
+
             if output:
+                artifact = engine.exploit_script or engine.exploit_template
                 with open(output, 'w') as f:
-                    f.write(engine.exploit_template)
-                console.print(f"[yellow]Template saved to: {output}[/yellow]")
-            else:
-                # Show first part of template
-                lines = engine.exploit_template.split('\n')[:50]
-                console.print('\n'.join(lines))
-                if len(engine.exploit_template.split('\n')) > 50:
-                    console.print("... (truncated)")
+                    f.write(artifact)
+                kind = "Partial exploit script" if engine.exploit_script else "Fallback template"
+                console.print(f"\n[yellow]{kind} saved to: {output}[/yellow]")
 
 
 def main():

@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `supwngo/exploit/pipeline/handoff.py` — a structured, actionable
+  hand-off report (`HandoffReport`) built when `CanonicalAutopwnEngine`
+  does not reach verified SUCCESS: `attempts_detail` (technique, outcome,
+  stage reached, failure reason — projected from the `AttemptRecord`s the
+  engine already collected), `blocking_unknowns` (concrete facts like "PIE
+  base not leaked"/"libc base not leaked"/"stack canary value unknown",
+  derived from `ExploitContext` state that's still unset, gated on a
+  technique that actually needed that fact having been attempted this run
+  — never a guess independent of what the pipeline tried), `best_partial`
+  (the furthest-along artifact: a technique's partial exploit script if
+  one exists, else the pipeline's universal fallback template), and
+  `suggested_next_steps` (the highest-confidence not-completed strategy's
+  `requirements`/`notes`/`steps`, surfaced directly from
+  `strategy.py`'s existing `StrategyReport` rather than new prose).
+  `CanonicalAutopwnEngine.handoff_report` builds and caches one per run.
+  JSON schema is frozen at `schema_version: 1` (additive-only from here);
+  intended to double as the shape a future benchmark harness parses for
+  PARTIAL/FAILED classification. Phase 4 of
+  `docs/plans/2026-09-23-effectiveness-and-usability.md`.
+- `supwngo autopwn`'s non-JSON output now renders the hand-off report with
+  `rich` (an attempts table, blocking unknowns, strategy warnings, the
+  recommended next strategy, and the best partial artifact) instead of
+  dumping the first 50 lines of the universal template — replacing the
+  previous sparse fallback. `supwngo autopwn --json` (the flag already
+  existed) now includes the same structured hand-off under a `"handoff"`
+  key alongside the existing result fields.
+- `tests/test_pipeline_handoff.py` — 18 tests covering `HandoffReport`'s
+  frozen JSON schema, `derive_blocking_unknowns()`'s grounding in actual
+  attempted techniques (not blanket guesses), and `build_handoff_report()`
+  assembling `best_partial`/`suggested_next_steps` correctly for both
+  successful and non-successful runs.
+
 ### Changed
 - `supwngo autopwn` (the CLI command) is now driven by
   `CanonicalAutopwnEngine` instead of `EnhancedAutoExploiter`. Previously
