@@ -461,6 +461,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behaviour, and output excerpting.
 
 ### Fixed
+- **`tcache_poison_got` threw away the evidence of its own success**
+  (`supwngo/exploit/pipeline/executors/heap_techniques.py`). The generated
+  script triggered the hijacked GOT slot, drained the reply with
+  `io.recvrepeat(0.5)` for synchronisation, *discarded the return value*, and
+  then called `io.interactive()` — which had nothing left to display, because
+  `recvrepeat` consumes what it reads. Every step of the corruption (two
+  frees, safe-linking mangle, 16-byte-aligned target, allocation landing on
+  the GOT, the overwrite) was working; `win()`'s output was simply never
+  printed, so verification saw an empty run and the technique looked broken.
+  The trigger's output is now written to stdout.
+- **`tcache_poison_got` could pick a self-referential GOT target**
+  (same file). Redirecting a slot that `win()` itself calls — e.g. `puts@got`
+  for the usual `win() { puts(FLAG); }` — makes `win()` re-enter through the
+  slot it was reached by and recurse until the stack is gone, producing no
+  output at all and looking identical to a failed primitive. Callees of the
+  win function are now read from the binary's disassembly (`callees_of()`) and
+  excluded from the candidate list.
 - **`ret2dlresolve` never tried the aligned stack parity**
   (`supwngo/exploit/pipeline/executors/rop_techniques.py`). Every other ROP
   executor sweeps both parities, because glibc's `do_system()` executes
