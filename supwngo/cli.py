@@ -2565,6 +2565,258 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output):
                 console.print(f"\n[yellow]{kind} saved to: {output}[/yellow]")
 
 
+# === `solve` - Phase 6 of docs/plans/2026-09-23-effectiveness-and-usability.md ===
+#
+# `solve` is a thin wrapper over `autopwn`'s CanonicalAutopwnEngine (same
+# engine, same pipeline - see docs/architecture/2026-09-23-autopwn-pipeline.md's
+# "solve vs autopwn" addendum for why both commands exist rather than one
+# being deleted). It differs from `autopwn` in three ways: a minimal,
+# opinionated flag surface (`--remote`/`--libc`/`--timeout`/`--json`, no
+# `--offset` escape hatch), a guaranteed default output path even without
+# `-o` (`autopwn` only writes a script when `-o` is explicitly given), and
+# an optional `--interactive` guided-fallback retry.
+
+DEFAULT_SOLVE_OUTPUT_DIR = "./solve_output"
+
+#: Human-readable hints for the value guided-fallback (`--interactive`)
+#: prompts for, keyed by the `handoff.BLOCKING_UNKNOWN_FACT_KEYS` value.
+_KNOWN_FACT_PROMPT_HINTS = {
+    "offset": "buffer-to-return-address offset in bytes, e.g. 40 or 0x28",
+    "canary_value": "leaked stack canary value, e.g. 0xab12cd34ef56ab00",
+    "libc_base": "leaked libc base address, e.g. 0x7ffff7a00000",
+    "pie_base": "leaked PIE/binary base address, e.g. 0x555555554000",
+}
+
+
+def _default_solve_output_path(binary: str) -> Path:
+    """Predictable default artifact path used when `-o`/`--output` isn't
+    given. "One command produces a usable artifact" (Phase 6) requires
+    `solve` to write the result *somewhere* by default, not only print to
+    stdout - unlike `autopwn`, where `-o` is opt-in."""
+    return Path(DEFAULT_SOLVE_OUTPUT_DIR) / f"{Path(binary).stem}_exploit.py"
+
+
+def _parse_remote_target(remote: str) -> "tuple[str, int]":
+    try:
+        host, port_str = remote.rsplit(":", 1)
+        port = int(port_str)
+    except ValueError:
+        raise click.BadParameter(
+            "must be HOST:PORT, e.g. chal.example.com:1337", param_hint="--remote"
+        )
+    if not host:
+        raise click.BadParameter("host must not be empty", param_hint="--remote")
+    return host, port
+
+
+def _fill_remote_placeholders(script: str, host: Optional[str], port: Optional[int]) -> str:
+    """Every script this pipeline generates (the universal template, the
+    SROP/scanf-canary-bypass templates, and `generate_success_script`'s
+    fallback) shares the same ``REMOTE_HOST = ""`` / ``REMOTE_PORT = 0``
+    placeholder convention, so a single string substitution works
+    regardless of which generator produced the script `solve` is about to
+    write out.
+
+    NOTE (documented limitation, not an oversight): this only changes
+    where the *written script* connects by default. `CanonicalAutopwnEngine`
+    itself still runs every technique attempt locally against `BINARY` for
+    verification - the pipeline's executors spawn the binary directly
+    (`supwngo/exploit/pipeline/executors/_shared.py::spawn_and_send`) and
+    do not yet have a remote-delivery path (see
+    docs/architecture/2026-09-23-autopwn-pipeline.md's "solve vs autopwn"
+    addendum). `--remote` gets you a script that's ready to replay against
+    the real target once you've verified it locally - it does not make
+    `solve` attack the remote target directly."""
+    if not host or not script:
+        return script
+    return (
+        script.replace('REMOTE_HOST = ""', f'REMOTE_HOST = "{host}"')
+        .replace("REMOTE_PORT = 0", f"REMOTE_PORT = {port}")
+    )
+
+
+def _write_solve_artifact(content: str, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(content)
+    try:
+        output_path.chmod(0o755)
+    except OSError:
+        pass
+
+
+def _guided_fallback(engine, binary: str, libc: Optional[str], timeout: float):
+    """Phase 6 guided fallback mode: present the failed/partial run's
+    `blocking_unknowns`, let the user supply ONE of them, and retry.
+
+    Capped deliberately at "supply one missing fact and resume" per the
+    plan - this is a simplified resume (a fresh `CanonicalAutopwnEngine`
+    run with the fact pre-seeded via `run(known_facts=...)`), not true
+    mid-pipeline resumption. Wiring true incremental resume (skipping
+    already-completed stages/attempts rather than re-running the whole
+    pipeline) would need the orchestrator's attempt loop to be
+    checkpoint/resumable, which is more pipeline surgery than this
+    "thin CLI wrapper" phase's scope - see `CanonicalAutopwnEngine.run()`'s
+    docstring for the same note. Re-running is cheap in practice (the
+    profiling stages are fast and idempotent), so the simplification costs
+    wall-clock time, not correctness.
+
+    Returns the engine to report on: the new one if the user supplied a
+    fact, otherwise the original.
+    """
+    from supwngo.exploit.pipeline.handoff import BLOCKING_UNKNOWN_FACT_KEYS
+
+    report = engine.handoff_report
+    choices = [u for u in report.blocking_unknowns if u in BLOCKING_UNKNOWN_FACT_KEYS]
+    if not choices:
+        console.print(
+            "\n[dim]--interactive: no guided-fallback-eligible blocking "
+            "unknowns to resolve for this run.[/dim]"
+        )
+        return engine
+
+    console.print("\n[bold cyan]Guided fallback:[/bold cyan] supply ONE missing fact to retry with it known.")
+    for i, unknown in enumerate(choices, 1):
+        console.print(f"  {i}. {unknown}")
+    console.print("  0. Skip (keep the current result)")
+
+    choice = click.prompt("Which fact can you supply", type=click.IntRange(0, len(choices)), default=0)
+    if not choice:
+        return engine
+
+    unknown = choices[choice - 1]
+    fact_key = BLOCKING_UNKNOWN_FACT_KEYS[unknown]
+    hint = _KNOWN_FACT_PROMPT_HINTS.get(fact_key, "value")
+    raw_value = click.prompt(f"Value for '{unknown}' ({hint})")
+    try:
+        value = int(raw_value, 0)
+    except ValueError:
+        console.print(f"[red]Could not parse '{raw_value}' as an integer - skipping guided fallback.[/red]")
+        return engine
+
+    console.print(f"[cyan]Resuming with {fact_key} = {hex(value)}...[/cyan]")
+
+    from supwngo.core.binary import Binary
+    from supwngo.exploit.pipeline import CanonicalAutopwnEngine
+
+    bin_obj = Binary.load(binary)
+    with console.status("Retrying with the supplied fact..."):
+        new_engine = CanonicalAutopwnEngine(bin_obj, timeout=timeout, libc_path=libc)
+        new_engine.run(known_facts={fact_key: value})
+
+    if new_engine.successful:
+        console.print("[bold green]Guided fallback reached verified SUCCESS.[/bold green]")
+    else:
+        console.print("[yellow]Guided fallback did not reach verified SUCCESS either.[/yellow]")
+
+    return new_engine
+
+
+@cli.command()
+@click.argument("binary", type=click.Path(exists=True))
+@click.option(
+    "-o", "--output", type=click.Path(),
+    help=f"Output exploit script path (default: {DEFAULT_SOLVE_OUTPUT_DIR}/<binary-name>_exploit.py)",
+)
+@click.option(
+    "--remote",
+    help="Remote target HOST:PORT, templated into the written exploit script's "
+         "REMOTE_HOST/REMOTE_PORT. Technique attempts still run locally against "
+         "BINARY for verification - see docs/architecture/2026-09-23-autopwn-pipeline.md.",
+)
+@click.option("--libc", type=click.Path(exists=True), help="Path to target libc (for ret2libc/one_gadget)")
+@click.option("--timeout", default=5.0, help="Timeout for each technique attempt (seconds)")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.option(
+    "--interactive", is_flag=True,
+    help="On a partial/failed result, offer a guided fallback: supply ONE missing fact and retry",
+)
+@click.pass_context
+def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive):
+    """
+    One command: binary in, working exploit (or a clear explanation why
+    not) out.
+
+    Runs the same canonical pipeline `autopwn` drives (static analysis,
+    dynamic profiling, strategy-ranked technique attempts, verification) with
+    a minimal flag surface and opinionated defaults: auto-detected arch/bits,
+    strategy-priority-ordered technique attempts, local verification, and -
+    unlike `autopwn` - a working exploit script always written to a
+    predictable path on success, even without -o.
+
+    On failure, always shows the Phase-4 structured hand-off (what was
+    tried, why, and what's still needed). Pass --interactive to be walked
+    through supplying one of the hand-off's blocking_unknowns and retrying.
+
+    `solve` is a thin wrapper over CanonicalAutopwnEngine, the same engine
+    `autopwn` drives - see docs/architecture/2026-09-23-autopwn-pipeline.md,
+    "solve vs autopwn", for why both commands exist.
+    """
+    if json_output and interactive:
+        raise click.UsageError("--interactive requires a terminal and cannot be combined with --json")
+
+    remote_host: Optional[str] = None
+    remote_port: Optional[int] = None
+    if remote:
+        remote_host, remote_port = _parse_remote_target(remote)
+
+    output_path = Path(output) if output else _default_solve_output_path(binary)
+
+    from supwngo.core.binary import Binary
+    from supwngo.exploit.pipeline import CanonicalAutopwnEngine
+
+    console.print(f"\n[bold]solve:[/bold] {binary}\n")
+
+    with console.status("Loading binary..."):
+        bin_obj = Binary.load(binary)
+
+    with console.status("Running canonical auto-exploitation pipeline..."):
+        engine = CanonicalAutopwnEngine(bin_obj, timeout=timeout, libc_path=libc)
+        engine.run()
+
+    if interactive and not engine.successful:
+        engine = _guided_fallback(engine, binary, libc, timeout)
+
+    if json_output:
+        result = {
+            "binary": str(binary),
+            "success": engine.successful,
+            "verified": engine.context.verification_level.name if engine.context.verification_level else "NONE",
+            "flag": engine.context.captured_flag,
+            "technique": engine.technique_used,
+            "output_path": str(output_path),
+            "attempts": [a.to_dict() for a in engine.context.attempts],
+            "handoff": engine.handoff_report.to_dict(),
+        }
+        artifact = engine.exploit_script if engine.successful else (engine.exploit_script or engine.exploit_template)
+        _write_solve_artifact(_fill_remote_placeholders(artifact, remote_host, remote_port), output_path)
+        console.print_json(json.dumps(result, indent=2, default=str))
+        return
+
+    console.print(engine.summary())
+
+    if engine.successful:
+        console.print(f"\n[bold green]SUCCESS![/bold green] Technique: {engine.technique_used}")
+        if engine.context.captured_flag:
+            console.print(f"\n[bold magenta]FLAG: {engine.context.captured_flag}[/bold magenta]")
+
+        script = _fill_remote_placeholders(engine.exploit_script, remote_host, remote_port)
+        _write_solve_artifact(script, output_path)
+        console.print(f"\n[green]Exploit script saved to: {output_path}[/green]")
+        if remote_host:
+            console.print(
+                f"[dim]Script defaults to REMOTE_HOST={remote_host!r} REMOTE_PORT={remote_port} - "
+                f"edit it to switch back to a local run.[/dim]"
+            )
+    else:
+        _render_handoff_report(engine.handoff_report)
+
+        artifact = engine.exploit_script or engine.exploit_template
+        artifact = _fill_remote_placeholders(artifact, remote_host, remote_port)
+        _write_solve_artifact(artifact, output_path)
+        kind = "Partial exploit script" if engine.exploit_script else "Fallback template"
+        console.print(f"\n[yellow]{kind} saved to: {output_path}[/yellow]")
+
+
 def main():
     """Main entry point."""
     cli(obj={})

@@ -418,3 +418,175 @@ this phase:
   Fixing the classifier generally is Phase 5 scope, not Phase 2's.
 - **Heap-UAF and double-free strategies are not modeled in
   `StrategySuggester`** (see section 6) - Phase 5 scope.
+
+## 11. `solve` vs `autopwn` (Phase 6)
+
+Phase 6 of the effectiveness/usability plan asked for a single "one
+command" entry point, flagged "command-name confusion with
+`autopwn`/`pwn`/`exploit`" as something to resolve explicitly in review,
+and left the choice between "alias `autopwn`" and "build a new
+orchestration layer" open. Decision, made after actually comparing
+`autopwn`'s current behavior against the Phase 6 spec line by line:
+
+**`autopwn` already satisfies the "one command" bar almost entirely** -
+auto-detected arch/bits, `StrategySuggester`-priority-ordered technique
+attempts, local verification via `VerificationReceipt`, and the Phase 4
+structured hand-off on failure are all already exactly what `autopwn`
+does. Building a second orchestration layer that re-implements any of
+that would violate this phase's own "must not re-implement pipeline
+logic" instruction for no benefit - so **`solve` is a thin wrapper over
+the same `CanonicalAutopwnEngine` `autopwn` drives, not a second engine,
+and not a plain alias either.** The two differ in exactly three ways,
+each corresponding to a real gap found while comparing `autopwn` against
+the Phase 6 spec's flag list and defaults:
+
+1. **Flag surface.** `autopwn` already had `-o/--output`, `--timeout`,
+   `--offset`, `--libc`, `--json`. The spec's minimal list
+   (`--remote`/`--libc`/`--timeout`/`--json`) was missing only
+   `--remote` - `autopwn` has never had any remote-target option, and
+   neither `CanonicalAutopwnEngine` nor its 11 executors have a
+   remote-delivery path (see the `--remote` sub-section below for why
+   this is filled at the script-templating level, not by wiring remote
+   delivery into the engine). `solve` adds `--remote` and drops
+   `--offset` (a power-user escape hatch that doesn't belong in a
+   "minimal flag surface" one-command entry point) - so `solve` is
+   *narrower* than `autopwn`, not a superset.
+2. **Default output.** `autopwn` only writes a script when `-o` is
+   explicitly passed; without it, a successful run's exploit script is
+   never saved anywhere. That fails Phase 6's actual goal ("one command
+   produces a usable artifact"), so `solve` always writes to a
+   predictable default path (`./solve_output/<binary-name>_exploit.py`,
+   `_default_solve_output_path()` in `cli.py`) when `-o` isn't given -
+   on success *and* on failure (partial script or universal template),
+   matching the "never returns silence" principle `autopwn` already
+   applies to its console output.
+3. **Guided fallback (`--interactive`).** Entirely new - see below.
+
+Both commands remain registered. `autopwn` keeps its established flag
+surface (including `--offset`) for scripting/power users who want direct
+engine control and opt-in-only output; `solve` is the opinionated,
+minimal, "just point it at a binary" entry point the plan's goal 2 asked
+for. This is a deliberate two-command split, not an oversight - the
+alternative (deleting `autopwn` or making `solve` a bare alias) was
+rejected because `autopwn`'s wider flag surface and opt-in output are
+still useful for the benchmark harness (`feat/benchmark-corpus-20260923`)
+and any other scripted caller that wants to control exactly when a file
+gets written.
+
+### The `--remote` gap runs deeper than a missing flag
+
+Before adding `--remote`, `CanonicalAutopwnEngine`'s technique executors
+were checked for remote-delivery support: none has any. Every executor
+that delivers a payload does so via
+`executors/_shared.py::spawn_and_send()` (`pwn.process()`, i.e. a local
+child process) or raw `subprocess.run()` against the local binary path;
+`remote/interaction.py`'s `RemoteInteraction` (the general
+local/remote/SSH/GDB target abstraction referenced in section 4) is
+simply never constructed anywhere in `pipeline/`. Separately,
+`ExploitContext.is_remote` - set by the pre-existing
+`ExploitContext.set_remote()` - is actively checked by
+`profile_stage.run_dynamic_profile()` and `leak_stage.acquire_leaks()` as
+an early-return guard ("don't dynamically profile a target we can't
+safely probe locally"), so naively calling `context.set_remote()` from
+`solve --remote` would silently degrade profiling/leak-acquisition to
+nothing while every executor kept spawning the *local* binary anyway -
+worse than not having the flag at all.
+
+Wiring true remote delivery through all 11 executors (or building a
+remote-aware variant of `spawn_and_send`) is real pipeline surgery, not a
+"thin CLI wrapper" change, and out of this phase's scope for the same
+reason full leak-acquisition was punted to Phase 3 (section 10) - it
+needs its own design pass, not a flag added in passing here.
+
+**What `solve --remote HOST:PORT` does instead, honestly scoped:**
+`CanonicalAutopwnEngine` still runs every technique attempt locally
+against `BINARY` for verification, exactly as `autopwn` always has.
+`--remote` only fills the `REMOTE_HOST = ""` / `REMOTE_PORT = 0`
+placeholders (`cli.py::_fill_remote_placeholders()`) that every script
+this pipeline generates already contains by convention - the universal
+template (section "templates.py"), the SROP/scanf-canary-bypass
+templates, and the new `generate_success_script()` fallback (see below)
+all share this exact placeholder pair, so one string substitution works
+regardless of which generator produced the script. This matches the
+existing, established CTF workflow these templates were already built
+for: verify locally, then replay the same script against the real
+target by flipping `REMOTE_HOST`. `solve --remote` just does the
+flipping for you instead of leaving it as a manual edit. The CLI prints
+an explicit note when `--remote` is used so this isn't a silent
+limitation.
+
+### Fixing the "verified SUCCESS produces an empty script" gap
+
+While building `solve`'s success path, `CanonicalAutopwnEngine.run()`'s
+success branch was found to only populate `self.exploit_script` from
+`AttemptRecord.partial_artifacts["exploit_script"]` - which only the
+template/`PARTIAL`-only executors (`srop`, `format_string`, `ret2libc`)
+ever set. The native stack/shellcode executors that actually reach
+`AttemptOutcome.SUCCESS` (`ret2win`, `direct_shellcode`,
+`variable_overwrite`, `negative_size_bypass`, `stack_shellcode`,
+`scanf_canary_bypass`, `uaf`, `double_free`) verify a raw payload
+in-process via `PipelineVerifier` and stop - they never populate that
+key. So a fully verified run of any of those techniques (the common
+case - see section 9's own end-to-end validation, which hit exactly this
+path) left `engine.exploit_script` empty, and both `autopwn -o` and the
+new `solve` would have written an *empty file* on the exact success path
+Phase 6 exists to guarantee produces a usable artifact.
+
+Fixed with `templates.generate_success_script()` (mirrors
+`generate_universal_template`'s placement and REMOTE_HOST/REMOTE_PORT
+convention), called from `orchestrator.py`'s success branch only when an
+executor didn't produce its own script - this packages an
+*already-verified-working* payload into a runnable script, which is
+artifact packaging, not new exploitation logic, so it belongs in the
+pipeline layer (single source of truth for "how autopwn/solve write
+scripts") rather than being duplicated in `cli.py`. This benefits
+`autopwn` too, not just `solve` - both commands share the same engine.
+
+### Guided fallback mode (`--interactive`)
+
+The plan capped this explicitly at "supply one missing fact and resume"
+and warned it's a scope-creep magnet. What's implemented:
+
+- `solve --interactive`, only on a non-`SUCCESS` result, lists the
+  `HandoffReport.blocking_unknowns` from the just-finished run that have
+  a known resume mapping (`handoff.BLOCKING_UNKNOWN_FACT_KEYS`: PIE
+  base, libc base, canary value, or the buffer-to-return-address
+  offset - the same four facts `handoff.py`'s `_FACT_CHECKS` already
+  derives `blocking_unknowns` from), and prompts for exactly one choice
+  plus its value.
+- The value is parsed as an integer (`int(x, 0)`, so both `0x...` and
+  decimal work) and passed to
+  `CanonicalAutopwnEngine.run(known_facts={key: value})` on a **fresh**
+  engine instance.
+- `run(known_facts=...)` / `_apply_known_facts()`
+  (`pipeline/orchestrator.py`) pre-seed that one fact onto
+  `ExploitContext` (`offset`, `stack.canary_value`, `libc.base`, or
+  `leaks["pie"]`) *before* the technique-attempt loop runs, so an
+  executor that would otherwise blind-search for it (e.g.
+  `Ret2WinExecutor` falling back to `COMMON_RET_OFFSETS` when
+  `context.offset` is `None`) can use the supplied value directly
+  instead.
+
+**Honest simplification, stated plainly:** this is a full re-run with
+one fact pre-seeded, not true mid-pipeline resumption. The cheap
+profiling stages (`run_static_analysis`, `run_dynamic_profile`,
+`acquire_leaks`) re-execute in full, and the technique-attempt loop
+starts over from the top rather than resuming from wherever the first
+run left off. True incremental resume would require the orchestrator's
+attempt loop to be checkpoint/resumable (skip already-completed
+stages/attempts, not just already-known facts), which is materially more
+pipeline surgery than this "thin CLI wrapper" phase's scope justifies -
+consistent with the same trade-off made for leak acquisition (Phase 3)
+and remote delivery (above). The cost of the simplification is
+wall-clock time (a second full run), not correctness: every technique
+still gets a genuine, freshly-verified attempt with the new fact in
+hand, not a patched-up stale result.
+
+**Manually verified** (see this phase's final report for full
+transcripts): a real ret2win target with a buffer large enough to push
+the offset past `Ret2WinExecutor.COMMON_RET_OFFSETS` produces a plain
+`solve` `FAILED` result with `buffer-to-return-address offset not
+determined` in `blocking_unknowns`; `solve --interactive`, given that
+same offset, resumes and reaches verified `SUCCESS` (`FULL_CONTROL`),
+with the resulting script independently confirmed to spawn a working
+shell.

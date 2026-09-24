@@ -26,6 +26,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   building the `solve` command's success-path smoke test.
 
 ### Added
+- `supwngo solve <binary>` — the unified, one-command entry point from
+  Phase 6 of the effectiveness/usability plan. Thin wrapper over the same
+  `CanonicalAutopwnEngine` `autopwn` drives (not a second engine — see
+  docs/architecture/2026-09-23-autopwn-pipeline.md, "solve vs autopwn"),
+  with: a minimal flag surface (`--remote`, `--libc`, `--timeout`,
+  `--json`; no `--offset` escape hatch); a working exploit script always
+  written to a predictable default path
+  (`./solve_output/<binary-name>_exploit.py`) even without `-o`, on both
+  success and failure, unlike `autopwn` where `-o` is opt-in; the
+  Phase-4 structured hand-off shown on every non-`SUCCESS` result; and a
+  `--remote HOST:PORT` flag that templates the written script's
+  `REMOTE_HOST`/`REMOTE_PORT` (technique attempts still run locally for
+  verification — `CanonicalAutopwnEngine` has no remote-delivery path yet,
+  documented honestly in the architecture doc rather than silently
+  wired to something that doesn't work). `autopwn` is unchanged and
+  remains available for scripting/power users who want its wider flag
+  surface and opt-in-only output.
+- `solve --interactive` — guided fallback mode (Phase 6, capped at
+  "supply one missing fact and resume" per the plan). On a
+  partial/failed result, lists the run's `blocking_unknowns` that have a
+  known resume mapping (offset, canary value, libc base, PIE base),
+  prompts for one and its value, and retries via
+  `CanonicalAutopwnEngine.run(known_facts=...)`. A simplified resume (a
+  fresh full pipeline run with the one fact pre-seeded), not true
+  mid-pipeline resumption — documented as such. Manually verified against
+  a real ret2win target whose buffer size pushes the offset past
+  `Ret2WinExecutor`'s common-offset fallback list: a plain `solve` run
+  FAILs with the offset flagged as blocking; `--interactive`, given the
+  real offset, resumes to verified `SUCCESS` (`FULL_CONTROL`).
 - `CanonicalAutopwnEngine.run(known_facts=...)` / `_apply_known_facts()` —
   a small resume hook that pre-seeds one user-supplied fact (`offset`,
   `canary_value`, `libc_base`, or `pie_base`) onto `ExploitContext` before
