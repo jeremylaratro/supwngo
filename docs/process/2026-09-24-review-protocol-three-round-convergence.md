@@ -123,6 +123,28 @@ RADIUS   <every section that referenced the changed material, and its status>
 A revision that fixes only the named instance is **incomplete by construction** and
 should be returned without a new review round.
 
+### 5.0 The sweep obligation attaches to the finding, not to the reviewer
+
+**Whoever finds a defect owes its sweep — including when you find it yourself,
+mid-work, with no reviewer involved.** This is the protocol's easiest gap to fall
+into, because the FINDING/CLASS/SWEEP discipline reads as something a reviewer does
+to you.
+
+Measured: of five skipped sweeps in one round, **four were the same pattern — bitten
+by an instance, fixed the instance, never enumerated the class.** Each was a defect
+the author had discovered personally:
+
+- Found one un-patchable builtin raise, fixed that instance, declared the instrument
+  correct. Never enumerated the builtin raises. There were two.
+- Found a type collision, widened the property across distinct *types*, never across
+  the **subclass relation** — which the dispatch actually keys on.
+- Found the "mutant describes pristine behaviour" defect in one property and, in the
+  same document, wrote four new mutants without applying the check to them.
+
+That last one is the tell: the author applied a class it had *just discovered* to the
+reviewer's findings and not to its own new work. **A class you discover yourself is
+still a class.** When you fix something you found, write its sweep before moving on.
+
 Disagreement is welcome and has twice been correct this session — a reviewer's
 `objdump` finding was withdrawn after the author showed the call was a
 `logger.debug()`, and a "risky migration" turned out to *remove* a redundant spawn.
@@ -240,6 +262,11 @@ holds constant, because nothing can infer intent. Two things do not:
 - **Refusal-site coverage.** Patch each error class's `__init__` to record the raising
   site, run the suite, diff against the AST. One artifact had **28 of 106 in-scope
   raise sites never fired by any test**.
+
+  (Corrected figures: **2** sites out of scope, not 1 — a builtin `TypeError` and a
+  `SystemExit` — and the census had **no category at all for 4 bare re-raises**. The
+  never-fired count itself has not been re-measured since. A census that lacks a
+  category for a construct it encounters silently mis-files it.)
 
   **And the instrument must report what it cannot instrument as *out of scope*, never
   as *uncovered*.** That sweep first reported 29 of 107 and accused a branch of
