@@ -165,6 +165,68 @@ round *N−1*, that is a **recurrence**. Log it as such and name whose sweep was
 skipped. Recurrences are the metric to drive to zero; they are the only thing that
 has ever cost this repo a fourth round.
 
+### 6.1 Required per-round metric: RECURRENCE / NEW / INTRODUCED
+
+Every round after the first reports all three counts. They diagnose different
+failures and the remedies are opposite, so an undifferentiated total is useless.
+
+- **RECURRENCE** — the class was named in a prior round. A sweep was skipped. Name
+  whose.
+- **NEW** — a class no prior round named. This is the only count that measures
+  whether *discovery* is converging.
+- **INTRODUCED** — created by the previous round's remediation. Exempt from the
+  round budget, but must be labelled so it cannot mask a recurrence.
+
+Measured instance that justifies the split: a round-4 review returned **13 HIGH
+against round 3's 9**, which looks like a method that is not converging. Decomposed,
+it was **6 recurrences / 0 new / 7 introduced**. Discovery had fully converged —
+round 4 found no class round 3 had not already named. The remedy was therefore *not*
+a better review; it was running the sweeps and containing remediation.
+
+### 6.2 Remediation is a defect source, and new tests are its riskiest output
+
+Of those 7 introduced defects, **5 were inside the 8 properties the remediation
+added**. Fixes get the same scrutiny as original work, and a test written to close a
+finding is the highest-risk artifact in the change — it is new, unreviewed, and
+trusted immediately because it is green.
+
+Corollary: when a round's introduced count approaches its recurrence count, the unit
+under review is too large to remediate safely. **Split it** rather than reviewing the
+monolith again.
+
+### 6.3 Red is not enough — it must be red for the right reason
+
+"Prove the gate can fail" is necessary and **not sufficient**. A property shown
+`[RED]` against a mutant that *disables* a rule proves only that the rule is present.
+
+Measured: for **8 of 8** bound properties in one artifact, a *subtler* mutation of the
+same rule survived its property. In the worst case the subtler mutant **was the
+pristine implementation** — the canonicaliser already collided enums, tuples, sets and
+dataclasses, and its property passed.
+
+So per bound property: name the subtler mutation of the same rule, and either show it
+also goes red, or record it as a **known blind spot**. An unrecorded blind spot is
+indistinguishable from coverage.
+
+### 6.4 Two mechanical instruments that need no annotation
+
+Dimension variance requires annotation — a property must *declare* what it varies and
+holds constant, because nothing can infer intent. Two things do not:
+
+- **Refusal-site coverage.** Patch each error class's `__init__` to record the raising
+  site, run the suite, diff against the AST. One artifact had **29 of 107 raise sites
+  never fired by any test**, including a branch whose own comment claimed
+  `# pragma: no cover - exercised via pytest.raises` while nothing exercised it.
+- **Variation that is not binding.** A declared-varying field is not real variation if
+  another constraint pins it — varying `process_id` proves nothing while every
+  candidate is BUILD-scoped. Check variation *relationally*, at instrumented call
+  sites, not by reading the fixture list.
+
+Annotation is still worth it precisely because it can be caught lying: requiring a
+per-property `varies` / `holds_constant` declaration converted a vague ask into a
+falsifiable claim, and a reviewer immediately named **seven false entries** in it. A
+meta-test over those declarations checks the *form* of the claim, never its truth.
+
 **A fourth round escalates rather than proceeds.** If round 3 is not an approval,
 stop and report, with the recurrence count. Either the sweeps are not being run, or
 the document is carrying too much — a document that needs four reviews is often
