@@ -227,9 +227,17 @@ does not have — and an undocumented hole is worse than a documented one.
 | 9 | Both arms run in **separate directory trees** (`arm-walkthrough/`, `arm-bare/`) under one sandbox root. The bare follower's `Bash` tool can still walk up and read the other arm. | Same-filesystem confinement cannot be proven from inside the process. `blindness_audit()` scans the transcript and artifact for walkthrough and repository markers and forces `NOT_MEASURABLE` on a hit. | Mutually inaccessible mount namespaces per arm. |
 | 12 | `Read`/`Glob`/`Grep` confinement to cwd is **asserted by the CLI**, not provable from here, and `HOME` is shared. | The follower CLI needs its credentials in `HOME`. `--output-format stream-json --verbose` is now requested so tool invocations appear in the transcript the audit reads, which is strictly better than scanning prose — but a transcript can never *establish* blindness. | Container with an isolated `HOME`. |
 
-Every one of these makes the walkthrough arm look **better**, not worse, so the
-published figure should be read as an upper bound on `artifact_followable` under
-process-level isolation.
+One further gap points the **other** way and is recorded for the same reason:
+`attribution.py`'s exec matcher reads the first string argument, which is the
+pathname for `execve` but a `dirfd` for `execveat`. An `execveat(fd, "", …,
+AT_EMPTY_PATH)` of the target therefore records an empty path, does not match the
+target, and its writes are **not** credited. That is a false *negative* — it can
+only refuse an honest exploit, never credit a dishonest one — and pwntools does
+not take that path, so it is noted rather than fixed.
+
+Every other hole above makes the walkthrough arm look **better**, not worse, so
+the published figure should be read as an upper bound on `artifact_followable`
+under process-level isolation.
 
 ## Follower capability tier is part of the measurement
 
