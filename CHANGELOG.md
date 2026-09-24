@@ -104,6 +104,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of assuming the target leaked any particular function. The same page-alignment
   test then validates the libc leak, which is what makes the leak locatable without
   depending on the target's prompts or on libc landing in a particular range.
+- **Phase 5 — `srop`, `ret2dlresolve`, and `tcache_poison_got` technique executors.**
+  `srop` (`executors/rop_techniques.py`) replaces a stub that refused to run unless
+  another technique had already found the offset and then returned PARTIAL without
+  verifying; it now builds a real `rt_sigreturn` frame, places it immediately after
+  the syscall address (where `rsp` points when the kernel reads it), and resolves
+  `pop rax`/`syscall` through pwntools rather than from a symbol address — which is
+  wrong by 4 bytes on a CET-enabled build, where the usable instruction sits behind
+  the `endbr64`. `ret2dlresolve` handles a target with *no* leak primitive at all by
+  forging an `Elf64_Rela` + symbol + name bytes and letting the linker resolve
+  `system` by name; the hard part it automates is composition — ROP-calling the
+  binary's own input function to stage those structures, then delivering them as a
+  separate input part. `tcache_poison_got`
+  (`executors/heap_techniques.py`) escalates a use-after-free write to an arbitrary
+  write, with the two glibc invariants read from the locally loaded libc rather than
+  assumed: safe-linking's `(chunk_address >> 12) ^ target` mangling (glibc >= 2.32)
+  and `malloc`'s 16-byte alignment check on tcache entries, which forces the target
+  address to be aligned down and the payload padded onto the GOT slot. It also frees
+  *two* chunks before poisoning, because with a single free the first allocation
+  empties the bin and the second never consults the poisoned pointer.
+- **Phase 5 — menu protocol discovery** (`executors/heap_techniques.py:discover_menu`).
+  The pre-existing heap executors could not exploit a menu-driven allocator because
+  they sent one blob and grepped the reply; what was missing was the ability to
+  *drive the program*. Menu option numbers are now read from the target's own printed
+  menu and mapped to roles (create/delete/edit/show), so no option number is
+  hardcoded per binary.
 - `benchmark/fixtures/positive-controls/` — two supwngo-generated exploit scripts that
   genuinely obtain an interactive shell (`01_shellcode_stack`, `02_ret2plt_system`), checked
   in unmodified as positive controls for changes to `run_bench.py`. Six corpus binaries
@@ -126,6 +151,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `shellcode_techniques.py` places it past the return address and uses a leaked one. Both
   replacements verify by re-running the generated script, so neither can report success on
   an output substring match.
+- **Phase 5 — the `SROPExecutor` stub** (`pipeline/executors/heap_and_bypass.py`),
+  replaced by `rop_techniques.SropExecutor`. It skipped itself unless another
+  technique had already populated `context.offset`, took its gadgets from
+  `context.gadgets` (which can hold a symbol address rather than a gadget address),
+  and returned PARTIAL without verifying, on the grounds that "sigreturn frames are
+  timing/alignment sensitive".
 - **Phase 5 — the template-only `ret2libc` executor**
   (`pipeline/executors/stack_techniques.py`). It never built a chain: it returned
   PARTIAL with a one-line prose description of the technique and a failure reason
