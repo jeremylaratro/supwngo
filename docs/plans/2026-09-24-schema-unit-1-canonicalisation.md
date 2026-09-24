@@ -742,8 +742,36 @@ evidence* for a closed domain, not as the mechanism that closes it.
 *before* the primitive arm. Rejected — it fixes the two enum families and leaves
 `class MyInt(int)` and every `bytes`/`dict`/`list` subclass reaching the primitive
 arm, i.e. the same class recurring with a different subclass. **What would flip
-it:** a consumer in §4a's enumeration that legitimately supplies a primitive
-subclass and cannot be changed. None appeared.
+it:** a consumer that legitimately supplies a primitive subclass and cannot be
+changed.
+
+### Feasibility check — rev 1's Option A was unimplementable and I only found out by checking
+
+§4a's lesson was that a remedy can be impossible and a plan can spend a whole
+review round on the wrong question. So the flip condition was **measured**, not
+reasoned about. `_jsonable` was wrapped for the whole property suite to record
+every object reaching the primitive arm for which
+`isinstance(obj, (bool, int, str))` is true but `type(obj) not in (bool, int, str)`
+— i.e. exactly the objects exact-type dispatch would newly refuse:
+
+```
+75 passed in 58.46s
+distinct primitive-subclass types reaching the primitive arm: 0
+```
+
+**Zero.** So exact-type dispatch changes no current behaviour, and the condition
+that would flip the decision did not appear. Unlike Option A, this remedy is
+implementable.
+
+*Provenance, stated at the claim:* **serial-safe by immunity, not by isolation** —
+the property suite was measured opening zero files outside the worktree, so this
+figure is unaffected by whatever else was running, which is the whole point of
+having proved immunity rather than re-run under quiet conditions. What the probe
+does **not** establish is coverage of consumers the suite never exercises; it is
+the suite's reachable set, not the module's. Combined with §4a's hand enumeration
+of `canonical`'s consumers — which found enum, tuple and dataclass suppliers and
+no primitive-subclass supplier — it is good evidence and not a proof, and it is
+labelled as such.
 
 ### Interaction with §4a's positional split
 
