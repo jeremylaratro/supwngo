@@ -179,3 +179,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pipeline executor calls it automatically; module docstring updated to reflect
   the new verifier composition. Part of Phase 3 of
   `docs/plans/2026-09-23-effectiveness-and-usability.md`.
+
+### Fixed
+- `supwngo/exploit/auto_leak.py`'s `AutoLeakFinder.identify_leaked_value` and
+  `auto_leak_pie_base` referenced a nonexistent `self.binary.base` attribute
+  (`core.binary.Binary`'s actual field is `base_address`) — an `AttributeError`
+  that crashed `identify_leaked_value`'s final non-PIE fallback branch instead of
+  returning `LeakType.UNKNOWN`. Found running the repaired `_leak_via_got_rop`
+  path (which calls `identify_leaked_value`) repeatedly against a real compiled
+  binary during this Phase 3 repair's benchmark spot-check; fixed both call sites
+  to use `base_address`.
