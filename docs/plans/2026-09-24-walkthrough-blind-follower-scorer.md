@@ -399,3 +399,33 @@ or merely rejects crashing scripts. Three layers now:
 `sonnet` is a mutable alias and cannot be pinned from here; that is recorded as
 a stated limitation. What is pinned: sha256 of every walkthrough artifact, every
 frozen follower artifact, and every prompt, in `report.json`.
+
+## Second review, of the IMPLEMENTATION (same day)
+
+The plan review above was reviewed and revised before building. The built
+artifact was then reviewed again, independently, and returned **12 BLOCKING + 5
+MAJOR**. That review, and the disposition of every finding, is recorded in
+`docs/plans/reviews/2026-09-24-walkthrough-scorer-implementation-review-codex.md`.
+
+Two findings were live false-credit channels rather than style, and one of them
+was in the **pre-existing** harness, not in anything this plan added:
+
+- `attribution.py` counted FAILED `execve` calls as successful target
+  executions (errno denylist rather than a success allowlist), so an artifact
+  could force an `E2BIG` exec failure and have its own writes attributed to the
+  target. This is the premise the entire lineage rule rests on, and it was wrong
+  before this work item started.
+- The staged target is writable, so an artifact could substitute
+  `#!/bin/sh\ncat flag.txt` at the target's pathname, run it, and satisfy every
+  check including the open-audit.
+
+**Lesson worth carrying forward:** the plan's falsifiability section (R8, three
+layers) was not enough, and the reviewer said so precisely — the fixtures scored
+artifacts directly and therefore never touched `run_target`, where
+decoy-then-remint, the per-rep wipe, the pairing and the asymmetric validity rule
+all live. A fourth, end-to-end layer was added, driving `run_target` with a
+follower scripted inside the test. Similarly, four gate blockers were added and
+then found to be unreachable because the call site had not been updated with the
+new keyword arguments — so the blockers themselves now have assertions. Both are
+the same failure the project has now seen five times: a check that exists but
+cannot fail.

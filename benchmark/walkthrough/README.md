@@ -7,15 +7,17 @@ not exist. Inventing a lenient one later to clear that gate is the exact failure
 this benchmark was built to prevent.
 
 Design: `docs/plans/2026-09-24-walkthrough-blind-follower-scorer.md`
-Peer review: `docs/plans/reviews/2026-09-24-walkthrough-blind-follower-scorer-review-codex.md`
+Plan review: `docs/plans/reviews/2026-09-24-walkthrough-blind-follower-scorer-review-codex.md`
+Implementation review: `docs/plans/reviews/2026-09-24-walkthrough-scorer-implementation-review-codex.md`
+First measurement: `docs/reports/2026-09-24-walkthrough-scorer-first-measurement.md`
 Spec: `docs/plans/2026-09-24-final-round-r5-unseen-corpus.md`, Problem 1 / 1a
 
 ```
 benchmark/walkthrough/
 ├── score.py       the scorer: both arms, the controls, the report
 ├── followers.py   who plays the follower; blindness; the prose redaction
-├── selftest.py    the falsifiability controls (three layers)
-└── fixtures/      one good + six deliberately broken artifacts
+├── selftest.py    the falsifiability controls (four layers)
+└── fixtures/      one good + seven deliberately broken artifacts
 ```
 
 ## Run
