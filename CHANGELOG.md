@@ -173,6 +173,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are still attempted — just last.
 
 ### Added
+- **Round-2 cold (held-out) benchmark measurement: `docs/reports/BENCHMARK-R2-COLD-24SEP2026.md`
+  Part 2 — the figure is 4/15 (26.7 %)**, denominator 15, VOID list empty, at
+  `--reps 5 --jobs 8 --timeout 20`. Measured before a single line of exploitation code
+  was changed in response to R2, so it is the only generalization number this corpus can
+  ever produce; it is now spent. Primary endpoint (5/5 reliability) and secondary
+  (`solved`, ≥1/5) both 4/15 — there were **zero** intermittent successes, so best-of-N
+  and per-attempt reliability agree exactly. **Strict attribution equals default, 4/15**,
+  derived from the run's own transcripts rather than re-measured: all 20 credited reps are
+  behaviourally attributed with zero unwitnessed, and `--strict-attribution` has exactly
+  one scoring effect (`run_bench.py:810`, voiding an unwitnessed success), which is
+  therefore unreachable. Not like-for-like against R1's 13/13 on three compounding axes
+  (R1's denominator was post-hoc after discarding 2 unsound targets; R2's was pre-declared
+  with nothing discarded; R1 is the development corpus). The substantive finding is
+  narrower than the scalar: **all 4 wins are "control the return address, jump to an
+  already-known address"** (`ret2win` with an arg gate, static `ret2syscall`, `ret2csu`,
+  one-byte return-address LSB overwrite) and every failure needs a further primitive
+  first — format-string write, heap metadata control, a PIE leak, a canary disclosure, an
+  integer-overflow size confusion, or an OOB index. Protections do not separate the two
+  groups and the corpus's difficulty labels are near-uncorrelated with the result
+  (easy 2/5, medium 1/6, hard 1/4).
+- `benchmark/summarize_cold.py` — per-target `solved` + `reliability` k/N table with
+  attribution witness class, outer-truncation check and the pre-registered
+  discovery-stall triage. Reports both endpoints side by side because neither is the
+  answer alone: best-of-N without the reliability split is cherry-picking, and a single
+  rep understates. Per-rep stub detection reads the generated scripts on disk, because
+  `report.json`'s `attempts[]` records carry no script and would silently make every rep
+  look non-stub.
+- `benchmark/contamination_check.sh` — replays the cold run's exact autopwn command line
+  under `strace -f -e trace=openat,open` for all 15 targets, to test behaviourally what
+  static audit only argues: that nothing on the `autopwn` route reads corpus `.c` sources
+  (`supwngo/analysis/source.py` does read them, but only via the separate `supwngo source`
+  verb). Result: **0 source opens, 0 reference-exploit opens, and 0 `flag.txt` opens by
+  the pipeline process, across all 15 traces**, with a coverage positive control (each
+  trace is 2 731–19 966 lines and shows the root Python process opening the target
+  binary) so that "found nothing" is distinguishable from "recorded nothing". The 259
+  `flag.txt` opens present are all non-Python processes — targets and the shells they
+  spawned — matching the attribution chains. Documents its own limit in-file: it is a
+  replay, not an observation of the cold executions.
 - `benchmark/ablation/ablate_r2.py` — necessity-ablation suite for the 15
   `corpus_r2` targets, replacing `corpus_r2_reference/ablation.py` for scoring
   purposes. The corpus's own suite cannot support its advertised "0/15 leaked":
@@ -195,8 +233,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contention-sensitive, a reliability k/N split taken under an unrecorded load spike
   is not interpretable; the profile is reported alongside the numbers so an
   excursion-overlapping rep can be flagged as a contention suspect rather than read
-  as a capability signal. Deliberately uses `ps aux | grep "[r]un_bench.py"` rather
-  than `pgrep -f`, which matches its own command line.
+  as a capability signal. Counting the concurrent harnesses is itself a trap, twice
+  over: `pgrep -f run_bench.py` matches the querying process and any
+  `until ! pgrep -f …` waiter (which therefore never exits — three agents in this
+  project have lost waiters this way), while `ps aux | grep "[r]un_bench.py"` fixes
+  only *self*-matching and still counts unrelated **shells**. Measured directly, that
+  second form reported **6 "live harnesses" when the true number of running Python
+  processes was 0**, the rest being 0 %-CPU `zsh` shells. The script therefore counts
+  only processes whose `/proc/<pid>/comm` is a Python interpreter. Note the residual
+  bias: that test can only *under*-count, so "no second harness" is an absence
+  assertion and is bounded structurally by `corpus_lock()`, not by the counter.
 - `benchmark/redact_report.py` — redacts a benchmark `report.json` so it can be
   committed as evidence. `report.json` is gitignored because it embeds every rep's
   per-run secret flag, but a digest of a file no reader can obtain cannot expose

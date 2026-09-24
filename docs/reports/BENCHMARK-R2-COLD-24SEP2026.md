@@ -310,5 +310,377 @@ crash. The next person to see this file will have the same question.
 
 ## PART 2 — THE COLD RESULT
 
-*Pending. This section is written only after the run completes, and the figures in
-it are whatever the run produced.*
+### 2.1 The figure
+
+> ## **4 / 15**
+>
+> **26.7 %.** Denominator **15**. **VOID list: empty** — no target was excluded, for
+> any reason, before or after measurement.
+>
+> **Primary endpoint (5/5 reliability): 4/15.**
+> **Secondary endpoint (`solved`, ≥1/5, exploratory): 4/15.**
+> **Strict attribution mode: 4/15** — identical to default, provably so (§2.3).
+>
+> 0 PARTIAL · 11 FAILED · 0 INTERMITTENT · 0 VOID.
+
+R1 closed at 13/13. R2 cold is 4/15. **This is not a like-for-like comparison and
+must not be quoted as "13/13 → 4/15" without the three axes in §1.4 attached** —
+R1's 13 is a post-hoc denominator that had already discarded 2 unsound targets,
+R2's 15 is a pre-declared denominator with nothing discarded, and R1 is the corpus
+the pipeline was developed against while R2 was never seen by it. All three
+mechanisms push in the same direction.
+
+What the number is: **the pipeline's cold, single-use generalization score on a
+held-out 15-target corpus, at a 20 s per-technique budget.** It is now spent. No
+later run on R2 can reproduce it, because from the next commit onward the pipeline
+has seen this corpus.
+
+The primary and secondary endpoints coinciding is itself informative: **there were
+no intermittent successes at all.** Every target was either credited in all 5 reps
+or in none. Best-of-N and per-attempt reliability agree exactly, so on this corpus
+the `solved`/`reliability` gap — the usual place gaming hides — is zero, and the
+figure needs no hedging in that direction.
+
+### 2.2 Per target
+
+Produced by `benchmark/summarize_cold.py` from the run's `report.json`:
+
+| target | diff | status | solved | k/N | witness | stub reps |
+|---|---|---|---|---|---|---|
+| `01_stack_shellcode_relay` | easy | FAILED | no | 0/5 | — | **5/5** |
+| `02_ret2plt_strcat_system` | easy | FAILED | no | 0/5 | — | 0/5 |
+| `03_pie_write_leak_ret2libc` | medium | FAILED | no | 0/5 | — | **5/5** |
+| `04_canary_relay_bypass` | medium | FAILED | no | 0/5 | — | **5/5** |
+| `05_fmtstr_pie_leak` | medium | FAILED | no | 0/5 | — | **5/5** |
+| `06_fmtstr_short_write` | medium | FAILED | no | 0/5 | — | **5/5** |
+| `07_static_ret2syscall` | medium | **SUCCESS** | yes | **5/5** | ATTRIBUTED | 0/5 |
+| `08_int_mul_overflow` | hard | FAILED | no | 0/5 | — | **5/5** |
+| `09_heap_dangling_global` | hard | FAILED | no | 0/5 | — | **5/5** |
+| `10_ret2csu_execve` | hard | **SUCCESS** | yes | **5/5** | ATTRIBUTED | 0/5 |
+| `11_heap_overflow_tcache_poison` | medium | FAILED | no | 0/5 | — | 0/5 |
+| `12_fmtstr_got_overwrite` | hard | FAILED | no | 0/5 | — | **5/5** |
+| `13_off_by_one_retaddr_lsb` | easy | **SUCCESS** | yes | **5/5** | ATTRIBUTED | 0/5 |
+| `14_oob_read_flag_array` | easy | FAILED | no | 0/5 | — | **5/5** |
+| `15_ret2win_arg_gate` | easy | **SUCCESS** | yes | **5/5** | ATTRIBUTED | 0/5 |
+
+By declared difficulty: **easy 2/5, medium 1/6, hard 1/4.** Difficulty does not
+order the results — a `hard` ret2csu chain succeeded 5/5 while an `easy`
+shellcode-on-a-non-NX-stack target produced a stub in all 5 reps. The corpus's
+difficulty labels and this pipeline's actual difficulty gradient are close to
+uncorrelated, which is worth knowing before those labels are used to weight
+anything.
+
+**Protections do not separate the successes from the failures.** All 4 successes are
+no-PIE/no-canary, but so are 7 of the 11 failures (`02`, `06`, `08`, `09`, `11`,
+`12`, `14`). The separator is technique class, not protection posture:
+
+| technique class | cold score |
+|---|---|
+| return-address control → statically known target/chain (`07`, `10`, `13`, `15`) | **4/4** |
+| format string (`05`, `06`, `12`) | 0/3 |
+| heap (`09`, `11`) | 0/2 |
+| ret2plt/`strcat` composition (`02`) | 0/1 |
+| PIE defeat via write-then-leak (`03`) | 0/1 |
+| canary leak + relay (`04`) | 0/1 |
+| shellcode injection, NX off (`01`) | 0/1 |
+| integer multiplication overflow (`08`) | 0/1 |
+| OOB read of a flag array (`14`) | 0/1 |
+
+**Read as a capability statement: the pipeline reliably solves "get control of the
+return address, then jump somewhere whose address is already known," and solves
+nothing else on this corpus.** Every one of the four wins is that problem —
+`ret2win` with an argument gate, a static `ret2syscall` chain, a `ret2csu` chain,
+and a one-byte return-address LSB overwrite. Every failure requires at least one
+additional primitive first: a format-string write, heap metadata control, a leak to
+defeat PIE, a canary disclosure, an integer-overflow size confusion, or an
+out-of-bounds index. That is a sharper and more useful finding than the scalar 4/15,
+and it is what §3 development should be aimed at.
+
+### 2.3 Strict attribution equals default attribution — 4/15, derived not re-run
+
+**All 20 credited reps (4 targets × 5) are BEHAVIOURALLY ATTRIBUTED. Zero
+UNWITNESSED.** The harness's own evidence block:
+
+```
+EVIDENCE FOR THE 4 SUCCESS(es) -- 4 behaviourally witnessed, 0 unwitnessed:
+  WITNESSED 07_static_ret2syscall:     flag written by cat <- dash <- python3.11 (target exec'd a shell)
+  WITNESSED 10_ret2csu_execve:         flag written by cat <- dash <- dash <- ret2csu_execve <- python3.11 (target exec'd a shell)
+  WITNESSED 13_off_by_one_retaddr_lsb: flag written by off_by_one_retaddr_lsb <- python3.11
+  WITNESSED 15_ret2win_arg_gate:       flag written by cat <- dash <- dash <- ret2win_arg_gate <- python3.11 (target exec'd a shell)
+```
+
+`--strict-attribution` has exactly **one** scoring effect in `run_bench.py` — a
+single branch that converts a SUCCESS resting only on a flag string plus the
+bypassable pattern audit into `VOID`/`unwitnessed_success`. Verified by enumerating
+every use of the flag in the file: of 13 occurrences, 12 are parameter threading and
+the report field, and one (`run_bench.py:810`) is the branch. **With zero UNWITNESSED
+reps that branch is unreachable, so strict mode is identical to default mode by
+construction, not by coincidence.**
+
+This is therefore **derived from the cold run's own transcripts, not measured by a
+second execution** — deliberately, and as pre-registered. Re-running under `--strict`
+would have confounded the comparison on the known delivery flake (an unsynchronized
+send measured 4/96 failures under contention, 0/96 synchronized), so two runs
+differing by ~1/96 per rep could not be attributed to the mode rather than to noise.
+A derivation from one transcript set has no such problem.
+
+Note the asymmetry with R1: R1 strict degraded `04_canary_leak_bypass` from 5/5 to
+4/5, because R1 contained scrapeable targets where the weak-attribution path was
+load-bearing. **R2 has 0/15 scrapeable targets (§1.1), so on R2 there is no
+weak-attribution credit to withdraw.** R2's 4 is weaker as a score and stronger as
+evidence: three of the four are witnessed all the way to a shell the exploit
+obtained, and the fourth (`13`) is witnessed as a write by the target process
+itself.
+
+### 2.4 Outer truncation is ruled out; inner truncation is not
+
+Every one of the 15 targets reports `wall_timed_out = False` and `returncode = 0`
+on **both** autopwn passes — the `--json` probe and the script-generation pass. The
+outer wall budget was `max(120, 20×15 + 60) = 360 s` per invocation and nothing came
+near it. **No FAILED verdict in this run is an artefact of the harness killing
+autopwn.** Total pipeline work was 7 709 s of target time across 75 target-reps
+(≈21 min wall at `--jobs 8`).
+
+This is the check R1's uniform 5/5 made unnecessary and an unfamiliar corpus makes
+mandatory, and it came back clean. **It does not rule out inner, per-technique
+truncation at the 20 s budget** — a technique needing 25 s of gadget search reports
+"did not apply" indistinguishably from one that genuinely did not apply. That
+remains open and is residual limit 1 in §2.8. Accordingly the figure is
+**capability at a 20 s per-technique budget**, never unbounded capability.
+
+### 2.5 Discovery-stall triage, per the §1.5 pre-registered table
+
+**9 of the 11 failures produced a stub script in all 5 reps** — `01`, `03`, `04`,
+`05`, `06`, `08`, `09`, `12`, `14`. Per the pre-registered table (`5 stub reps` →
+*discovery failure, cause undetermined* → *cold failure, flagged*) all 9 count as
+cold failures and are flagged. In these the pipeline never selected a technique at
+all: it emitted the `no technique verified` / `offset = 0  # TODO` template.
+
+**The uniformity matters and cuts in a specific direction.** The known bug is a
+single 2.0 s `_probe_echo_sizes` probe with no retry, plus `deliver_parts` collapsing
+a timeout into `output = b""` with no `timed_out` field. A *flake* of that shape
+would produce a mixed k/N split; at `--reps 5` a ~10 %/rep flake shows up in
+reliability even when it barely touches `solved`. **Nothing here is mixed: 9 targets
+are 5/5 stubs and 0 targets are 1–4/5.** So the flaky reading of that bug is largely
+excluded for these 9.
+
+**It does not exonerate the bug, and I will not claim it does.** A single un-retried
+2.0 s probe can fail *deterministically* on a target whose echo behaviour never
+answers inside 2.0 s — that failure mode is 5/5 by nature, not 1–4/5. So for these 9
+the honest verdict is exactly what was pre-registered: **cause undetermined.** The
+bug remains a live candidate as a deterministic failure while being largely ruled out
+as a flake. Which of the 9 it actually accounts for is a §3 question, answered by
+fixing it and re-measuring — and any target it recovers is then *training*
+performance on R2, never a revision of this cold figure.
+
+**2 of the 11 failures are not stubs at all** — `02_ret2plt_strcat_system` and
+`11_heap_overflow_tcache_poison`. Both generated a real technique, ran it
+(`verification.ran = true`, `timed_out = false`), and did not produce the flag; both
+pass the script audit clean (no flag literal, no direct `flag.txt` read, no local
+flag reader, no binary scraping). These are **genuine capability gaps with a
+technique actually attempted**, the cleanest two data points in the failure set, and
+the best starting place for §3 precisely because the pipeline's reasoning is visible
+rather than absent.
+
+**Pre-registered sensitivity figure, published as required and to be read with
+care.** Excluding all 9 flagged stall-suspect targets gives **4/6 (66.7 %)**. This is
+an *upper bound on an upper bound* and is almost certainly a large overstatement: it
+credits the pipeline for 9 targets on the mere possibility that a known bug rather
+than absent capability explains them, when the 5/5 uniformity is evidence against the
+flaky version of that hypothesis. It is recorded because §1.5 committed to recording
+it, not because it is a defensible figure. **The cold result is 4/15.** The 4/6 is not
+an alternative headline and must not be quoted as one.
+
+### 2.6 Measurement conditions, as run
+
+| | value |
+|---|---|
+| host | 32 cores, 62 GiB |
+| toolchain | gcc 11.4.0, glibc 2.35, Python 3.11.15, pwntools 4.15.0 |
+| loadavg at GO (coordinator's quiescence signal) | `2.20 2.82 2.81` |
+| loadavg at first sample, pre-launch | `2.89 2.60 2.66` |
+| **loadavg during the run** (85 samples, 15 s interval) | **min 2.80 · mean 5.54 · max 8.93** (max ≈ 28 % of 32 cores) |
+| loadavg after the run | `4.35 …` falling; `5.25 4.57 4.41` at report time |
+| concurrent harness processes during the run | **exactly 1 in all 85 in-run samples — never 2** |
+| wall clock | 16:36:11Z → ≈16:57:33Z (≈21 min) |
+| load profile artefact | `/tmp/r2-cold-loadprofile.tsv`, 115 samples |
+
+The load profile has an auditable shape rather than a flat assertion: sample 1
+(pre-launch) reads 0 harnesses, samples 2–86 read exactly 1 for the entire run
+window, and samples 87+ read 0 after the run ended. **The counter's transitions line
+up with the run's actual start and end**, which is positive evidence that it tracks
+reality instead of being stuck on a constant.
+
+**The honest limit on that counter — and it is the same failure shape this project
+keeps finding.** It counts only processes whose `/proc/<pid>/comm` is a Python
+interpreter. That was the fix for the earlier over-count (the `ps | grep
+"[r]un_bench.py"` form reported 6 live harnesses when the true number was 0, the rest
+being 0 %-CPU `zsh` shells and 4 stale `pgrep -f` waiters in another agent's
+worktree, the oldest ~12 h). But the fix biases the count *downward*: a harness
+launched through a wrapper whose `comm` is not `python*` would be missed. So
+"never 2" is an **absence assertion by an undercounting detector** — the sixth
+instance in this project of a validation that fails safe in the wrong direction, and
+consistent with the search rule recorded in §1.4. What actually bounds the risk is
+structural rather than observational: `corpus_lock()` serialises any second harness on
+the same corpus root, and other agents were passing their own `--corpus-root`. The
+load profile's own ceiling of 8.93 on 32 cores is independent corroboration that no
+second 8-way run overlapped this one. Recorded as a limit, not closed.
+
+Max in-run load of 8.93 on 32 cores is well inside the regime where the documented
+delivery flake was measured at 0/96 (it needed 24-way contention to reach 4/96), so
+**contention is not a plausible explanation for any failure here** — and in any case
+the direction is wrong for the flake: contention produces *intermittent* failures,
+and this run produced **zero** intermittent results.
+
+### 2.7 Provenance
+
+| | |
+|---|---|
+| pipeline commit measured | `980eabf463b8a5b8dda62e21d35eef36cb5aa853` |
+| branch | `bench/round2-cold-and-dev-20260924` (from `b3a40b4`) |
+| corpus merged from | `feat/benchmark-corpus-r2-20260923` @ `09bf135`, merged as `f00461f` |
+| instrument | `benchmark/run_bench.py` + `benchmark/attribution.py`, **byte-identical to R1's** |
+| command | `python3 benchmark/run_bench.py --corpus-root <worktree>/benchmark/corpus_r2 --manifest <worktree>/benchmark/corpus_r2.yaml --reps 5 --jobs 8 --timeout 20` |
+| autopwn command line per target-rep | `python3 -m supwngo.cli autopwn <binary> --timeout 20 [--json]`, `cwd` = repo root |
+| results directory | `benchmark/results_r2/20260924-163611Z/` (gitignored; carries live secrets) |
+| `report.json` sha256 | `66a399f744042c797374031ec8b4de478bc59b94e9e43f279e028f9999912795` |
+| committed evidence | `docs/reports/evidence/BENCHMARK-R2-COLD-24SEP2026-report.redacted.json` — 75 secrets (15 targets × 5 reps) replaced; refuses to write if any `FLAG{<32 hex>}` survives |
+
+Per-target binary hashes are deliberately **not** published: each binary is rebuilt
+per rep with a fresh secret compiled in via `-DFLAG`, so its hash is a per-run
+nonce and reproduces nothing. The stable, checkable inputs are the committed sources
+and `cflags`:
+
+| target | source sha256 | `cflags` sha256 |
+|---|---|---|
+| `01_stack_shellcode_relay` | `e8372923adb6bae7…` | `92bc0f5994930d41…` |
+| `02_ret2plt_strcat_system` | `9d3a89add54aa31c…` | `d12aa477baa7a415…` |
+| `03_pie_write_leak_ret2libc` | `52f40086298aafe7…` | `fe5c8abd8b432e53…` |
+| `04_canary_relay_bypass` | `4822b1021c6d53eb…` | `b026fb68a7707458…` |
+| `05_fmtstr_pie_leak` | `475555463cf190ab…` | `fe5c8abd8b432e53…` |
+| `06_fmtstr_short_write` | `f45f7bdc4ab169f7…` | `ad25c34e9dce8101…` |
+| `07_static_ret2syscall` | `94b90fc3ddb7e4d3…` | `0847fe4ca0144906…` |
+| `08_int_mul_overflow` | `428b8f08fa08ffde…` | `d12aa477baa7a415…` |
+| `09_heap_dangling_global` | `569029f662a0ae51…` | `d12aa477baa7a415…` |
+| `10_ret2csu_execve` | `1a32eb61ac7279a6…` | `d12aa477baa7a415…` |
+| `11_heap_overflow_tcache_poison` | `cfc701c969a9ea60…` | `d12aa477baa7a415…` |
+| `12_fmtstr_got_overwrite` | `37b694fbf2d7dd91…` | `87a54e88fb28eec1…` |
+| `13_off_by_one_retaddr_lsb` | `9533ec9ec3ca2735…` | `d12aa477baa7a415…` |
+| `14_oob_read_flag_array` | `b8e3b1de1e7d9057…` | `d12aa477baa7a415…` |
+| `15_ret2win_arg_gate` | `cb08f0bf25f87c49…` | `94cf5677d344bfdf…` |
+
+(Full-length digests: `sha256sum benchmark/corpus_r2/*/*.c benchmark/corpus_r2/*/cflags`.)
+
+**Instrument provenance the measurer cannot attest to alone.** The scrape-clean /
+technique-class matching criterion used in §1.4 originated with the coordinator, was
+derived from R1's structure, and was fixed before either party had seen any R2 result
+other than `07`. The messages crossed, and the criterion is mechanical. This is
+recorded because a measurer asserting "I did not tune the criterion to the data" is
+exactly the claim a measurer cannot make credibly about themselves.
+
+### 2.8 Source-read contamination check — clean on all 15
+
+The benchmark's premise is that the pipeline works from the **binary**. If any code
+path on the `autopwn` route read `<target>.c`, the figure would describe a
+source-assisted pipeline instead. `supwngo/analysis/source.py` does read `.c` files,
+and static audit places it behind the separate `supwngo source` CLI verb only — but
+that is an argument about code, so it was checked as behaviour:
+`benchmark/contamination_check.sh` replays the cold run's exact autopwn command line
+on the same binaries under `strace -f -e trace=openat,open`, all 15 targets.
+
+| observation | result |
+|---|---|
+| corpus `.c` source files opened, any process | **0 / 15 traces** |
+| reference exploits / `corpus_r2_reference` opened | **0 / 15 traces** |
+| `flag.txt` opened by the **pipeline** process | **0 / 15 traces** |
+| trace coverage positive control (target binary opened by the root Python process) | 4–6 opens per trace, all 15 |
+
+`flag.txt` **is** opened 259 times across the traces, and every one is accounted for:
+`14_oob_read_flag_array` 254 (the target loads a flag array at startup, once per
+execution — 254 distinct PIDs, one open each), `10` and `15` twice each, `13` once.
+**Every opening PID was verified not to be a Python process** (none of them opened a
+single `.py` file), i.e. each is the target binary or a shell/`cat` it spawned. That
+matches the attribution chains in §2.3 exactly — including `13`, where the target
+process itself both opens and writes the flag, and the pipeline never touches it.
+
+The positive control matters as much as the negative result: a trace that recorded
+nothing would produce the same "0 source opens" answer as a clean run. Each trace is
+2 731–19 966 lines and shows the root Python process opening the target binary, so
+the instrument was demonstrably looking at the right thing when it found nothing.
+
+**This is a replay, not an observation of the cold executions themselves** — residual
+limit 2 below, stated there and not softened here.
+
+### 2.9 Residual limits — disclosed, not closed
+
+Reproduced verbatim from the plan's §11 so the caveats travel with the number.
+
+> 1. **Inner (per-technique) truncation at the 20 s budget is not ruled out**
+>    `[R2-1]`. Transcript analysis catches only an outer kill. A technique needing
+>    25 s of gadget search would report "did not apply" indistinguishably from one
+>    that genuinely did not apply. No second execution can settle it without
+>    confounding on the known delivery flake. Hence the cold figure is defined as
+>    *capability at a 20 s per-attempt budget*, never as unbounded capability.
+>
+> 2. **Source-read contamination is checked on replay, not on the cold executions
+>    themselves** `[R2-1 / round-3 #1]`. The reviewer's objection is correct and is
+>    recorded rather than argued away: the §6 `strace` run replays the same command
+>    line on the same binaries *after* the cold run, and in principle a cold
+>    execution's access path could differ.
+>
+>    *(Executed as §2.8 above: clean on all 15 traces, with a coverage positive
+>    control. The replay caveat in this paragraph stands unchanged.)*
+>
+>    Why I accept this rather than instrument the cold run: observing it from inside
+>    would mean an audit hook (via a `sitecustomize.py` on the `PYTHONPATH`
+>    `run_bench.py` already sets) running in every measured process, adding per-`open`
+>    overhead inside the very 20 s budget that limitation 1 shows is already tight —
+>    i.e. trading a real risk to the *primary* measurement for a check on a
+>    *secondary*, bounded one. The bound: R2's flags exist only in `flag.txt` at
+>    runtime and attribution credits a success only when the target process or a
+>    descendant writes the flag, so a source read could yield an informational
+>    advantage but **cannot manufacture a flag**. The static audit also establishes
+>    that no source-reading code path exists on the autopwn route, and nothing in the
+>    pipeline is nondeterministic about *which* files it opens.
+>
+>    **Structural fix, deferred to R3+**: design the audit hook in from the start of
+>    a round, where it is part of the instrument for both the baseline and the
+>    measurement, rather than bolted onto an irreplaceable run. Recorded here so the
+>    next round can close it properly.
+>
+> 3. **The host cannot be reserved** `[R2-3]`. Contention is sampled continuously and
+>    reported as a load profile; it is not eliminated.
+>
+> 4. **The committed `report.json` is redacted** `[R2-8]`. Per-rep secrets are
+>    replaced with placeholders, so a reader can check structure, statuses, reasons,
+>    attribution verdicts and timings against the prose, but not re-derive a verdict
+>    from the raw secret. The unredacted original stays on disk with its sha256
+>    recorded. This is forced by the corpus contract's no-flag-in-git rule.
+
+Added by this run, not present in the plan:
+
+5. **The concurrent-harness counter undercounts by construction** (§2.6). "Never 2"
+   is an absence assertion from a detector biased toward zero. Bounded structurally by
+   `corpus_lock()` and corroborated by the load ceiling, not closed.
+
+6. **R2 can never separate flag-delivery mechanism from technique class** (§1.4).
+   R2's fix for R1's delivery defect was uniform across all 15 targets, which is
+   correct for soundness and destroys the within-corpus contrast needed to
+   distinguish "the pipeline is good at this technique" from "the pipeline is good at
+   this delivery shape". **No amount of §3 development on R2 repairs this** — it is a
+   fixed property of the corpus. The R5 generator spec is being amended to require
+   varied delivery *within* technique class; the consequence is that once R5 has
+   varied delivery and R2 remains uniform, R2 is permanently the round that cannot
+   answer this question.
+
+### 2.10 What happens next, and what this figure is not
+
+The cold measurement is complete and committed. Development (step 3) begins only
+after this commit lands, under the §5 generalize-versus-target-specific rules, and
+its results go in a **separately titled report labelled training performance on R2**
+— `docs/reports/BENCHMARK-R2-POST-DEV-24SEP2026.md`. R1 must still hold 13/13 as a
+regression gate. The R3 and R4 corpora (`9326d95`, `9868b75`) remain unmerged and
+unseen; code freezes before any access to them.
+
+**4/15 is the generalization number. Any later number on R2 is a training number.**
+The two are not comparable and will not be presented as if they were.
