@@ -958,6 +958,29 @@ def prop_P16_current_pins_is_a_function() -> None:
         R.pin(s, KEY, "f_" + "0" * 32, "t1", "no such candidate", "operator")
     with pytest.raises(R.StateTransitionError):
         R.pin(s, "libc.base", first.id, "t1", "wrong key", "operator")
+
+    # A pin whose target dies afterwards must refuse **and say why**: the
+    # operator's next command is "unpin", not "widen the context", so a
+    # retracted target reported as "not applicable here" sends them to the
+    # wrong place.
+    probe = store_of(raw(value=72), raw(value=80, method="m2"))
+    target = probe.active(KEY)[0]
+    R.pin(probe, KEY, target.id, "t1", "known good", "operator")
+    assert R.resolve(probe, KEY, CTX).witness.id == target.id
+    R.retract(probe, target.id, "t2", "measured wrong", "operator")
+    with pytest.raises(R.PinInapplicable) as exc:
+        R.resolve(probe, KEY, CTX)
+    assert "retracted" in str(exc.value), str(exc.value)
+    n += 1
+
+    # ... and an *applicable-elsewhere* pin says the other thing.
+    probe2 = store_of(raw(value=72, identity="t_other"))
+    other = probe2.active(KEY)[0]
+    R.pin(probe2, KEY, other.id, "t1", "cross-build pin", "operator")
+    with pytest.raises(R.PinInapplicable) as exc2:
+        R.resolve(probe2, KEY, CTX)
+    assert "not applicable" in str(exc2.value), str(exc2.value)
+    n += 1
     _count("P16 pin records checked", n)
 
 

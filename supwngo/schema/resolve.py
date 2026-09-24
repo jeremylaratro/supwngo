@@ -755,6 +755,11 @@ def validate_store(store: FactStore) -> None:
                     f"{c.id}: derived_from names {ref.id} under key {ref.key!r} "
                     f"but that candidate is filed under {src.key!r}"
                 )
+            # A ref whose source is ABSENT is deliberately **not** an invariant
+            # violation: a document may legitimately be merged from fragments,
+            # and rejecting a partial graph would make a fragment unmergeable.
+            # It is handled where it belongs -- ``is_stale`` treats a dangling
+            # ref as stale, so nothing is *consumed* on an unresolvable lineage.
     _validate_log(store)                                              # I7
 
 
@@ -1396,9 +1401,18 @@ def resolve(store: FactStore, key: str, ctx: ResolveContext) -> Selected:
     if key in pins:
         pinned = [c for c in pool if c.id == pins[key]]
         if not pinned:
-            raise PinInapplicable(
-                f"{key}: pinned candidate {pins[key]} is not applicable here"
-            )
+            # Say *which* of the three things went wrong, because the operator's
+            # next command differs: unpin, re-pin, or widen the context.  A
+            # retracted pin target is not "inapplicable here" and reporting it
+            # that way sends the operator looking at the wrong thing.
+            held = store.by_id(pins[key])
+            if held is None:
+                why = "no longer exists in this document"
+            elif held.state is not State.ACTIVE:
+                why = f"is {held.state.value}; unpin or pin a live candidate"
+            else:
+                why = "is not applicable in this context"
+            raise PinInapplicable(f"{key}: pinned candidate {pins[key]} {why}")
         chosen = Selected(key, pinned[0].value, pinned[0], (pinned[0],), "operator_pin")
         _refuse_if_stale(store, chosen)
         return chosen
