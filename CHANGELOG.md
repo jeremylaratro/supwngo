@@ -438,6 +438,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `./walkthrough_output/`.
 
 ### Fixed
+- **Two walkthrough families silently discarded a route when two of their own
+  routes tied on score** (`supwngo/exploit/walkthrough/common.py` — new
+  `select_route()`; `families/fmtstr.py`, `families/integer.py`). The
+  cross-family invariant already guarded `registry._families()` against
+  tie-resolves-on-list-position, but it holds the *within-family* dimension
+  constant, so the same defect was live inside families: `fmtstr.propose()` used
+  `max(candidates, key=(applicable, score))` and `integer` used both that and a
+  plain `return candidates[0]`. Since every rejection route scores `0.0` by
+  convention, two rejections tie, `max()` keeps the first, and the losing route
+  becomes unreachable — which is exactly how `heap`'s explanatory route was
+  unreachable. A sweep of all six families found `fmtstr` (3 routes at `0.0`),
+  `heap` (2), `integer` (4) and `syscall` (2) able to tie. Families now either
+  partition their routes on a predicate (`heap` on `any_present`, `fmtstr` between
+  its two rejections) or select through `select_route()`, which orders on
+  `(applicable, score, satisfied requirement count)` and **raises** if two
+  candidates are still indistinguishable rather than inventing a winner. An
+  interim version broke the tie on `name`; that made ties unobservable without
+  making them correct, and it silently handed `fmtstr` to the `%n` write route in
+  a case whose whole point is to report the read rejection, because "write" sorts
+  after "read". The invariant is now enforced two ways: a static AST rule
+  rejecting any `max`/`min`/`sorted` keyed on `.score` inside `families/`, and
+  behavioural tests that reverse each family's candidate list and assert the
+  answer does not move.
 - **A first `import pwn` under an in-memory stdout permanently broke pwntools for
   the rest of the process, silently collapsing walkthrough families to `triage`**
   (new root `conftest.py`). `pwnlib/term/text.py` calls `curses.setupterm()` at

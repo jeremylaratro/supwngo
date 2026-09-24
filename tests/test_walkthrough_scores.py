@@ -170,6 +170,292 @@ def test_no_two_routes_share_a_score():
     )
 
 
+#: Every ``(family, score)`` where a family declares two or more routes at the
+#: same score, with the count. Recorded as data rather than prose because the
+#: cross-family check above deliberately exempts ``0.0`` -- which means every
+#: entry here is a pair of routes the *within*-family selection has to separate
+#: without help from the score.
+#:
+#: Derived, not hand-written: see ``test_recorded_within_family_ties_are_live``.
+WITHIN_FAMILY_TIES = {
+    ("fmtstr", 0.0): 3,
+    ("heap", 0.0): 2,
+    ("integer", 0.0): 4,
+    ("syscall", 0.0): 2,
+}
+
+
+def _within_family_ties() -> dict[tuple[str, float], int]:
+    counts: dict[tuple[str, float], int] = {}
+    for rs in ALL_SCORES:
+        key = (rs.family, rs.score)
+        counts[key] = counts.get(key, 0) + 1
+    return {key: n for key, n in counts.items() if n > 1}
+
+
+def test_recorded_within_family_ties_are_live():
+    """The enumeration above must match the code, or it is documentation.
+
+    This is the sweep the cross-family check cannot do. That check holds the
+    within-family dimension constant -- it compares scores *between* families and
+    exempts ``0.0`` entirely -- so a family with four routes at ``0.0`` reads as
+    fully compliant while its own selection is decided by list position. A test
+    that holds constant the dimension where the defect lives looks exactly like
+    correctness.
+    """
+    assert _within_family_ties() == WITHIN_FAMILY_TIES, (
+        "the set of within-family score ties changed. These are the route pairs "
+        "that `common.select_route` has to separate without help from the score, "
+        "so re-check the selection in the affected family before editing this "
+        "table."
+    )
+
+
+def test_no_family_resolves_a_score_tie_by_list_position():
+    """Static rule: a family may not rank its own routes by score.
+
+    ``max(routes, key=lambda r: r.score)`` keeps the FIRST maximum, so with two
+    routes at ``0.0`` -- which four families have -- the winner is the one that
+    happens to appear first in a list, and the other's explanation is silently
+    discarded. ``heap`` shipped that defect; ``fmtstr`` and ``integer`` both had
+    it latent (``fmtstr`` keyed on ``(applicable, score)``, ``integer`` fell
+    through to ``candidates[0]``).
+
+    Families must select through ``common.select_route``, whose order is total,
+    or partition on a predicate so that nothing is discarded at all (``heap``).
+    This is a structural check rather than a behavioural one so it also covers
+    the fact-states no corpus target reaches.
+    """
+    offenders = []
+    for path in sorted(FAMILIES_DIR.glob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else None
+            if name not in {"max", "min", "sorted"}:
+                continue
+            for keyword in node.keywords:
+                if keyword.arg != "key":
+                    continue
+                if ".score" in ast.unparse(keyword.value):
+                    offenders.append(f"{path.name}:{node.lineno}")
+    assert not offenders, (
+        "a family ranks routes by score itself, which resolves a tie by list "
+        f"position: {offenders}. Use common.select_route (total order) or "
+        "partition the routes on a predicate."
+    )
+
+
+def test_select_route_order_does_not_decide_among_tied_routes():
+    """The behavioural half, on the shared selector and with no binaries needed.
+
+    Builds the exact shape that broke ``heap`` -- two non-applicable routes at
+    ``0.0`` -- and asserts the answer is the same whichever order they arrive in.
+    """
+    from supwngo.exploit.walkthrough import common
+    from supwngo.exploit.walkthrough.model import Rejection, Requirement, Route
+
+    def rejection(name, satisfied):
+        return Route(
+            name=name,
+            score=NOT_ON_THE_TABLE,
+            applicable=False,
+            rationale=f"{name} does not fit",
+            requires=tuple(
+                Requirement(f"precondition {i}", ok) for i, ok in enumerate(satisfied)
+            ),
+            rejection=Rejection.UNMET_PRECONDITION,
+        )
+
+    closer = rejection("closer to viable", [True, True, False])
+    further = rejection("further from viable", [False, False, False])
+
+    assert common.select_route([closer, further]) is closer
+    assert common.select_route([further, closer]) is closer, (
+        "reversing the candidate list changed the answer, so position is still "
+        "deciding"
+    )
+
+
+def test_select_route_refuses_rather_than_inventing_a_winner():
+    """Two indistinguishable routes must raise, not resolve.
+
+    The obvious fix for a tie is a final arbitrary-but-deterministic key such as
+    ``name``. That makes the tie unobservable without making it correct: an
+    earlier version of ``select_route`` did exactly that and silently handed
+    ``fmtstr`` to the ``%n`` write route in a case whose whole point is to report
+    the read rejection, because "write" sorts after "read". Raising is what forces
+    the family to partition its routes or score them apart.
+    """
+    from supwngo.exploit.walkthrough import common
+    from supwngo.exploit.walkthrough.model import (
+        Rejection,
+        Requirement,
+        Route,
+        WalkthroughError,
+    )
+
+    def rejection(name):
+        return Route(
+            name=name,
+            score=NOT_ON_THE_TABLE,
+            applicable=False,
+            rationale=f"{name} does not fit",
+            requires=(Requirement("the same unmet precondition", False),),
+            rejection=Rejection.UNMET_PRECONDITION,
+        )
+
+    first, second = rejection("alpha route"), rejection("beta route")
+
+    for candidates in ([first, second], [second, first]):
+        with pytest.raises(WalkthroughError) as caught:
+            common.select_route(candidates)
+        message = str(caught.value)
+        assert "alpha route" in message and "beta route" in message, message
+        assert "partition" in message, (
+            "the error must tell the family how to resolve the tie, not just "
+            f"report it: {message}"
+        )
+
+
+def test_select_route_prefers_applicable_over_a_higher_scoring_rejection():
+    """A route that works beats one that does not, whatever the scores say."""
+    from supwngo.exploit.walkthrough import common
+    from supwngo.exploit.walkthrough.model import Rejection, Route
+
+    works = Route(
+        name="works",
+        score=0.25,
+        applicable=True,
+        rationale="measured",
+    )
+    louder = Route(
+        name="does not work",
+        score=0.97,
+        applicable=False,
+        rationale="unmet",
+        rejection=Rejection.UNMET_PRECONDITION,
+    )
+    assert common.select_route([louder, works]) is works
+    assert common.select_route([works, louder]) is works
+
+
+def test_select_route_drops_none_and_returns_none_when_empty():
+    """Families pass builders that return ``None`` to mean "nothing to say"."""
+    from supwngo.exploit.walkthrough import common
+    from supwngo.exploit.walkthrough.model import Route
+
+    only = Route(name="only", score=0.5, applicable=True, rationale="x")
+    assert common.select_route([None, only, None]) is only
+    assert common.select_route([]) is None
+    assert common.select_route([None, None]) is None
+
+
+def _tied_rejections():
+    """Two non-applicable routes at 0.0, one closer to viable than the other."""
+    from supwngo.exploit.walkthrough.model import Rejection, Requirement, Route
+
+    def rejection(name, satisfied):
+        return Route(
+            name=name,
+            score=NOT_ON_THE_TABLE,
+            applicable=False,
+            rationale=f"{name} does not fit",
+            requires=tuple(
+                Requirement(f"precondition {i}", ok) for i, ok in enumerate(satisfied)
+            ),
+            rejection=Rejection.UNMET_PRECONDITION,
+        )
+
+    return (
+        rejection("closer to viable", [True, True, False]),
+        rejection("further from viable", [False, False, False]),
+    )
+
+
+def test_integer_selects_rather_than_indexes_when_both_sites_exist(monkeypatch):
+    """Forced two-candidate state: no corpus target reaches it.
+
+    ``integer`` used to ``return candidates[0]`` when neither route applied, which
+    is positional selection written plainly. It is invisible on this corpus
+    because no target has *both* a negative-index site and a truncation site, so
+    only one candidate is ever built -- the same "inert, not safe" shape that two
+    heap mutants had. Forcing the state is the only way to cover it.
+    """
+    from supwngo.exploit.walkthrough.families import integer
+
+    closer, further = _tied_rejections()
+
+    class BothSites:
+        empty = False
+        negative_indexes = [object()]
+        truncations = [object()]
+
+    class Facts:
+        bits = 64
+
+    monkeypatch.setattr(integer, "_analyse", lambda facts: BothSites())
+    monkeypatch.setattr(integer, "_negative_index_route", lambda f, a: further)
+    monkeypatch.setattr(integer, "_truncation_route", lambda f, a: closer)
+    assert integer.propose(Facts()) is closer
+
+    # Swap which builder yields which route: the answer must follow the facts,
+    # not the order the conditions are written in.
+    monkeypatch.setattr(integer, "_negative_index_route", lambda f, a: closer)
+    monkeypatch.setattr(integer, "_truncation_route", lambda f, a: further)
+    assert integer.propose(Facts()) is closer, (
+        "integer returned the first candidate rather than selecting, so the route "
+        "it proposes depends on which condition is written first"
+    )
+
+
+def test_fmtstr_selects_rather_than_ranking_when_both_routes_are_rejections(
+    monkeypatch,
+):
+    """``fmtstr`` must *partition* its two rejections, not rank them.
+
+    Reachable in principle -- a reachable format string whose read target is
+    unreachable and whose argument index was not measured -- but not by target 05
+    or 06, which each yield one applicable route.
+
+    The two rejections are genuinely indistinguishable to a ranking: both score
+    ``0.0``, and the real read rejection and the real "nothing to write to"
+    rejection also have the same number of satisfied requirements. So the answer
+    must come from the family's own decision -- the read rejection, because a
+    format-string bug *is* a read primitive -- and must not change when the
+    candidates swap places or when one of them looks "closer to viable".
+    """
+    from supwngo.exploit.walkthrough.families import fmtstr
+
+    closer, further = _tied_rejections()
+
+    class Fs:
+        reachable = True
+
+    class Facts:
+        fmtstr = Fs()
+
+    # Whichever route is the *read* one wins, in both directions -- including the
+    # direction where that makes the "further from viable" route the answer.
+    monkeypatch.setattr(fmtstr, "_read_route", lambda f, fs: further)
+    monkeypatch.setattr(fmtstr, "_write_route", lambda f, fs: closer)
+    assert fmtstr.propose(Facts()) is further, (
+        "fmtstr ranked its rejections instead of partitioning them: the read "
+        "rejection is the answer even when the write rejection satisfies more "
+        "requirements"
+    )
+
+    monkeypatch.setattr(fmtstr, "_read_route", lambda f, fs: closer)
+    monkeypatch.setattr(fmtstr, "_write_route", lambda f, fs: further)
+    assert fmtstr.propose(Facts()) is closer, (
+        "fmtstr resolved the 0.0 tie by list position"
+    )
+
+
 def test_zero_scored_routes_are_never_applicable():
     """0.0 is allowed to repeat only because it means "not on the table"."""
     offenders = [

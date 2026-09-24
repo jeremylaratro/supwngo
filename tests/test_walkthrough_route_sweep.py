@@ -137,3 +137,136 @@ def test_winner_is_a_strict_maximum(directory):
         "whichever family happens to sit earlier in registry._families(), which "
         "is not a decision anyone made."
     )
+
+
+# ---------------------------------------------------------------------------
+# within-family selection
+#
+# The two tests above are the CROSS-family invariant: they compare routes from
+# different families and never look inside one. That blind spot shipped a defect
+# -- `heap` ranked two of its own routes, both scored 0.0, `max()` kept the first
+# and the other became unreachable -- and the same shape was latent in `fmtstr`
+# (keyed on `(applicable, score)`) and in `integer` (fell through to
+# `candidates[0]`). Four families declare two or more routes at 0.0, so the
+# exemption that makes the cross-family check tractable is exactly where
+# within-family ties live.
+#
+# `tests/test_walkthrough_scores.py` covers the structural half with no binaries.
+# This is the behavioural half: run every family against every target with the
+# shared selector's input reversed, and demand the same answer.
+# ---------------------------------------------------------------------------
+
+
+def _all_families() -> list:
+    from supwngo.exploit.walkthrough.families import (
+        fmtstr,
+        heap,
+        integer,
+        rop_chain,
+        stack_bof,
+        syscall,
+        triage,
+    )
+
+    return [rop_chain, syscall, integer, stack_bof, fmtstr, heap, triage]
+
+
+def _facts_for(directory: str, name: str):
+    from supwngo.exploit.walkthrough.facts import collect_facts
+
+    path = CORPUS / directory / name
+    if not path.exists():
+        pytest.skip(f"benchmark corpus not built: {path} (run benchmark/build_all.sh)")
+    return collect_facts(str(path), probe=True)
+
+
+@pytest.mark.parametrize("directory", sorted(EXPECTED), ids=sorted(EXPECTED))
+def test_no_family_changes_its_answer_when_candidates_are_reversed(directory, monkeypatch):
+    """Reverse every family's candidate list; every family must still agree.
+
+    Patching `common.select_route` reaches every family that selects, which is
+    the point of having one selector: a per-family patch would have to know which
+    families rank and would miss the next one added.
+    """
+    from supwngo.exploit.walkthrough import common
+
+    name, _expected = EXPECTED[directory]
+    facts = _facts_for(directory, name)
+
+    before = {}
+    for module in _all_families():
+        route = module.propose(facts)
+        before[module.NAME] = route.name if route is not None else None
+
+    real = common.select_route
+    monkeypatch.setattr(
+        common, "select_route", lambda candidates: real(list(candidates)[::-1])
+    )
+
+    for module in _all_families():
+        route = module.propose(facts)
+        now = route.name if route is not None else None
+        assert now == before[module.NAME], (
+            f"{directory}: {module.NAME} returned {before[module.NAME]!r} normally "
+            f"and {now!r} with its candidates reversed, so the route it proposes "
+            "depends on the order the candidates happen to be listed in."
+        )
+
+
+@pytest.mark.parametrize("directory", sorted(EXPECTED), ids=sorted(EXPECTED))
+def test_a_family_that_does_not_select_builds_at_most_one_route(directory):
+    """The other way to be order-independent: never have a choice to make.
+
+    `syscall`, `stack_bof`, `rop_chain` and `triage` return from a branch, and
+    `heap` partitions on ``any_present`` -- so at most one Route is constructed
+    per call and nothing is discarded. That is stronger than selecting well, and
+    it is worth pinning: a family that starts building a second candidate without
+    routing it through `common.select_route` would otherwise pick by position
+    again, silently.
+    """
+    from supwngo.exploit.walkthrough import common
+
+    name, _expected = EXPECTED[directory]
+    facts = _facts_for(directory, name)
+
+    selectors = set()
+    real = common.select_route
+
+    for module in _all_families():
+        made = []
+        real_route = module.Route
+
+        def recording(*args, _made=made, _real=real_route, **kwargs):
+            route = _real(*args, **kwargs)
+            _made.append(route)
+            return route
+
+        used_selector = []
+
+        def watched(candidates, _used=used_selector):
+            _used.append(True)
+            return real(candidates)
+
+        module.Route = recording
+        common.select_route = watched
+        try:
+            module.propose(facts)
+        finally:
+            module.Route = real_route
+            common.select_route = real
+
+        if used_selector:
+            selectors.add(module.NAME)
+            continue
+        assert len(made) <= 1, (
+            f"{directory}: {module.NAME} built {len(made)} routes "
+            f"({[r.score for r in made]}) without calling common.select_route, so "
+            "whichever one it returns was chosen by position."
+        )
+
+    # Not an assertion about which families select -- just a guard that the
+    # branch above is reachable, so this test cannot pass by never selecting.
+    assert selectors <= {"fmtstr", "integer"}, (
+        f"a new family started selecting routes: {sorted(selectors)}. Check its "
+        "selection goes through common.select_route."
+    )
