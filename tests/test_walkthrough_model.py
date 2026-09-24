@@ -11,16 +11,20 @@ Covers `docs/plans/2026-09-23-walkthrough-engine.md`.
 import pytest
 
 from supwngo.exploit.walkthrough.model import (
+    RESERVED_FACT_NAMES,
     Confidence,
     Evidence,
     Fact,
     Fallback,
     ManualCommand,
     ProtectionVerdict,
+    Rejection,
+    Requirement,
     Route,
     Step,
     Walkthrough,
     WalkthroughError,
+    comment_block,
     dedent_code,
 )
 
@@ -29,6 +33,7 @@ def make_fact(name="OFFSET", value=72, **kw):
     kw.setdefault(
         "evidence", Evidence(method="cyclic_find on corefile RSP", command="x/gx $rsp")
     )
+    kw.setdefault("confidence", Confidence.MEASURED)
     return Fact(name=name, value=value, **kw)
 
 
@@ -41,11 +46,20 @@ def make_step(step_id="offset", **kw):
     return Step(id=step_id, **kw)
 
 
+def make_route(name="ret2plt/system", score=0.9, applicable=True, **kw):
+    kw.setdefault("rationale", "system@plt and a /bin/sh string are both present.")
+    if not applicable:
+        kw.setdefault("rejection", Rejection.STRUCTURAL)
+    return Route(name=name, score=score, applicable=applicable, **kw)
+
+
 def make_walkthrough(**kw):
     kw.setdefault("binary_path", "/tmp/vuln")
     kw.setdefault("family", "rop_chain")
     kw.setdefault("title", "ret2plt/system on vuln")
     kw.setdefault("strategy", "NX is on so we ROP into system@plt.")
+    kw.setdefault("success_criteria", "`echo PWNED_42` echoes back from a shell.")
+    kw.setdefault("routes", (make_route(),))
     kw.setdefault("steps", (make_step(),))
     kw.setdefault("final_exploit", "p = process(BINARY); p.send(payload)")
     return Walkthrough(**kw)
@@ -57,6 +71,9 @@ class TestFactEvidence:
         rendered = fact.render_assignment()
         assert "OFFSET = 72" in rendered
         assert "measured" in rendered
+        # Every non-code line must be commented or the script will not parse.
+        for line in rendered.splitlines():
+            assert line.startswith("#") or line.startswith("OFFSET =")
         # The evidence -- how the value was obtained -- must survive into the
         # generated script, otherwise the reader cannot re-derive it.
         assert "cyclic_find on corefile RSP" in rendered
@@ -244,18 +261,136 @@ class TestWalkthroughInvariants:
 
     def test_unknowns_collects_across_constants_and_steps(self):
         unknown = Fact(
-            name="LIBC_BASE",
+            name="CANARY",
             confidence=Confidence.UNKNOWN,
-            unknown_reason="ASLR randomises it per run.",
-            plausible="leaked at runtime",
-            resolved_by="offset",
+            unknown_reason="no read primitive was found to disclose it.",
+            plausible="8 bytes whose least-significant byte is 0x00",
+            resolved_by="chain",
         )
         wt = make_walkthrough(
             constants=(make_fact(name="BINARY", value="/tmp/vuln", kind="str"),),
-            steps=(make_step("offset", produces=(make_fact(), unknown)),),
+            steps=(
+                make_step("offset", produces=(make_fact(), unknown)),
+                make_step("chain", consumes=("OFFSET",)),
+            ),
         )
-        assert [f.name for f in wt.unknowns] == ["LIBC_BASE"]
+        assert [f.name for f in wt.unknowns] == ["CANARY"]
         assert len(wt.all_facts()) == 3
+
+    def test_fact_cannot_be_resolved_by_the_step_that_produces_it(self):
+        circular = Fact(
+            name="CANARY",
+            confidence=Confidence.UNKNOWN,
+            unknown_reason="not disclosed.",
+            plausible="8 bytes ending in 0x00",
+            resolved_by="offset",
+        )
+        with pytest.raises(WalkthroughError, match="also claims to be resolved by it"):
+            make_walkthrough(steps=(make_step("offset", produces=(circular,)),))
+
+
+class TestRuntimeFacts:
+    """A leaked address is only valid inside the process that leaked it.
+
+    Baking a generation-time leak into a constant would produce a script that
+    works exactly once, on the generating host -- a worse artifact than the
+    `TODO` this package replaces, because it lies with a `# measured` comment
+    attached. So the model refuses it.
+    """
+
+    def make_runtime_fact(self):
+        return Fact(
+            name="LIBC_BASE",
+            kind="addr",
+            runtime=True,
+            confidence=Confidence.DERIVED,
+            evidence=Evidence(
+                method="leaked at runtime, then libc_base = leak - libc.sym.puts",
+                command="puts(puts@got) via a ROP chain",
+            ),
+            description="ASLR'd libc load address; different every run.",
+        )
+
+    def test_runtime_fact_needs_no_static_value(self):
+        fact = self.make_runtime_fact()
+        assert fact.value is None
+        assert fact.is_known
+
+    def test_runtime_fact_refuses_to_render_as_a_constant(self):
+        with pytest.raises(WalkthroughError, match="only valid inside the process"):
+            self.make_runtime_fact().render_assignment()
+
+    def test_runtime_fact_rejected_in_the_constants_block(self):
+        with pytest.raises(WalkthroughError, match="cannot be a module constant"):
+            make_walkthrough(constants=(self.make_runtime_fact(),))
+
+    def test_runtime_fact_is_fine_as_a_step_output(self):
+        runtime = self.make_runtime_fact()
+        wt = make_walkthrough(
+            steps=(
+                make_step("leak", produces=(runtime,)),
+                make_step("chain", consumes=("LIBC_BASE",)),
+            )
+        )
+        assert wt.fact("LIBC_BASE").runtime is True
+        assert wt.to_dict()["steps"][0]["produces"][0]["runtime"] is True
+
+
+class TestNameSafety:
+    def test_python_keyword_rejected(self):
+        with pytest.raises(WalkthroughError, match="keyword"):
+            make_fact(name="class")
+
+    @pytest.mark.parametrize("name", ["context", "flat", "p64", "process", "elf"])
+    def test_pwntools_shadowing_names_rejected(self, name):
+        # The generated script does `from pwn import *`; shadowing one of these
+        # breaks it in a way no reader would diagnose.
+        assert name in RESERVED_FACT_NAMES
+        with pytest.raises(WalkthroughError, match="shadow"):
+            make_fact(name=name)
+
+    def test_hyphenated_step_id_rejected(self):
+        # `function_name` would emit `def step_find-offset():` -- a SyntaxError.
+        with pytest.raises(WalkthroughError, match="valid Python identifier"):
+            make_step("find-offset")
+
+    def test_kind_and_value_must_agree(self):
+        with pytest.raises(WalkthroughError, match="kind 'addr'"):
+            make_fact(name="POP_RDI", value="0x4011fa", kind="addr")
+        with pytest.raises(WalkthroughError, match="kind 'bytes'"):
+            make_fact(name="BINSH", value="/bin/sh", kind="bytes")
+
+
+class TestEvidenceIsMandatory:
+    def test_measured_without_evidence_rejected(self):
+        with pytest.raises(WalkthroughError, match="carries no Evidence"):
+            Fact(name="OFFSET", value=72, confidence=Confidence.MEASURED)
+
+    def test_measured_evidence_must_show_its_work(self):
+        with pytest.raises(WalkthroughError, match="must record the command"):
+            Fact(
+                name="OFFSET",
+                value=72,
+                confidence=Confidence.MEASURED,
+                evidence=Evidence(method="analysis"),
+            )
+
+    def test_default_confidence_is_not_the_most_trustworthy(self):
+        # A family that forgets the keyword must not be handed MEASURED.
+        assert Fact(name="LIBC", value="/lib/libc.so.6", kind="str").confidence is (
+            Confidence.ASSUMED
+        )
+
+    def test_unknown_may_not_carry_a_value(self):
+        with pytest.raises(WalkthroughError, match="must not carry a value"):
+            Fact(
+                name="OFFSET",
+                value=72,
+                confidence=Confidence.UNKNOWN,
+                unknown_reason="probe failed.",
+                plausible="72 or 88",
+                resolved_by="offset",
+            )
 
     def test_missing_lookups_raise_keyerror(self):
         wt = make_walkthrough()
@@ -268,13 +403,14 @@ class TestWalkthroughInvariants:
 class TestRouteDecisionTree:
     def test_primary_is_highest_scoring_viable_route(self):
         routes = (
-            Route("ret2plt/system", 0.9, True, "system@plt and /bin/sh are present."),
-            Route("ret2libc via leak", 0.5, True, "Also possible but needs a leak."),
-            Route(
+            make_route("ret2plt/system", 0.9),
+            make_route("ret2libc via leak", 0.5, rationale="Possible, needs a leak."),
+            make_route(
                 "stack shellcode",
                 0.0,
-                False,
-                "NX is enabled, so stack pages are not executable.",
+                applicable=False,
+                rationale="NX is enabled, so stack pages are not executable.",
+                rejection=Rejection.STRUCTURAL,
             ),
         )
         wt = make_walkthrough(routes=routes)
@@ -285,24 +421,72 @@ class TestRouteDecisionTree:
         # Every rejected route must explain itself.
         assert all(r.rationale for r in fallbacks)
 
+    def test_scores_are_confined_to_a_shared_scale(self):
+        # Scores are compared across families, so an enthusiastic author must
+        # not be able to outrank a modest one by changing units.
+        with pytest.raises(WalkthroughError, match="outside 0.0-1.0"):
+            make_route("overeager", 95.0)
+
+    def test_non_applicable_route_must_classify_its_rejection(self):
+        with pytest.raises(WalkthroughError, match="structural or transient"):
+            Route("ret2libc", 0.0, False, "No libc leak obtained.")
+
+    def test_structural_and_transient_rejections_are_distinguished(self):
+        structural = make_route(
+            "ret2libc",
+            0.0,
+            applicable=False,
+            rationale="The binary is statically linked; there is no libc.",
+            rejection=Rejection.STRUCTURAL,
+        )
+        transient = make_route(
+            "ret2libc",
+            0.3,
+            applicable=False,
+            rationale="The leak step did not produce an address this run.",
+            rejection=Rejection.TRANSIENT,
+            becomes_viable_if="step 'leak' succeeds and yields a libc address",
+        )
+        # A reader must be able to tell which fallback is worth trying.
+        assert not structural.is_actionable_fallback
+        assert transient.is_actionable_fallback
+        assert "ruled out (structural)" in structural.describe()
+        assert "Becomes viable if" in transient.describe()
+
     def test_no_viable_route_leaves_primary_none(self):
         wt = make_walkthrough(
-            routes=(Route("stack shellcode", 0.0, False, "NX is enabled."),)
+            routes=(
+                make_route(
+                    "stack shellcode", 0.0, applicable=False,
+                    rationale="NX is enabled.",
+                ),
+            )
         )
         assert wt.primary_route is None
         assert len(wt.fallback_routes) == 1
 
-    def test_route_describe_states_verdict_and_requirements(self):
-        route = Route(
+    def test_duplicate_route_names_rejected(self):
+        with pytest.raises(WalkthroughError, match="Route names must be unique"):
+            make_walkthrough(routes=(make_route(), make_route()))
+
+    def test_routes_are_mandatory(self):
+        with pytest.raises(WalkthroughError, match="routes considered"):
+            make_walkthrough(routes=())
+
+    def test_route_describe_names_the_unmet_requirement(self):
+        route = make_route(
             "SROP",
             0.8,
-            True,
-            "A syscall gadget and pop rax exist.",
-            requires=("a syscall gadget", "control of rax"),
+            requires=(
+                Requirement("a syscall gadget", True),
+                Requirement("control of rax", False),
+            ),
         )
         described = route.describe()
         assert "VIABLE" in described
-        assert "syscall gadget" in described
+        # Only the requirement that actually fails is called out.
+        assert "Missing: control of rax." in described
+        assert "syscall gadget" not in described.split("Missing:")[1]
 
 
 class TestProtectionReasoning:
@@ -327,11 +511,11 @@ class TestProtectionReasoning:
 class TestSerialisation:
     def test_to_dict_exposes_the_full_teaching_content(self):
         unknown = Fact(
-            name="LIBC_BASE",
+            name="CANARY",
             confidence=Confidence.UNKNOWN,
-            unknown_reason="ASLR randomises it per run.",
-            plausible="a 0x7f-prefixed page-aligned address",
-            resolved_by="leak",
+            unknown_reason="no canary read primitive was found.",
+            plausible="8 bytes ending in 0x00",
+            resolved_by="offset",
         )
         wt = make_walkthrough(
             constants=(make_fact(name="POP_RDI", value=0x4011FA, kind="addr"),),
@@ -346,7 +530,7 @@ class TestSerialisation:
                     manual=(ManualCommand("inspect", "gdb ./vuln"),),
                 ),
             ),
-            routes=(Route("ret2libc", 0.9, True, "needs a leak."),),
+            routes=(make_route("ret2libc", 0.9, rationale="needs a leak."),),
             automation_failure="autopwn failed at DELIVERY on ret2libc.",
             provenance=("phase-4 handoff", "pwntools ROP"),
         )
@@ -355,7 +539,11 @@ class TestSerialisation:
         assert data["family"] == "rop_chain"
         assert data["automation_failure"].startswith("autopwn failed")
         assert data["provenance"] == ["phase-4 handoff", "pwntools ROP"]
-        assert data["constants"][0]["value"] == "0x4011fa"
+        assert data["constants"][0]["rendered"] == "0x4011fa"
+        assert data["constants"][0]["value"] == 0x4011FA
+        # The assembled exploit and the chosen route must be machine-readable.
+        assert data["final_exploit"] == "p = process(BINARY); p.send(payload)"
+        assert data["primary_route"] == "ret2libc"
         assert data["protections"][0]["name"] == "NX"
         assert [s["number"] for s in data["steps"]] == [1, 2]
         assert data["steps"][1]["consumes"] == ["OFFSET"]
@@ -364,9 +552,9 @@ class TestSerialisation:
         assert data["routes"][0]["applicable"] is True
         # Unknowns are surfaced at the top level so a consumer can show
         # "here is exactly what is still missing".
-        assert [u["name"] for u in data["unknowns"]] == ["LIBC_BASE"]
-        assert data["unknowns"][0]["value"] is None
-        assert data["unknowns"][0]["resolved_by"] == "leak"
+        assert [u["name"] for u in data["unknowns"]] == ["CANARY"]
+        assert data["unknowns"][0]["rendered"] is None
+        assert data["unknowns"][0]["resolved_by"] == "offset"
 
     def test_to_dict_is_json_serialisable(self):
         import json
@@ -382,3 +570,24 @@ class TestHelpers:
             p.send(payload)
             """
         ) == "p = process(BINARY)\np.send(payload)"
+
+    def test_comment_block_prefixes_every_line(self):
+        # Multi-line prose (a gdb script, an evidence detail) must not leak
+        # bare text into the generated source.
+        rendered = comment_block("first line\nsecond line")
+        assert rendered == "# first line\n# second line"
+
+    def test_multiline_description_still_yields_valid_source(self):
+        fact = make_fact(description="line one\nline two")
+        for line in fact.render_assignment().splitlines():
+            assert line.startswith("#") or "=" in line
+
+    def test_unknown_detail_reads_cleanly_without_double_punctuation(self):
+        fact = Fact(
+            name="OFFSET",
+            confidence=Confidence.UNKNOWN,
+            unknown_reason="the probe produced no fault",  # no trailing period
+            plausible="72 or 88",
+            resolved_by="offset",
+        )
+        assert "no fault. Plausible: 72 or 88." in fact.unknown_detail
