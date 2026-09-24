@@ -379,6 +379,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rebuilds the targets with a fresh secret flag, two concurrent runs over one
   corpus would clobber each other's binaries and `flag.txt` files and produce
   spurious `FAILED`s rather than an obvious crash.
+- **Phase 5 — a generated script's process factory could be shadowed by the exploit body**
+  (`pipeline/script_builder.py`). The factory was named `start()`, and exploit bodies
+  routinely bind short local names; a multi-stage body that assigned e.g.
+  `start = echoed.find(fill)` between its first and second connection turned the second
+  `start()` call into `UnboundLocalError`, so a genuinely working two-stage exploit failed
+  at run time *after* the pipeline had verified the technique. Renamed to `open_target()`
+  and documented why the name is deliberately not a common local.
 - **Phase 5 — the profiling stage silently discarded most leaked pointers**
   (`pipeline/profile_stage.py`). `_parse_address_leaks()` only recognised a printed `%p`
   when it was introduced by one of a fixed set of English words
