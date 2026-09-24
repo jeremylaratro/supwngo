@@ -26,6 +26,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   writing a timestamped `report.json` + human-readable summary under `benchmark/results/`
   and supporting `--target`/`--timeout` flags. See
   `docs/plans/2026-09-23-effectiveness-and-usability.md` (Phase 1) and `benchmark/README.md`.
+- `docs/reports/PHASE1-BASELINE-24SEP2026.md` — the first honest Phase-1 baseline
+  measurement of `supwngo autopwn` against the 15-target benchmark corpus, run against the
+  fully consolidated pipeline (Phase 0/2/3/4/6 all present): **2/15 SUCCESS (13.3%), 0
+  PARTIAL, 13 FAILED** (easy 2/5, medium 0/7, hard 0/3), classified only by independently
+  re-executing each generated exploit script and checking for the target-specific flag,
+  never by trusting `autopwn`'s own self-reported success. This is the number Phase 5
+  (reliability hardening) starts from. See that report for the full per-target breakdown,
+  the harness bug found and fixed while producing it (`run_bench.py` mishandled
+  `subprocess.TimeoutExpired`'s always-bytes `stdout`/`stderr` even under `text=True`), and
+  why four earlier runs were discarded as stale (benchmarked the pre-consolidation
+  `EnhancedAutoExploiter` before this branch was rebased onto
+  `integration/phases-0-4-7-20260923`).
 
 ### Fixed
 - `CanonicalAutopwnEngine`'s verified-`SUCCESS` path could leave
