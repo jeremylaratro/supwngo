@@ -116,6 +116,32 @@ inventory, the prior corpora, or the reference exploits. Otherwise "unseen" mean
 only "not yet executed", and the corpus inherits the shape of what supwngo
 already does — which is how a 100% round-1 score happens.
 
+### R5 must be independently conceived, NOT a re-shaping
+
+R2 turned out to be a **paired shape-variant of R1**: every R2 source header names
+the specific R1 target it re-shapes, holding technique family fixed and varying only
+the surface mechanic (R2 `02` builds `"/bin/sh"` by concatenation where R1 `02` had a
+literal; R2 `14` is a positive OOB *read* where R1 `14` was a negative-index *write*).
+
+That is a genuinely valuable design — of the 11 families R1 solved at 5/5,
+re-shaping broke 9 and left 2 standing, which is much stronger overfit evidence than
+comparing two unrelated corpora because family composition is removed as an
+explanation. But it measures **robustness to adversarial re-shaping of problems the
+pipeline already solves**, which is not the same property as generalization to new
+problems. R2's 4/15 is therefore an estimate over re-shaped variants, plausibly
+closer to a lower bound for arbitrary binaries, since deliberate re-shaping targets
+the pipeline's specific assumptions.
+
+**R5 measures the other property, and must be built to.** It is independently
+conceived: not a re-shaping of any R1-R4 target, not paired to anything, families
+and mechanics chosen without reference to what supwngo has previously met. The
+novelty review before sealing must explicitly check for pairing — including
+accidental pairing, since a generator asked for "a stack overflow with a canary" may
+reinvent an existing target's shape without intending to.
+
+Do not let R5 and R2-R4 numbers be compared as though they measure the same thing.
+Both are worth having; conflating them would waste both.
+
 Constraints:
 - Isolated generator agent, no access to `supwngo/exploit/`, `benchmark/reference_exploits/`,
   or any prior `corpus.yaml`.
