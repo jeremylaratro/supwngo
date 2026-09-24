@@ -487,6 +487,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`SIGSEGV`/`SIGBUS`/`SIGILL`/`SIGFPE`/`SIGABRT`/`SIGTRAP`/`SIGSYS`, not `SIGKILL`)
   count as a crash, with a short reap window so a fault that has not yet been
   reaped is not misread as "still running".
+- **Phase 5 — `stack_shellcode` committed to a single measured offset** and so broke
+  when crash detection was corrected: the probe measures 80 on
+  `01_shellcode_stack` where the return address is at 72, and a wrong offset there is
+  indistinguishable from wrong shellcode placement. It now sweeps offset candidates
+  like the ROP executors do.
 - **Phase 5 — the measured offset is now treated as a candidate, not an answer**
   (`executors/_shared.py:resolve_offsets()`). The crash threshold lands on the first
   byte of whatever follows the buffer, and whether the return address is 8 bytes
