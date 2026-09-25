@@ -187,6 +187,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `autopwn_json_probe` and `autopwn_script_generation` in `report.json` now carry their own
   additive `duration_sec`, wall-clock around just that invocation. Read-only addition: no
   verification, attribution, or cheat-detection logic changed.
+- **Walkthrough scorer — blind-follower measurement with a necessity control**
+  (`benchmark/walkthrough/`). `benchmark/` previously contained *zero* references to
+  walkthroughs, so the R5 spec's `>= 85% followable` gate was a threshold against a
+  metric that did not exist — and inventing a lenient one later to clear it is the
+  exact failure this benchmark was built to prevent. A walkthrough is now credited
+  only when a **fresh blind follower**, given only that walkthrough and that binary,
+  produces an artifact whose flag capture is **behaviourally attributed** to the
+  target's own process tree, **and** the identical follower given only the binary
+  fails. Where both arms succeed the target is `UNINFORMATIVE` — it cannot
+  demonstrate the walkthrough contributed anything. This is
+  `benchmark/ablation/`'s necessity test applied to documentation instead of to
+  exploit steps. Scoring reuses `run_bench.py` and `attribution.py` unchanged
+  (fresh per-rep secret, independent re-execution, negative controls, behavioural
+  witness); the walkthrough engine never grades its own output and `b"flag" in out`
+  is never a verdict. Two followers measure deliberately different things: the
+  deterministic `template` follower measures **template validity** and has no bare
+  arm, so it is *structurally* unable to emit `FOLLOWABLE` and must never be quoted
+  against the gate; the `agent` follower is the gate metric. Family-agnostic by
+  construction — nothing in it names a walkthrough family.
+- **Walkthrough scorer — falsifiability controls** (`benchmark/walkthrough/selftest.py`,
+  `fixtures/`). A validation step that cannot fail is worse than none, and this
+  project has found four. `--selftest` proves a negative verdict is reachable across
+  four layers: one good and seven deliberately broken artifacts (wrong offset,
+  undeclared constant at the reader's first command, ret2shellcode taught on an NX
+  binary, flag laundering, hardcoded flag, scrape-without-running-the-target, and
+  replacing the staged binary with `cat flag.txt` before running it), with
+  the **positive control first** so a broken harness reports NOT MEASURABLE instead
+  of reporting the negatives as passes, and fixtures copied to randomised filenames
+  so filename special-casing cannot pass; an explicit **truth table** over the
+  verdict and denominator arithmetic including the inflation case; a
+  `witness()`/`witness_argv()` differential; and an **end-to-end layer** that drives
+  `run_target` itself with a follower scripted inside the test — positive control,
+  `UNINFORMATIVE`, a follower that hardcodes the flag it was shown, and an invalid
+  bare trial — because decoy-then-remint, the per-rep wipe, the pairing and the
+  asymmetric validity rule live there and were otherwise untested. There is
+  deliberately no test hook in the product: "the scorer ran with a stub follower"
+  must not be a reachable state of a real measurement. Measured: positive controls
+  credited, 7/7 broken artifacts refused, 4/4 end-to-end cases correct.
+- **Walkthrough scorer — two agent-only cheat channels closed structurally.**
+  `run_bench.py` faces a non-adaptive generator that is never handed the flag; an
+  interactive follower with a shell is a different adversary. (1) *Hardcoding* is
+  closed by **decoy-then-remint**: the follower works against a decoy secret, its
+  artifact is frozen and hashed, the sandbox wiped, and the target rebuilt with a
+  fresh secret it has never seen. (2) *Runtime laundering* — read `flag.txt` and
+  relay it **through** the target, so the target performs the flag-bearing write —
+  survives re-minting and is closed by a **behavioural open-audit**: a process
+  outside the target's lineage opening `flag.txt` scores `FOLLOWER_LAUNDERED`. This
+  was a confirmed false-positive channel, not a hypothetical: with the real
+  ret2plt chain and an `echo` of a Python-read flag, write-attribution alone reports
+  `credited … the target exec'd a shell`.
+- **Walkthrough scorer — the gate refuses to state a verdict on a denominator too
+  small to support one** (`MIN_INFORMATIVE_TARGETS = 7`). The necessity control's
+  cost, accepted up front, is that every target the bare follower solves unaided
+  leaves the denominator as `UNINFORMATIVE`. Measured on round-1 this is not a
+  trimmed tail: the bare Tier-3 follower captured the flag on both `hard` targets
+  (`08_ret2dlresolve`, `09_srop`) in 2/2 reps, while the engine ships a working
+  template for only 5 of 15 targets, none harder than the SROP the bare arm beat
+  unaided — so `{walkthrough works} ∩ {bare fails}` is plausibly *empty*. An 85%
+  threshold over two targets is not a measurement, so the gate now blocks below
+  seven informative targets and reports `NOT MEASURABLE`. Seven is derived, not
+  chosen: at n=7 one target cannot decide the gate (6/7 = 85.7% still passes), at
+  n=6 it can (5/6 = 83.3%). `--selftest` asserts the floor fires at n=2 *and* does
+  not fire at n=8, so it cannot degrade into a blocker that always trips. The
+  summary now also spells out both denominators side by side, because "85% of the
+  targets where a walkthrough could possibly have mattered" and "85% of the 15
+  targets" are different claims and a reader must not be able to mistake one for
+  the other. Reasoning, the two rejected alternatives (a weaker follower tier; a
+  bounded bare arm) and what would flip the decision:
+  `docs/plans/2026-09-24-walkthrough-follower-tier-decision.md`.
+- `--affordance {shell,read-only}` for the walkthrough follower
+  (`benchmark/walkthrough/followers.py`). Bounding the *bare* arm's budget or tools
+  to rescue the denominator is the one fix that must not be made: the bare
+  allowance would become a dial wired straight to the headline number, and the arms
+  would stop being the same follower, which is the only property that licenses
+  attributing an outcome difference to the walkthrough. The affordance profile is
+  therefore a property of the shared tier object and cannot be applied to one arm —
+  `read-only` withdraws `Bash` from **both** arms, removing the test-and-iterate
+  loop (the bare `09_srop` transcript ends "Reliable across 3 runs") rather than
+  the budget. Default stays `shell`, which is what every recorded figure used;
+  `read-only` is committed **unmeasured** so the tier question can be settled by
+  measurement instead of argument, and is recorded as such.
 - **Phase 5 (reliability hardening) — stdio-safe multi-part payload delivery**
   (`supwngo/exploit/pipeline/delivery.py`). Every native executor previously delivered
   its payload as a *single* write (`subprocess.run(input=blob)` / one `sendline`), which
@@ -428,6 +509,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Ret2LibcLeakExecutor` now performs exactly those steps for real.
 
 ### Changed
+- **`benchmark/attribution.py` — `witness()` refactored to delegate to a new
+  `witness_argv()`**, so the behavioural witness can attribute an arbitrary command
+  rather than only `<python> <script>`. The walkthrough scorer needs this and must
+  not own a second copy of "who wrote the flag" — the whole point of that module is
+  that there is exactly one answer to the question. `witness()`'s behaviour is
+  bit-identical (the traced syscall set defaults to what it has always traced, so
+  `run_bench.py` is unaffected), and `selftest.py` asserts the two entry points
+  agree on the same artifact.
 - **Phase 5 — attempt ordering** (`pipeline/orchestrator.py`): `StrategySuggester` ranked
   `VARIABLE_OVERWRITE` at priority 1 for all 15 benchmark targets (its applicability test
   is nearly always true) and `RET2PLT` at 4, so every target paid ~126 blind magic-value
@@ -947,6 +1036,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declared in `_UNMEASURED`, and a test fails on any field that is neither
   serialized nor declared there, so a future field cannot silently vanish the way
   these did.
+- **`benchmark/attribution.py` recorded FAILED `execve` calls as successful
+  target executions** — a live false-credit channel in the existing harness, not
+  only in the new scorer. `parse_trace` accepted an exec event unless the trace
+  line mentioned `ENOENT` or `EACCES`, so `E2BIG`, `ENOEXEC`, `EPERM` and `ELOOP`
+  failures each created a phantom "the target was exec'd" event — which is the
+  premise the entire lineage rule rests on. An artifact could force
+  `execve(target, huge_argv)` to fail with `E2BIG`, then read and print the flag
+  itself, and every subsequent write in that process would be attributed to the
+  target. Replaced the errno **denylist with a success allowlist** (the syscall
+  result must be exactly `= 0`), verified against a real trace. A strict
+  tightening: it can only remove credit, never add it. Found by independent
+  review of the walkthrough scorer. **Retroactively cleared against every
+  published number** (`docs/reports/2026-09-24-execve-denylist-retrocheck.md`,
+  tool `benchmark/soundness_probes/execve_denylist_retrocheck.py`): all 214
+  credited reps across R1's three authoritative runs and R2's cold run were
+  re-derived under the fixed parser and none rested on a failed `execve`; a wider
+  sweep of all 217 archived traces found the same. The *guarantee* was weaker than
+  documented for that period; the *measurements* — R1 13/13, R2 cold 4/15 — are
+  unaffected. The only `execve` failures these workloads produce are the
+  `ENOENT`/`EACCES` of PATH and library-path probing, which the old denylist
+  already rejected; the dangerous errnos have to be constructed deliberately.
+- **Walkthrough scorer — hardening from independent implementation review**
+  (`docs/plans/reviews/2026-09-24-walkthrough-scorer-implementation-review-codex.md`,
+  12 BLOCKING findings). Each of these could have manufactured a walkthrough
+  credit: a nonzero follower exit that left a partial `exploit.py` counted as an
+  *observed failure*, and an observed failure in the bare arm is exactly what
+  grants credit — now **any** nonzero exit is invalid; `gate_result` gained
+  blockers for missing `strace`, `--strict-attribution` off, `reps < 2` and any
+  runtime-discovered `VOID`, **and is now called with those arguments** (the
+  signature had gained them while the call site still passed positionally, so two
+  blockers silently defaulted to "satisfied" and could never fire); the follower's
+  whole process group is now torn down after every session and **before** the
+  scored secret is minted, closing a daemon-survives-and-exfiltrates window;
+  `resolve_walkthrough` raises on an ambiguous match instead of taking the first,
+  because a verdict attached to the wrong artifact is worse than a missing one;
+  each rep now wipes both sandboxes **before** the follower runs, so rep *N*
+  cannot build on rep *N−1*; the arms moved to separate roots so `../walkthrough/`
+  no longer resolves; re-staging `lstat`s and refuses to follow follower-planted
+  aliases; results directories are exclusive so a same-second collision fails
+  loudly rather than overwriting a measurement; and a new `_attest()` pins inode,
+  `st_ctime_ns`, size and hash of the artifact, the target and `flag.txt` across
+  the scoring window, so an artifact that overwrites the staged binary with
+  `cat flag.txt`, runs it at the target's pathname and restores the bytes is
+  caught — `fixtures/broken_overwrites_target.py` performs that attack and the
+  selftest asserts the detection. Holes that need a privilege boundary (same-UID
+  writable sandbox, name-based flag protection, shared `HOME`) are **not** claimed
+  as fixed; they are enumerated in `benchmark/walkthrough/README.md`, and all of
+  them bias the walkthrough arm upward, so the figure is an upper bound.
 - **`benchmark/soundness_probes/drive.py` never exercised behavioural
   attribution, so the tool that validates the harness could not fail.** It called
   `classify()` without the `attribution=` argument that `run_one()` always
