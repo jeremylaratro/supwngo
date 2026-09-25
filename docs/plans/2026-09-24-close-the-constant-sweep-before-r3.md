@@ -65,7 +65,7 @@ text and is in scope only so the sweep is complete:
 
 | site | role |
 | --- | --- |
-| `supwngo/exploit/pipeline/executors/stack_techniques.py:59` `MAGIC_VALUES` | `VariableOverwriteExecutor`'s sweep, **13** offsets × 9 values = **117** unconditional deliveries (rev 1 said 14 × 9 = 126; see §0.2b) |
+| `supwngo/exploit/pipeline/executors/stack_techniques.py:59` `MAGIC_VALUES` | `VariableOverwriteExecutor`'s sweep, **14** buffer sizes × 9 values = **126** unconditional deliveries (read from the loop at `:76`, not from a constant's name; see §0.2b) |
 | `supwngo/exploit/pipeline/executors/input_shape_techniques.py:48` `FALLBACK_MAGIC_VALUES` | appended unconditionally by `comparison_immediates()` |
 | `supwngo/exploit/enhanced_auto.py:119` `MAGIC_VALUES` | third copy |
 | `supwngo/exploit/strategy.py:920` | a suggestion string naming the constants — no sweep, but it will read as stale once the others change |
@@ -186,18 +186,42 @@ sweep written to demonstrate that a narrow match identity under-reports was itse
 under-specified by one literal in nine. Recorded rather than quietly corrected, because
 the failure is the point.
 
-**(b) "14 sizes × 9 values = 126 unconditional deliveries" is wrong. It is 13 × 9 = 117.**
-Measured by parsing the two lists out of the source rather than counting them by eye:
+**(b) RETRACTED IN FULL — rev 1's 126 was right, and this "correction" was the error.**
+
+Rev 2 wrote: *"14 sizes × 9 values = 126 is wrong. It is 13 × 9 = 117"*, and supported it
+with a parse of `COMMON_RET_OFFSETS` (13 entries). **`VariableOverwriteExecutor` does not
+use `COMMON_RET_OFFSETS`.** Its loop at `stack_techniques.py:76` uses a *local*
+`buffer_sizes` list with **14** entries. Re-measured by reading the loop instead of a
+constant's name:
 
 ```
-COMMON_RET_OFFSETS entries: 13
-MAGIC_VALUES entries: 9
-product: 117
+buffer_sizes (what the loop actually iterates) : 14 entries
+MAGIC_VALUES                                   : 9 entries
+COMMON_RET_OFFSETS (defined, used elsewhere)   : 13 entries
+actual deliveries = 14 x 9 = 126
 ```
 
-Note the direction: rev 1 **overstated** the cost of the folklore sweep, and so
-overstated the benefit of removing it. An error that flatters the proposal is the one to
-distrust. Table provenance now comes from a parse of the definitions.
+So: **126 stands. 117 was never a real figure.** Rev 1 did not overstate anything, and the
+paragraph rev 2 wrote about how "an error that flatters the proposal is the one to
+distrust" was itself the error — while lecturing about provenance.
+
+**The mechanism, because it is the session's recurring one.** I keyed on a *constant name*
+that sounded like the right one instead of tracing what the consumer iterates. That is the
+**name-keyed detector** class: the same defect as a consumer-search that misses
+`payload_len = len(self.payload)`, and the same family as the three instrument-narrower-
+than-the-claim errors elsewhere in this document. Four occurrences in one working session,
+across three different actors. Corrective rule: **a count about a loop is read from the
+loop**, never from a constant whose name matches the concept.
+
+**And a process finding that is worse than the arithmetic.** The round-2 review brief
+inlined `stack_techniques.py:59-72`. That window contains `COMMON_RET_OFFSETS` and stops
+**four lines short** of the real `buffer_sizes` at `:76`. The reviewer therefore classified
+117 as "inline-checkable" and let it through — not from inattention, but because **the
+excerpt I chose concealed the refuting evidence.** Generalised: *when you inline code for a
+reviewer, the excerpt boundary is part of the instrument.* A brief that crops out the
+consumer makes the reviewer's verification vacuous, and the author is the only one who can
+see that. So: every inlined excerpt must include the consumer of any quantity the document
+asserts, and the brief must say which lines it cut and why.
 
 **(c) "the only one of 17 executors without an `is_applicable`" — confirmed.** Enumerated
 every `TechniqueExecutor` subclass under `supwngo/exploit/pipeline/executors/` and checked
@@ -408,9 +432,11 @@ R3/R4/R5 is a **disclosed residual risk**, and the residual is now bounded in th
 direction that matters — a *wrong* gate value can no longer be delivered, even though a
 *missing* one cannot be detected.
 
-**Cost, net rather than gross** (answers MAJOR 7). Rev 1 advertised "removes 117
-deliveries" and did not count the replacement. At the current `limit=24`, 13 offsets × 24
-candidates is **312** deliveries — a possible net *increase* of 195. So A′ carries a
+**Cost, net rather than gross** (answers MAJOR 7). Rev 1 advertised removing the
+deliveries and did not count the replacement. The corrected figures (§0.2b): **126**
+removed, and at the current `limit=24`, 14 buffer sizes × 24 candidates is **336**
+deliveries — a possible net *increase* of 210. Round 1's own arithmetic said 336; rev 2's
+312 was downstream of the retracted 117. So A′ carries a
 binding budget criterion, not a talking point: **measured worst-case per-target wall time
 for this executor must not exceed its pre-change measurement**, on the worst target in R1
 and R2, with the number recorded before and after. If it does, `limit` comes down until it
@@ -703,9 +729,10 @@ RADIUS   §3 rewritten; §4.5 adds the fixture; §1's 13_off_by_one mechanism up
 FINDING  M7 - gross removal counted, net replacement search not
 INSTANCE "removes 126 deliveries" with no count of the replacement
 CLASS    gross-removal accounting presented as net resource analysis
-SWEEP    count both sides from the definitions rather than by eye
-OTHERS   and the gross figure was itself wrong - 13 offsets, not 14, so 117 not 126
-         (§0.2b). Replacement at limit=24 is 13 x 24 = 312: a net INCREASE of 195.
+SWEEP    count both sides by READING THE LOOP, not by parsing a constant's name
+OTHERS   rev 2 "corrected" 126 to 117 and was WRONG - see the retraction in §0.2b.
+         126 stands (14 buffer sizes x 9). Replacement at limit=24 is 14 x 24 = 336:
+         a net INCREASE of 210, which is round 1's original figure.
 SCOPE    equal - §4.6 makes measured worst-case wall time a binding acceptance
          criterion with limit as the lever, replacing a talking point with a gate.
 RADIUS   §2A' cost paragraph; §0.2b; §4.6. The 126 figure is corrected everywhere
@@ -757,7 +784,8 @@ FINDING  M10 - load-bearing topology and count claims unverifiable from the brie
 INSTANCE "three live sources", "14 sizes x 9 values", "1 of 17 without is_applicable"
 CLASS    scope premise asserted without the evidence for independent verification
 SWEEP    re-derive each by parsing the source rather than by reading it
-OTHERS   of the three: one was WRONG (14 -> 13, §0.2b), one CONFIRMED (17
+OTHERS   of the three: one I wrongly "corrected" and have now retracted (126 was
+         right all along, §0.2b), one CONFIRMED (17
          TechniqueExecutor subclasses, exactly 1 without is_applicable, and it is
          VariableOverwriteExecutor, §0.2c), one superseded by §2A' (the count of
          live sources stops being load-bearing once the sink binds all of them).
@@ -854,3 +882,64 @@ measured.
 control in §0.1, and — for Option 2 — a test that the executor's inertness is *declared*
 (an explicit skip with a reason) rather than silently produced, so that a future reader
 cannot mistake "no candidates by design" for "no candidates recovered".
+
+---
+
+## 8. The producer/sink inventory, run
+
+Round 2 said the token design could not be specified honestly until every candidate
+producer and every delivery route was enumerated, and rev 3's §7 recorded that inventory as
+unrun. It is now run — index-scoped per §0.1, non-vacuity 77 tracked `.py` under
+`supwngo/exploit/`. It is reported here because it serves **both** options in §7: option A
+needs it as a foundation, option B needs it to know the deletion's blast radius.
+
+### Producers — three consumption sites, not three definitions
+
+| site | code | delivers via |
+| --- | --- | --- |
+| `stack_techniques.py:79` | `for magic in MAGIC_VALUES:` | `verifier.verify_payload()` |
+| `enhanced_auto.py:384` | `for magic in self.MAGIC_VALUES:` | `self._test_variable_overwrite()` |
+| `input_shape_techniques.py:104` | the unconditional append | returned to its one caller |
+
+### Two facts that change the design, both of which correct earlier sections
+
+**1. `comparison_immediates()` has exactly ONE real caller**, and it is not the executor
+this plan has been about. It is `input_shape_techniques.py:240`, inside
+`NegativeIndexWriteExecutor` — which already records provenance in its attempt notes
+(*"candidate gate values from the binary's own cmp insns"*). So the recovery function is
+narrow, single-consumer, and its existing consumer is the honest one.
+
+**`VariableOverwriteExecutor` does not call `comparison_immediates()` at all.** It reads the
+raw list. This sharpens §0's finding about the R5 spec's preferred remedy: that remedy was
+not "change existing wiring so it uses recovered values", it was **new wiring that does not
+exist** — and the unconditional append would have defeated it on arrival. Both halves had
+to be wrong for the remedy to fail, and both were.
+
+**2. There are TWO live delivery sinks, in different subsystems.** Round 2's highest-value
+change asks for "one named, unavoidable delivery API". Today there are two:
+`verifier.verify_payload()` on the pipeline path, and `_test_variable_overwrite()` inside
+`enhanced_auto.py`. And `enhanced_auto` is **live, not legacy** — `cli.py:328` and
+`cli.py:416` both construct `EnhancedAutoExploiter`, from the `exploit` command (`cli.py:247`).
+
+The benchmark measures the pipeline (`autopwn` → `CanonicalAutopwnEngine`), so
+`enhanced_auto` is **off the benchmark path** — which means it cannot corrupt a corpus
+figure, and equally means fixing only the pipeline leaves a user-facing command still
+guessing from the cheat sheet. That distinction was not drawn anywhere in revisions 1–3, and
+it is the difference between "the measurement is sound" and "the tool is sound". Both
+matter; only the first blocks R3/R4/R5.
+
+### What this does to the two options in §7
+
+- **Option B (delete, executor inert)** is **7 edits across 4 files**: three list
+  definitions, three consumption sites, one advisory string. `comparison_immediates()`
+  survives intact for its single legitimate caller once the append is removed, and
+  `NegativeIndexWriteExecutor` is unaffected. Blast radius fully enumerated; nothing is
+  guessed at.
+- **Option A (token contract)** is larger than round 2 assumed, because "one unavoidable
+  delivery API" requires either unifying two sinks across two subsystems, or scoping to the
+  pipeline and **declaring `enhanced_auto` out of scope in writing** — which is honest but
+  leaves the `exploit` command guessing. The recovery side is the easy half: one function,
+  one caller.
+
+This inventory does not decide between them. It does make option B's cost fully known and
+option A's cost larger than stated, which is information the §7 decision should have.
