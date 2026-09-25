@@ -118,6 +118,18 @@ had **no category** for the 4 bare re-raises. The headline **28 of 106 in scope*
 is intact; the never-fired count is **not** re-measured and must not be re-quoted
 as if it were.
 
+> **ERRATUM (same day).** The "no category" half is **false** and is retracted. The
+> census output reads `bare re-raise sites (exempt): 4` — line 609 at `31291c2`,
+> line 617 at `e6498a7`, verified in the artifact rather than relayed. **2 out of
+> scope, not 1** and **28 of 106 in scope** both stand. Corrected in the protocol at
+> `2bc3aba`, where the rule it earns is recorded: *before reporting a category absent
+> from an instrument's output, quote the output.*
+>
+> The agent retracted this against itself and was right to. It also noted this was
+> the second time it had accused the same instrument of being worse than it is, both
+> in the same direction — and the failure was mine to the same degree, because I put
+> the unchecked claim into a process document.
+
 ## Dispatch
 
 Queued. Send on the next agent completion, to keep concurrency at or below 3:
