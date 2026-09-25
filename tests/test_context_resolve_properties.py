@@ -2678,6 +2678,62 @@ def prop_P35_canonical_root_refuses_ambiguous_types() -> None:
     _count("P35 root-admissibility checks", checked)
 
 
+def prop_P36_open_field_set_is_pinned() -> None:
+    """The contract's single declared exemption from per-position type
+    enforcement is ``_STRUCTURAL_OPEN_FIELDS``: it states there is EXACTLY
+    ONE open position, ``Observation.evidence``. Nothing pinned that
+    table's CONTENT before this property -- P33 and P34 both *consume* it
+    as their own skip (``if f.name in open_fields: continue``), so neither
+    can detect the table itself drifting: P33 silently skips exactly the
+    field that widened, and a widened open set only shows up in P34 as an
+    exception it did not expect (a crash it raises out of its own fixture,
+    not a caught property violation). The open set is the one table that
+    cannot be allowed to police itself, and P33/P34 structurally cannot
+    police it, because both of them APPLY it. So this checks the table
+    directly, by ``==`` on sets in both directions -- widening OR
+    narrowing either passes silently under ``in``/``issubset``, which is
+    why equality is required here, not containment.
+    """
+    checked = 0
+
+    assert set(R._STRUCTURAL_OPEN_FIELDS) == {R.Observation}, (
+        f"_STRUCTURAL_OPEN_FIELDS declares open positions on "
+        f"{sorted(t.__name__ for t in R._STRUCTURAL_OPEN_FIELDS)}; the "
+        "contract states there is exactly ONE, Observation.evidence -- a "
+        "new key here is a new exemption from per-position enforcement "
+        "that nothing named"
+    )
+    checked += 1
+
+    assert R._STRUCTURAL_OPEN_FIELDS[R.Observation] == frozenset({"evidence"}), (
+        f"Observation's declared open field set is "
+        f"{sorted(R._STRUCTURAL_OPEN_FIELDS[R.Observation])}, not exactly "
+        "{'evidence'} -- widening OR narrowing this set silently changes "
+        "which fields skip per-position type enforcement"
+    )
+    checked += 1
+
+    # Every declared open field name must be real, and every owner must
+    # itself be a registered structural dataclass -- an open field naming
+    # a nonexistent field, or an unregistered owner, is a dangling
+    # exemption nothing else here would catch either.
+    for owner, fields in R._STRUCTURAL_OPEN_FIELDS.items():
+        assert owner in R._STRUCTURAL_DATACLASSES, (
+            f"{owner.__name__} has a declared open field set but is not a "
+            "registered structural dataclass"
+        )
+        checked += 1
+        real_names = {f.name for f in dataclasses.fields(owner)}
+        for name in fields:
+            assert name in real_names, (
+                f"{owner.__name__}.{name} is declared open but is not a "
+                f"real field of {owner.__name__} ({sorted(real_names)})"
+            )
+            checked += 1
+
+    _count("P36 open-field-set checks", checked)
+
+
 PROPERTIES = {
     "P1": prop_P1_merge_totality_and_semantics,
     "P1b": prop_P1b_validation_is_the_only_raiser,
@@ -2716,6 +2772,7 @@ PROPERTIES = {
     "P33": prop_P33_structural_field_types_table_is_complete,
     "P34": prop_P34_declared_type_enforced_at_every_structural_position,
     "P35": prop_P35_canonical_root_refuses_ambiguous_types,
+    "P36": prop_P36_open_field_set_is_pinned,
 }
 
 
@@ -3135,6 +3192,14 @@ DIMENSIONS: Tuple[str, ...] = (
     #: once JSON-encoded (tuple/set/frozenset vs list; an Enum member vs its
     #: own .value) or an unambiguous one.
     "root_type_ambiguity",
+    #: unit-1 review follow-up, P36: the CONTENT of
+    #: R._STRUCTURAL_OPEN_FIELDS itself -- which types declare an open
+    #: position at all, and which field names each declares -- as opposed
+    #: to a runtime value being checked against that table (P33/P34, which
+    #: both apply this table rather than examine it). Test-local only:
+    #: there is no runtime copy of this dimension, the module table itself
+    #: IS what varies here.
+    "open_field_set_content",
 )
 
 #: ``dimension -> the single property that varies it``, filled in by the breadth
@@ -3254,6 +3319,7 @@ NARROWNESS: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...]]] = {
     "P35": (("root_type_ambiguity",),
             ("value", "provenance", "scope", "identity", "conditions",
              "fact_key")),
+    "P36": (("open_field_set_content",), ()),
 }
 
 

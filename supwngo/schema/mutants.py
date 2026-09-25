@@ -854,6 +854,22 @@ def _structural_field_types_missing_scope() -> Dict[type, Dict[str, Any]]:
     return table
 
 
+def _structural_open_fields_widened() -> Dict[type, "frozenset"]:
+    """new ``open_field_set_widened``: widens ``Observation``'s declared
+    open field set to include ``"at"`` alongside the real ``"evidence"``
+    entry -- a silent widening of the contract's single declared
+    exemption from per-position type enforcement. Neither
+    ``prop_P33_structural_field_types_table_is_complete`` nor
+    ``prop_P34_declared_type_enforced_at_every_structural_position`` can
+    detect this: both apply ``_STRUCTURAL_OPEN_FIELDS`` as their own skip
+    rather than examine its content, so only a property that pins the
+    table directly (P36) can."""
+    table = {cls: frozenset(fields)
+             for cls, fields in R._STRUCTURAL_OPEN_FIELDS.items()}
+    table[R.Observation] = frozenset(table[R.Observation] | {"at"})
+    return table
+
+
 MUTANTS: Dict[str, Mutant] = {
     m.name: m for m in [
         Mutant("merge_supersedes_on_rank", "v3 defect 1", "P1",
@@ -1056,5 +1072,17 @@ MUTANTS: Dict[str, Mutant] = {
                     "regression in _build_structural_field_types itself, "
                     "which _check_declared_shape cannot catch because it "
                     "trusts the table it is given"),
+        # Unit-1 review re-run (self-review of the F1/F2/F5 fix): the open
+        # field set is the one declared exemption from per-position
+        # enforcement, and P33/P34 both apply it rather than examine it.
+        Mutant("open_field_set_widened", "P33/P34 self-exemption gap", "P36",
+               {"_STRUCTURAL_OPEN_FIELDS": _structural_open_fields_widened()},
+               note="widens Observation's declared open field set to "
+                    "include 'at' alongside the real 'evidence' entry -- "
+                    "P33 skips exactly the field that widened and P34 "
+                    "only sees an unexpected SchemaError out of its own "
+                    "fixture (a crash, not a caught violation); only a "
+                    "property pinning the table's content by == can "
+                    "detect it"),
     ]
 }
