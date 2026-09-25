@@ -301,6 +301,37 @@ that the fitted ordering is worth a large share of the solve count — which is
 exactly what arm 2 measures. A large delta turns the suggester from cleanup into
 the critical path.
 
+## Both preconditions above govern R3 and R4, not only R5
+
+Written here because this is where the preconditions live, but scoped wrongly if left
+attached to R5 alone. **R3 and R4 are held-out corpora with exactly the same two
+exposures and exactly the same single-use property.** A cold number can be taken from
+each of them once. Measuring either while the constant sweep and the R1-fitted ordering
+are unaddressed spends a single-use resource under a known defect — and produces a
+figure that has to carry the same caveats R5's would, with no way to re-take it.
+
+So, applying to **every remaining cold measurement (R3, R4, R5)**:
+
+1. **The constant-sweep precondition.** Either source `VariableOverwriteExecutor`'s
+   candidates from `comparison_immediates()`, or flag and report separately every
+   credited target that a constant sweep won. Option 1 remains preferred and is now
+   more clearly worth doing once rather than three times: the recovery function already
+   exists, and doing it before R3 makes the fix cover all three rounds.
+2. **The ordering precondition.** Commit the layer-attribution table before the run,
+   and run the permuted-ordering ablation arm with no intervening edit. The table is
+   the same table for all three rounds; the ablation arm is per-round, because the
+   delta is a property of the corpus as well as of the ordering.
+
+R1 and R2 are unaffected — both were measured before either exposure was identified,
+both have been re-run post-fix and reproduced target-for-target, and neither credited
+any target via the constant sweep. **13/13 and 4/15 stand unannotated.** The exposure
+is prospective, which is precisely why it must be closed before the next cold run
+rather than after.
+
+**Consequence for sequencing: R3 is not ready to measure today.** That is a change from
+"R3 follows R2" as a scheduling fact, and it is the cheaper order — one fix ahead of
+three measurements instead of three sets of caveats behind them.
+
 ## Sequencing
 
 R5 is the last item. It runs after R2, R3, R4 and after the walkthrough second
