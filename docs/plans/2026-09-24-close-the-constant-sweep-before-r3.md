@@ -1,11 +1,27 @@
 # Close the folklore-constant sweep before R3
 
 Date: 2026-09-24
-Status: **PLAN, revision 2** — rev 1 was reviewed independently and **NOT-APPROVED**
-(3 BLOCKING, 6 MAJOR, 1 MINOR). Review preserved verbatim at
-`docs/reviews/2026-09-24-close-the-constant-sweep-plan-review-round1-sol.md`.
-This revision answers every finding by CLASS in §6, and reverses two of rev 1's own
-claims. **Round 1 of a 3-round budget.**
+Status: **PLAN, revision 3 — NOT YET APPROVED.** Two independent reviews, both
+NOT-APPROVED:
+- round 1 (of rev 1): 3 BLOCKING, 6 MAJOR, 1 MINOR —
+  `docs/reviews/2026-09-24-close-the-constant-sweep-plan-review-round1-sol.md`
+- round 2 (of rev 2): **9 of 10 round-1 findings returned as RECURRENCE**, plus 11 new —
+  `docs/reviews/2026-09-24-close-the-constant-sweep-plan-review-round2-sol.md`
+
+Rev 3 is **partial**: it corrects the factual and procedural defects round 2 found
+(§0.1's erratum, the held-out scoping control, the round accounting, the stale counts) and
+retains §6's round-1 answers. **It does not yet contain the redesign round 2 requires** —
+recovery-minted, binary-bound candidate tokens through one unavoidable delivery API, in
+place of the value-membership check in §2A′. That section is still the rev-2 text and is
+known-insufficient; see §7.
+
+**ROUND ACCOUNTING, corrected.** Rev 2 declared itself "round 1 of a 3-round budget"
+and concluded that no finding could be a recurrence. That was wrong and the round-2
+reviewer was right to call it a control failure rather than a wording slip: rev 1 drew
+round 1, rev 2 drew **round 2**, and round 2 returned **9 of 10 round-1 findings as
+RECURRENCE**. A document that miscounts its own round cannot trip the escalation rule it
+is governed by. **This is revision 3, answering round 2. One round remains; round 4
+escalates to the maintainer rather than proceeding.**
 Blocks: the cold measurement of **R3, R4 and R5** (see
 `2026-09-24-final-round-r5-unseen-corpus.md`, "Both preconditions above govern R3 and
 R4").
@@ -68,20 +84,70 @@ same defect and is invisible to a list-shaped sweep.
 So the wider sweep was run too — every tracked `.py` containing **any** of the nine
 literals, which is the identity that matches the class rather than the artefact:
 
-```
-# all NINE literals. Note the bare 0x1337 in first position - rev 1 omitted it,
-# which is why its count was 28. It also subsumes 0x1337bab3 by prefix.
-git ls-files -- '*.py' | xargs grep -inl '0x1337\|0xdeadbeef\|0xcafebabe\|0xbadc0de\
-\|0xfeedface\|0xbaadf00d\|0x0d15ea5e\|0x41414141'
+```sh
+# all NINE literals. The bare 0x1337 subsumes 0x1337bab3 by prefix (verified: no file
+# matches the long form without the short one). -E avoids BRE backslash-alternation.
+# NUL-delimited so a path with whitespace cannot split. Counts BOTH sides, because an
+# enumeration that does not print its denominator cannot be audited (see section 5).
+n_files=$(git ls-files -z -- '*.py' | tr -dc '\0' | wc -c)
+n_hits=$(git ls-files -z -- '*.py' \
+  | xargs -0 grep -ilE '0x1337|0xdeadbeef|0xcafebabe|0xbadc0de|0xfeedface|0xbaadf00d|0x0d15ea5e|0x41414141' \
+  | tee /tmp/folklore_hits.txt | wc -l)
+printf 'searched %s files, matched %s\n' "$n_files" "$n_hits"
 ```
 
-Both the quoting and the count matter here. `git ls-files -- '*.py'` quotes the pattern so
-zsh cannot glob it, and the file count is printed rather than assumed — the two failure
-modes recorded in §5.
+> **ERRATUM — rev 2 printed a command that cannot run, and I reported having run it.**
+> Rev 2's version wrapped the pattern across two lines with a backslash inside single
+> quotes. A backslash-newline inside single quotes is **not** a line continuation: both
+> characters stay in the pattern, grep splits the pattern on the newline, and the first
+> half ends in a trailing backslash. Run as printed it gives **exit 123, `grep: Trailing
+> backslash`, 0 files** — a broken enumerator returning a clean zero, published inside the
+> section that warns about broken enumerators returning clean zeros.
+>
+> Worse, I wrote that I had "run the command exactly as the document prints it" and got 29
+> with exit 0. **I had not.** I ran the unwrapped single-line equivalent. The 29 figure is
+> correct; the claim to have verified the *printed* form was false. The command above is
+> now the one that was executed, and it prints both the numerator and the denominator so
+> the next reader is not trusting either number on my word.
 
-**29 of 228 tracked `.py` files** — the command above is the *corrected* nine-literal
-pattern; rev 1's ran eight literals and returned 28, missing bare `0x1337` (§0.2a). Every
-one of the 25 beyond the table was inspected and
+**Sweep scoping is load-bearing for benchmark integrity, not just for correctness.**
+`git ls-files` is **index-scoped to the current branch**, so it cannot reach the held-out
+corpora — R3, R4 and R5 live on unmerged branches. But three of them are currently checked
+out in worktrees **inside this repository directory**:
+
+| branch | worktree | targets on disk |
+| --- | --- | --- |
+| `feat/benchmark-corpus-r3-20260923` | `.claude/worktrees/agent-a88a5ad4fd22a3ec9` | 15 `.c` |
+| `feat/benchmark-corpus-r4-20260923` | `.claude/worktrees/agent-ab05716cdb64e0faa` | 15 `.c` |
+| `feat/benchmark-corpus-r5-20260924` | `.claude/worktrees/agent-a419d7c10e576f6b6` | 15 `.c` |
+
+So **any filesystem-walking search from the repo root — `grep -r`, `find`, `rg` without an
+exclude — reads held-out target sources**, which is prohibited and would compromise the
+cold measurement those corpora exist to provide. No such read has occurred: every sweep
+reported in this document is `git ls-files`-scoped, and the one recursive `grep -r` I
+attempted aborted on a zsh glob before executing. **But that is luck plus tool habit, not
+a control.** Therefore, binding for this plan and any sweep it prescribes:
+
+1. Every sweep is **index-scoped** (`git ls-files`), never a filesystem walk.
+2. If a filesystem walk is unavoidable, it must `-prune` `.claude/worktrees` explicitly and
+   print the pruned count.
+3. Before any sweep whose output is quoted as evidence, assert the held-out corpora are
+   **not** in the searched set, and record that assertion with the result.
+
+**30 of 229 tracked `.py` files, measured at `435a735`.** Rev 1 ran eight literals and
+returned 28, missing bare `0x1337` (§0.2a); the corrected nine-literal pattern returned
+**29 of 228 at `3c2970d`**.
+
+**A count is only meaningful against a commit, and this one moved under my own feet.** The
+delta from 29/228 to 30/229 is *exactly one file*: `benchmark/tools/gate_encoding_matrix.py`,
+the fixture instrument this plan itself added in `91912ad`, which matches `0x1337` because
+its 32-bit test constant is `0x1337BEEF`. Verified by recomputing with `benchmark/tools`
+excluded — 29, unchanged. So the sweep now reports **its own measuring device as a hit**,
+which is harmless here and is the kind of thing that silently inflates a trend line if the
+figure is quoted without its commit. Every count in this document is now stated with the
+revision it was taken at.
+
+Of the 26 files beyond the four-site table, every one was inspected and
 is **out of scope, not uncovered** — two benign uses account for all of them:
 
 - `0x41414141` / `0x4141414141414141` as a **cyclic or offset marker**, searched for in
@@ -495,7 +561,8 @@ and reproduced exactly, so the baseline is current and any movement is attributa
 either moves, that is the finding and it is reported before anything else.
 
 **4.8 Sweeps re-run after the change, with the corrected nine-literal pattern** (§0.2a),
-and the §0.1 disposition re-confirmed: all 25 out-of-scope files still out of scope. A fix
+and the §0.1 disposition re-confirmed: all 26 out-of-scope files still out of scope, with
+the count stated against its commit. A fix
 that introduced a single-constant guess would satisfy the narrow `MAGIC_VALUES *=` sweep
 and be invisible to it. Print the iteration count and check the exit status (§5).
 
@@ -724,3 +791,66 @@ the matrix was run. Had the matrix stayed "owed", a false "absent from the disas
 entirely" would have gone to round 2 as a finished finding. **The lesson for the round
 budget: a sweep recorded as owed is not a mitigated risk, it is an unmeasured claim still
 standing in the document.**
+
+---
+
+## 7. What rev 3 has NOT done, and the decision that now belongs to the maintainer
+
+Round 2 returned **9 of 10 round-1 findings as RECURRENCE**. Under this project's own
+protocol that is not a scorecard, it is a diagnosis: *answers were written at the instance
+level for defects that were classes.* I accept it. The single class underneath most of the
+nine:
+
+> **A membership test was substituted for a causal one.** §2A′ requires a delivered gate
+> value to *equal* some recovered value. It never requires the delivery to have *originated
+> from* that recovery. So the folklore list can still choose `0x1337`, and the sink will
+> find a genuine `cmp $0x1337` record in `14_negative_index` and bless it — **the exact
+> target in this plan's own §1 table.** The contract as written would launder the precise
+> case the plan exists to prevent. That is not a gap in the contract; it is the contract
+> testing the wrong proposition.
+
+The remedy round 2 names is right and rev 3 does not attempt it in this pass: one
+authoritative recovery result mints **tokens bound to the target's binary digest**, exactly
+one delivery API accepts them, candidate *selection* is structurally unable to consult
+folklore membership, and fault injection proves every real producer and write route rejects
+wrong-source, wrong-target and fabricated tokens. That is an implementation design, not a
+paragraph — it needs the producer/sink inventory round 2 asked for
+(`rg -n -C 12 'comparison_immediates|MAGIC_VALUES|GateCandidate|send(line|after)?\(|process\(|communicate\(|stdin\.write' supwngo/exploit`)
+before it can be specified honestly, and that inventory is **not yet run**.
+
+### The round budget is the constraint, and it is nearly spent
+
+One round remains. **Round 4 escalates; it does not proceed.** So spending round 3 on a
+design that still has an unrun inventory underneath it risks burning the budget and landing
+in escalation anyway. Two ways forward, and the choice is the maintainer's because it trades
+scope against the thing being protected:
+
+**Option 1 — spend round 3 on the token redesign.** Run the producer/sink inventory, specify
+the contract against it, submit for round 3. If round 3 comes back clean, implement and the
+R3/R4/R5 cold measurements are unblocked with the invalid-credit channel genuinely closed.
+If it does not, escalation. *Cost:* the three cold measurements stay blocked meanwhile.
+
+**Option 2 — decouple the blocker from the redesign.** Delete `MAGIC_VALUES`,
+`FALLBACK_MAGIC_VALUES` and the unconditional append outright, and **give
+`VariableOverwriteExecutor` no candidate source at all** pending the redesign. The executor
+becomes inert. On the measured evidence this costs **zero credited targets** — it has won 0
+of 17 across R1 and R2 — and it closes the invalid-credit channel *completely and
+immediately*, because a technique that delivers nothing cannot deliver an unprovenanced
+guess. The redesign then becomes a capability project on its own timeline, not a blocker on
+three single-use corpora.
+
+**My recommendation is Option 2**, and the reason is the round budget rather than the
+engineering: Option 1 asks a nearly-exhausted review budget to ratify a design whose
+foundation is unmeasured, to protect credit that has never once been won. Option 2 is
+smaller than the plan I have been defending for two rounds, and that is the argument for it.
+
+*What would flip me to Option 1:* evidence that `variable_overwrite` is the only route to
+some target family that R3/R4/R5 actually contain — which cannot be checked without reading
+held-out sources, so it cannot be established. That asymmetry is itself an argument for
+Option 2: the case for keeping the technique is unfalsifiable, and the case against it is
+measured.
+
+**Both options still require** the §4 verification set as rewritten, the held-out scoping
+control in §0.1, and — for Option 2 — a test that the executor's inertness is *declared*
+(an explicit skip with a reason) rather than silently produced, so that a future reader
+cannot mistake "no candidates by design" for "no candidates recovered".
