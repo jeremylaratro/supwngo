@@ -312,11 +312,24 @@ figure that has to carry the same caveats R5's would, with no way to re-take it.
 
 So, applying to **every remaining cold measurement (R3, R4, R5)**:
 
-1. **The constant-sweep precondition.** Either source `VariableOverwriteExecutor`'s
-   candidates from `comparison_immediates()`, or flag and report separately every
-   credited target that a constant sweep won. Option 1 remains preferred and is now
-   more clearly worth doing once rather than three times: the recovery function already
-   exists, and doing it before R3 makes the fix cover all three rounds.
+1. ~~**The constant-sweep precondition.**~~ **WITHDRAWN 2026-09-24 by maintainer
+   decision. This is no longer a precondition for any cold measurement.** The remedy
+   grew into provenance/token machinery that is compliance-shaped overengineering for a
+   binary-exploitation tool; the folklore constants stay as they are and the work is
+   deferred. See `2026-09-24-close-the-constant-sweep-before-r3.md` §9.
+
+   Two measured facts make the withdrawal cheap rather than a concession. First,
+   `variable_overwrite` has won **0 of 17** credited targets across R1 and R2, so the
+   constant sweep has never been the reason any target counted as solved — there is no
+   figure to caveat. Second, the remedy as originally written here would not have worked:
+   `comparison_immediates()` appends the folklore list **unconditionally** (the loop is
+   outside its `try/except`), and `VariableOverwriteExecutor` does not call that function
+   at all, so "source its candidates from `comparison_immediates()`" was new wiring that
+   would have been defeated on arrival. Both halves were wrong.
+
+   **R3, R4 and R5 are therefore unblocked on this axis.** If `variable_overwrite` ever
+   starts winning credited targets, that appears in the per-technique credit table without
+   anyone auditing for it, and is the signal to reopen.
 2. **The ordering precondition.** Commit the layer-attribution table before the run,
    and run the permuted-ordering ablation arm with no intervening edit. The table is
    the same table for all three rounds; the ablation arm is per-round, because the
@@ -324,13 +337,13 @@ So, applying to **every remaining cold measurement (R3, R4, R5)**:
 
 R1 and R2 are unaffected — both were measured before either exposure was identified,
 both have been re-run post-fix and reproduced target-for-target, and neither credited
-any target via the constant sweep. **13/13 and 4/15 stand unannotated.** The exposure
-is prospective, which is precisely why it must be closed before the next cold run
-rather than after.
+any target via the constant sweep. **13/13 and 4/15 stand unannotated.**
 
-**Consequence for sequencing: R3 is not ready to measure today.** That is a change from
-"R3 follows R2" as a scheduling fact, and it is the cheaper order — one fix ahead of
-three measurements instead of three sets of caveats behind them.
+**Consequence for sequencing, revised: only precondition 2 now gates a cold run.** With
+the constant-sweep precondition withdrawn, **R3 is ready to measure** once the
+layer-attribution table is committed and the permuted-ordering ablation arm is in place.
+The earlier note here said R3 was not ready today; that was downstream of the withdrawn
+precondition and no longer applies.
 
 ## Sequencing
 
