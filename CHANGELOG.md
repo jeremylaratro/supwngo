@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING (licensing): the repository is now licensed under PolyForm Strict 1.0.0**,
+  resolving a three-way conflict in which `LICENSE` said CC BY-NC-SA 4.0, `README.md`
+  said PolyForm Noncommercial 1.0.0, and `pyproject.toml`/`setup.py` package metadata
+  both declared **MIT**. Those terms are legally distinct and cannot all apply at once;
+  the MIT declaration was the urgent one, because it is what automated consumers read
+  (PyPI, dependency scanners, corporate license bots), so the project was publishing
+  permissive commercial-use terms it did not intend to offer.
+
+  Under PolyForm Strict, **any noncommercial purpose is free** — personal study,
+  research, experiment, testing, hobby projects, amateur pursuits, and use by
+  charitable, educational, public-research, public-safety, health, environmental and
+  government organizations. The copyright grant deliberately does **not** cover
+  distributing the software or making changes or new works based on it, so
+  **commercial use, redistribution and derivative works each require a separate
+  written license** from the copyright holder.
+
+  Anyone who previously relied on the MIT metadata for commercial use, or on CC
+  BY-NC-SA's permission to adapt and share, no longer has those permissions by
+  default and should contact the copyright holder. `LICENSE` carries the canonical
+  PolyForm Strict text verbatim, followed by a clearly separated addendum — not part
+  of the license — naming the contact for commercial and derivative licensing.
+  PolyForm Strict is a *source-available* license, not an OSI-approved open-source
+  license, because it does not permit redistribution or modification by default.
+
 ### Added
 - **Normative merge/resolution semantics for the standardized context schema**
   (`supwngo/schema/resolve.py`, plus `supwngo/schema/mutants.py` and the generated

@@ -28,6 +28,7 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/jeremylaratro/supwngo",
+    license="PolyForm Strict 1.0.0",
     packages=find_packages(exclude=["tests", "tests.*", "build*"]),
     classifiers=[
         "Development Status :: 3 - Alpha",
@@ -35,7 +36,7 @@ setup(
         "Intended Audience :: Developers",
         "Intended Audience :: Information Technology",
         "Intended Audience :: Science/Research",
-        "License :: OSI Approved :: MIT License",
+        "License :: Other/Proprietary License",
         "Operating System :: POSIX :: Linux",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.8",

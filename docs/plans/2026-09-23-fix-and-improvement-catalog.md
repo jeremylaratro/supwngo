@@ -132,7 +132,16 @@ Full-repo pattern sweep (subprocess/shell/eval/exec/pickle/SQL/tempfile/SSRF/pat
 
 ## 9. Governance, licensing, documentation
 
-- **HIGH — three-way license conflict, contradicting the plan's own assumption.** `LICENSE` (root file) is **Creative Commons Attribution-NonCommercial-ShareAlike 4.0**; `README.md` states **PolyForm Noncommercial 1.0.0**; `pyproject.toml`/`setup.py` package metadata both declare **MIT**. These are legally distinct licenses with different obligations (CC BY-NC-SA is share-alike/copyleft; PolyForm Noncommercial is not; MIT is permissive and commercial-use-permitting). This must be resolved — pick one, correct the other two — before any corpus-provenance or contribution-licensing decisions in the phased plan (which had assumed PolyForm terms based on the README alone).
+- **HIGH — three-way license conflict, contradicting the plan's own assumption. — RESOLVED
+  25SEP2026.** `LICENSE` (root file) was **Creative Commons Attribution-NonCommercial-ShareAlike
+  4.0**; `README.md` stated **PolyForm Noncommercial 1.0.0**; `pyproject.toml`/`setup.py` package
+  metadata both declared **MIT**. These are legally distinct licenses with different obligations (CC
+  BY-NC-SA is share-alike/copyleft; PolyForm Noncommercial is not; MIT is permissive and
+  commercial-use-permitting). All three now state **PolyForm Strict 1.0.0** — noncommercial use free,
+  commercial use *and any derivative work* requiring a separate license. MIT was the urgent one: it is
+  the declaration machines read (PyPI, dependency scanners, corporate license bots), so the repo was
+  publishing permissive commercial-use terms it did not intend. Corpus-provenance and
+  contribution-licensing decisions downstream of this can now rely on PolyForm Strict.
 - Already covered by the phased plan and not repeated in depth here: missing `CHANGELOG.md`, broken README links to reorganized docs, the unverifiable "~60%"/"98%"/"100%" success-rate claims across `ROADMAP.md`/`WRITEUP_CAPABILITY_ASSESSMENT.md`/`TEST_RESULTS.md`.
 
 ---

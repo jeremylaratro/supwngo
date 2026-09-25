@@ -231,7 +231,17 @@ Each item is still ultimately driven by benchmark failures, in frequency order, 
 **Goal.** Close the evidenced governance gaps — including the license conflict surfaced by peer review — and formally **park** the speculative scope, corrected per the module-triage audit.
 
 **Approach.**
-- **Resolve the three-way license conflict** (`LICENSE`=CC BY-NC-SA 4.0, `README.md`=PolyForm Noncommercial 1.0.0, `pyproject.toml`/`setup.py`=MIT) — pick one and correct the other two. This is a maintainer/legal decision, not a technical one; flag it for the repo owner rather than picking on their behalf.
+- ~~**Resolve the three-way license conflict**~~ — **RESOLVED 25SEP2026.** The maintainer chose
+  **PolyForm Strict 1.0.0**: free for any noncommercial purpose, with commercial use, redistribution
+  **and derivative works** each requiring a separate written license. `LICENSE` now carries the
+  canonical PolyForm Strict text verbatim (downloaded from polyformproject.org, embedding asserted
+  byte-identical) plus a clearly-separated non-license addendum naming the contact for commercial and
+  derivative licensing. `pyproject.toml` is `license = {file = "LICENSE"}` with the
+  `License :: Other/Proprietary License` classifier; `setup.py` matches and gained an explicit
+  `license=` field. README states the same terms and notes that PolyForm Strict is *source-available*,
+  not OSI open source. The original instinct recorded here — flag it rather than pick on the owner's
+  behalf — was right: the choice turned on whether a personal user may fork, which only the owner
+  could answer, and the answer (no) selected Strict over Noncommercial.
 - `CHANGELOG.md` was started in Phase 0 — keep recording user-visible changes in the same commit going forward.
 - Fix the broken README links to `docs/DEVELOPMENT.md`/`docs/MANUAL_EXPLOITATION_GUIDE.md` (moved to `docs/internal/` by a prior reorg).
 - Once Phase 1's real measurement exists, reconcile or retire the unsupported "~60%" KPI in `ROADMAP.md` and the "98%/100%" claims in `WRITEUP_CAPABILITY_ASSESSMENT.md` — replace with the honest, reproducible baseline.

@@ -120,17 +120,20 @@ pip install -e ".[dev]"
 
 ## License
 
-> **⚠️ Unresolved license conflict.** This repository currently states three different, legally
-> distinct licenses in three places: the [`LICENSE`](LICENSE) file says **CC BY-NC-SA 4.0**
-> (noncommercial, share-alike/copyleft), this section says **PolyForm Noncommercial 1.0.0**
-> (noncommercial, not share-alike), and the package metadata in `pyproject.toml`/`setup.py` says
-> **MIT** (permissive, commercial use allowed). These terms are not interchangeable and do not all
-> apply at once. **Do not treat any one of them as authoritative until the maintainer picks one and
-> corrects the other two** — this is a licensing/legal decision for the maintainer, not something
-> to resolve unilaterally. Tracked in `docs/plans/2026-09-23-effectiveness-and-usability.md` (Phase
-> 7 — Governance & documentation hygiene).
+[PolyForm Strict 1.0.0](https://polyformproject.org/licenses/strict/1.0.0) — see [`LICENSE`](LICENSE)
+for the full text.
 
-[PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) - Free for personal, educational, and research use. Commercial use requires a separate license.
+**Free** for any noncommercial purpose: personal study, research, experiment, testing, hobby
+projects, amateur pursuits, and use by charitable, educational, public-research, public-safety,
+health, environmental and government organizations.
+
+**A separate license is required** to use the software commercially, to redistribute it (modified or
+not), or to create derivative works, forks or ports. The copyright grant in PolyForm Strict
+deliberately excludes distribution and modification. Requests are welcome and granted routinely for
+reasonable ones — contact Jeremy Laratro <jlaratro24@gmail.com>.
+
+PolyForm Strict is a *source-available* license, not an OSI-approved open-source license, because it
+does not permit redistribution or modification by default.
 
 ## Disclaimer
 

@@ -7,7 +7,7 @@ name = "supwngo"
 version = "1.0.0"
 description = "SupwnGo - Automated binary exploitation framework"
 readme = "README.md"
-license = {text = "MIT"}
+license = {file = "LICENSE"}
 requires-python = ">=3.8"
 authors = [
     {name = "SupwnGo Contributors", email = "supwngo@example.com"}
@@ -29,7 +29,7 @@ classifiers = [
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
+    "License :: Other/Proprietary License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
