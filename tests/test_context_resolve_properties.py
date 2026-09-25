@@ -2061,6 +2061,48 @@ def prop_P27_every_invariant_has_a_positive_control() -> None:
     _count("P27 invariants controlled", len(controlled))
 
 
+def prop_P28_every_context_consumer_validates_it() -> None:
+    """C10: every ``__all__`` function that takes a :class:`ResolveContext`
+    validates it, not just the three P26 already exercises.
+
+    ``applicable`` is a plain predicate, so a malformed context did not raise
+    at all -- it silently returned ``True`` or ``False`` depending on which
+    malformed field the body happened to read first (``identity_mode`` before
+    ``identities``, before ``conditions``), which is a decision made on bad
+    input rather than a refusal of it.
+    """
+    s = store_of(raw(), raw(value=80, method="m2"))
+    c = s.candidates(KEY)[0]
+    checked = 0
+    for label, ctx in _malformed_contexts():
+        for fn_name, call in (
+            ("applicable", lambda ctx=ctx: R.applicable(c, ctx)),
+            ("resolve", lambda ctx=ctx: R.resolve(s, KEY, ctx)),
+            ("try_resolve", lambda ctx=ctx: R.try_resolve(s, KEY, ctx)),
+            ("conflicts", lambda ctx=ctx: R.conflicts(s, ctx)),
+            ("agreements", lambda ctx=ctx: R.agreements(s, ctx)),
+        ):
+            try:
+                result = call()
+            except R.SchemaError:
+                continue
+            except Exception as exc:  # noqa: BLE001 - the wrong type IS the bug
+                raise AssertionError(
+                    f"{fn_name} leaked {type(exc).__name__} ({exc}) for a "
+                    f"malformed context ({label}); it must raise SchemaError, "
+                    "not an arbitrary exception from inside its own body"
+                ) from exc
+            raise AssertionError(
+                f"{fn_name} silently returned {result!r} for a malformed "
+                f"context ({label}) instead of validating it first; a "
+                "decision made on bad input is a decision, not a refusal")
+        checked += 1
+    # The control: every well-formed context is accepted by all five.
+    for ctx in _resolve_contexts():
+        assert R.applicable(c, ctx) in (True, False)
+    _count("P28 malformed contexts", checked)
+
+
 def _duplicate_candidate_id_store() -> Tuple[R.FactStore, str]:
     """A store where two candidates -- one superseded, one active -- share one
     id, built with no id-forcing and no hash collision.
@@ -2142,6 +2184,7 @@ PROPERTIES = {
     "P25": prop_P25_conflict_views_are_one_notion,
     "P26": prop_P26_resolve_is_total_over_contexts,
     "P27": prop_P27_every_invariant_has_a_positive_control,
+    "P28": prop_P28_every_context_consumer_validates_it,
     "P29": prop_P29_candidate_id_index_is_a_bijection,
 }
 
@@ -2409,6 +2452,9 @@ NARROWNESS: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...]]] = {
     "P27": (("state", "generation", "derived_from", "log_record_shape",
              "conflict_record_shape", "scope", "candidate_id", "fact_key"),
             ("value", "provenance", "identity", "conditions")),
+    "P28": (("context_identities", "context_identity_mode", "context_conditions",
+             "context_binding"),
+            ("value", "provenance", "scope", "store_size", "fact_key")),
     "P29": (("candidate_id", "state", "dedup_collision"),
             ("value", "provenance", "scope", "identity", "conditions",
              "fact_key")),

@@ -1815,7 +1815,16 @@ def validate_context(ctx: Any) -> ResolveContext:
 def applicable(c: Candidate, ctx: ResolveContext) -> bool:
     """Pure predicate.  A candidate bound to another identity is **not
     demoted** -- its provenance is never rewritten; it is simply inapplicable
-    here, and using it elsewhere requires an explicit re-assertion."""
+    here, and using it elsewhere requires an explicit re-assertion.
+
+    C10: every exported function that consumes a :class:`ResolveContext`
+    validates it first.  ``applicable`` was the one exception -- a malformed
+    context (``identities`` as a list rather than a set, an empty-string
+    identity, a garbage ``identity_mode``) that :func:`validate_context`
+    already refuses did not raise here; it silently returned ``True`` or
+    ``False`` depending on which malformed field it tripped over first.
+    """
+    validate_context(ctx)
     at = c.applies_to
     if ctx.identity_mode != "none" and at.identity is not None:
         if at.identity not in ctx.identities:

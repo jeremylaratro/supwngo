@@ -533,6 +533,22 @@ def _validate_store_noop(store: R.FactStore) -> None:
     return None
 
 
+def _applicable_unvalidated(c: R.Candidate, ctx: Any) -> bool:
+    """C10's shipped gap: ``applicable`` is a plain predicate that never calls
+    ``validate_context``, so a malformed context does not raise at all -- it
+    silently returns whichever of True/False the body happens to compute from
+    the first field it reads, discarding the caller's malformed input instead
+    of refusing it."""
+    at = c.applies_to
+    if ctx.identity_mode != "none" and at.identity is not None:
+        if at.identity not in ctx.identities:
+            return False
+    if at.scope in R._BOUND_SCOPES and at.binding != ctx.binding_for(at.scope):
+        return False
+    ctx_conds = ctx.conditions_map()
+    return all(ctx_conds.get(k) == v for k, v in at.conditions)
+
+
 def _candidate_id_index_unchecked(store: R.FactStore) -> Dict[str, R.Candidate]:
     """C8's shipped gap: build the id index with a plain dict comprehension,
     so a later duplicate silently overwrites an earlier one instead of
@@ -670,6 +686,12 @@ MUTANTS: Dict[str, Mutant] = {
                note="the shipped defect: identity=\"\" and binding=\"\" were "
                     "accepted, giving a second dedup_key for one proposition, "
                     "and an identity no context can ever satisfy"),
+        # Unit 1 (canonicalisation domain closure), C10.
+        Mutant("applicable_unvalidated", "C10", "P28",
+               {"applicable": _applicable_unvalidated},
+               note="the shipped gap: applicable never called "
+                    "validate_context, so a malformed context was silently "
+                    "decided rather than refused"),
         # Unit 1 (canonicalisation domain closure), C8.
         Mutant("candidate_id_index_diverges", "C8", "P29",
                {"_candidate_id_index": _candidate_id_index_unchecked},
