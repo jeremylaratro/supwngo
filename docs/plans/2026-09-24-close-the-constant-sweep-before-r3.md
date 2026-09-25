@@ -1,10 +1,24 @@
 # Close the folklore-constant sweep before R3
 
 Date: 2026-09-24
-Status: **DEFERRED — not blocking anything.** Closed out 2026-09-24 by maintainer
-decision: the provenance/token machinery this plan had grown into is compliance-shaped
-overengineering for a binary-exploitation tool, and the folklore constants stay as they
-are for now. **No code change is being made.**
+Status: **CLOSED — premise rejected, not merely deferred.** Closed out 2026-09-24 by
+maintainer decision, and the correction goes deeper than the remedy:
+
+**The folklore constant list is a FEATURE of the tool, not a defect.** Real CTF targets
+gate on `0xdeadbeef` and `0x1337` constantly; trying nine known constants is fast, free
+and works, and a pwn tool without that heuristic is worse at pwning. This plan spent three
+revisions arguing to remove a capability that should stay.
+
+**The real concern was always the corpus, not the tool** — and it is a *measurement*
+concern with a one-line remedy, not a control:
+
+> When authoring benchmark targets, do not use the nine folklore constants as gate values.
+> Pick arbitrary ones. Then the tool keeps its heuristic and the score measures capability
+> instead of answer-key possession.
+
+That is the whole fix. It needs no provenance contract, no token minting and no status
+enum — all of which this plan grew, and all of which were compliance thinking applied to
+an offensive tool. **No code change is being made.**
 
 **This plan no longer gates R3, R4 or R5.** Those cold measurements are unblocked.
 
@@ -938,17 +952,30 @@ option A's cost larger than stated, which is information the §7 decision should
 
 ---
 
-## 9. Deferred. The parts worth keeping, and the one number that makes it safe to defer
+## 9. What survives, and where the one real remedy lives
 
-**What makes the deferral cheap, measured rather than argued:** `variable_overwrite` has won
+**The remedy, in full.** A corpus-authoring convention: benchmark targets must not use
+`0x1337`, `0x1337bab3`, `0xdeadbeef`, `0xcafebabe`, `0xbadc0de`, `0xfeedface`,
+`0x41414141`, `0xbaadf00d` or `0x0d15ea5e` as a gate value. Arbitrary constants instead.
+The tool's list stays exactly as it is. Nothing else in this document is required.
+
+Current corpus status against that convention, measured on R1: **2 of 15 targets** use a
+folklore constant — `14_negative_index` (`0x1337`, which is also genuinely recoverable from
+its own `cmp` instruction, so it is not purely answer-key) and `13_off_by_one`
+(`0xdeadbeef`, assignment-only, and one of the two VOID targets). Worth checking R3/R4/R5
+against the convention at scoring time rather than now, since it needs their sources.
+
+**What makes this cheap, measured rather than argued:** `variable_overwrite` has won
 **0 of 17** credited targets across R1 and R2. The folklore list has never once been the
 reason a target counted as solved. So there is no contaminated figure to go back and
 annotate, and no published number changes because of this decision. If that ever stops being
 true — if `variable_overwrite` starts winning targets — that is the signal to reopen, and it
 will show up in the per-technique credit table without anyone looking for it.
 
-**Five real bugs found while investigating this. None is an "integrity control"; all are
-ordinary defects, and they will still be here later.**
+**Five real bugs found while investigating this.** None is an integrity control; all are
+ordinary correctness defects in the recovery path, and all will still be here later. They
+are worth fixing *because they make the tool better at finding constants*, which is the
+opposite of the framing the rest of this document fell into.
 
 1. **`comparison_immediates()`'s docstring is false.** It claims the folklore list is used
    "when objdump is unavailable or yields nothing usable"; the append loop sits outside the
