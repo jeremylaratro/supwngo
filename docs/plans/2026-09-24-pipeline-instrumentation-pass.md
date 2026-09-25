@@ -1013,6 +1013,33 @@ absence search exists — here the search must be shown non-vacuous too: 9 occur
 load-state names inside `binary.py` confirm the subject exists, so **0 outside it** is a
 measured absence rather than a failed grep.
 
+### The class swept, both directions — bounded at the two known instances
+
+**Sub-class B — engine attributes with no production reader.** Enumerated all 18 distinct
+`self.<attr>` assignments in `orchestrator.py` (proven non-empty) and grepped each for a
+reader outside that file. **Result: exactly 3, and they are precisely the three I2 prologue
+durations** (readers in `tests/` only). **Swept, no others.** The class does not extend
+beyond what was already known.
+
+**Sub-class A — `AttemptRecord` fields that never reach `report.json`** (the documented M6
+trap: `to_dict()` is an explicit dict literal, so a field omitted there is invisible in every
+artifact). 13 annotated fields against 13 string keys. **Result: 0 genuine instances.**
+
+**My detector produced one false positive and it is worth recording.** It flagged `payload`
+as unserialised. That is wrong: `to_dict()` emits `"payload_len": len(self.payload)`, so the
+field *is* consumed — deliberately as a length rather than raw bytes, because serialising the
+payload would risk embedding the run's secret flag in `report.json` and bloat the artifact.
+My script matched on the field *name* appearing as a key, so it could not see a field consumed
+under a different key or in transformed form. **A consumer-detector keyed to name identity
+under-reports consumption and over-reports the defect** — the opposite failure direction from
+the one this class is about, and a reminder that the sweep tool needs the same scrutiny as the
+code it sweeps.
+
+**Scope stated, not implied:** sub-class B covers engine attributes. The `Binary` load-state
+fields live on a public library class, where "no internal reader" is not by itself a defect —
+those were found by the targeted grep in §5.4e's table, not by this sweep, and I am not
+claiming the sweep would have caught them.
+
 **Why `3453f09` was not simply accepted.** Its scope hygiene was good and its tests are
 genuinely strong (below). But the pipeline still abstains, `report.json` still cannot tell a
 broken pwntools load from a symbol-less binary, and **the collapse is live exactly where it
