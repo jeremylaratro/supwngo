@@ -117,11 +117,32 @@ INSTANCE <what was fixed>
 CLASS    <as named by the reviewer>
 SWEEP    <command run>
 OTHERS   <every other instance found and fixed, or "none">
+SCOPE    <the diagnosis's extent, the remedy's extent, and why they are equal>
 RADIUS   <every section that referenced the changed material, and its status>
 ```
 
 A revision that fixes only the named instance is **incomplete by construction** and
 should be returned without a new review round.
+
+**On `SCOPE` — a remedy whose extent differs from its diagnosis's extent is its own
+defect class, and it recurs in both directions.** Three instances in one plan:
+
+| | diagnosis | remedy | direction |
+| --- | --- | --- | --- |
+| §4a | a specific collision | closed the domain around types the resolver itself passes to `canonical` | remedy **wider** |
+| §4b | `_jsonable` dispatches on `isinstance` rather than exact type | exact-type dispatch applied to **the primitive arm only** | remedy **narrower** |
+| §10 | one owner per row | two rows carry two owners | remedy **incomplete** |
+
+§4b is the instructive one: the diagnosis was **correct** and the remedy still left the
+defect live, because *every* builtin subclass collides with its base (`MyBytes`,
+`MyList`, `MyDict`, `MyInt`, `MyStr` — measured, five families, where the review had
+named two). A right diagnosis with a mis-scoped remedy passes review more easily than a
+wrong one, because the reasoning reads as sound.
+
+**The class is the mismatch, not the direction.** So the check is mechanical and cheap:
+state the diagnosis's extent, state the remedy's extent, show they are the same set. Any
+sentence of the form "the cause is X **and** the fix covers some of X" is an incomplete
+fix wearing a correct diagnosis.
 
 ### 5.0 The sweep obligation attaches to the finding, not to the reviewer
 
@@ -257,6 +278,23 @@ Three consequences, all cheap:
 - **Record the dead defensive branches you found.** Not as defects — as a note, so
   that nobody later writes a gate asserting "dangling entries are skipped" and
   collects a vacuous pass out of code that cannot execute.
+
+**And the symmetric hazard, which is the one that bites the careful reviser: a
+REJECTION is also a candidate until checked.** A reviser came one step from reporting
+a reviewer error, because the script it wrote to refute the finding used a regex
+requiring the sentence to end on the same line — and the stale sentence wrapped. A
+plain `grep` found it immediately, at a line number the script could not see. The
+finding was real.
+
+> **A refuting instrument must be at least as wide as the claim it tests.** Otherwise
+> "I checked and the reviewer is wrong" is produced by the same mechanism as every
+> other false absence in this document — and it is more expensive, because it discards
+> a true finding *and* spends the reviewer's credibility.
+
+Both halves matter and they fail in opposite directions: an unchecked hit manufactures
+a finding, an unchecked rejection destroys one. Check both, and when you catch
+yourself mid-rejection, record the near-miss rather than quietly correcting it — the
+near-miss is the evidence that the check is load-bearing.
 
 #### 6.1c A masking defect makes every green result collected during its lifetime uninformative
 
