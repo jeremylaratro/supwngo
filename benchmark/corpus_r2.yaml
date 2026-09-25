@@ -1,0 +1,350 @@
+# Round-2 (held-out) benchmark corpus manifest.
+#
+# This corpus exists to check whether a concurrent framework-hardening effort
+# (on integration/phases-0-4-7-20260923) genuinely generalized, or merely got
+# tuned to round 1's specific 15 files. It stays on
+# feat/benchmark-corpus-r2-20260923 and is NEVER merged into the integration
+# branch, so the hardening agents cannot see it. Same technique families as
+# round 1 (stack overflow+shellcode, ret2plt/system, ret2libc with/without
+# leak, canary leak/bypass, format-string read and write, integer/size
+# arithmetic, heap bugs, off-by-one, indexing bug, ret2csu), but every target
+# is a genuinely different code shape -- different struct layouts, different
+# stack offsets, different gate mechanics, different heap primitives -- not a
+# renamed or lightly-edited copy of a round-1 file.
+#
+# Schema mirrors benchmark/corpus.yaml (slug, technique, protections,
+# solve_path, difficulty, hand_verified) and adds one key:
+#
+#   cflags: the per-target protection flags this target is built with.
+#
+# NOTE ON `cflags`: the AUTHORITATIVE copy is the `cflags` FILE beside each
+# target's source (benchmark/corpus_r2/<NN>_<slug>/cflags), one gcc flag per
+# line, because that is what the builders actually read. benchmark/README.md
+# rule R9 requires it: the shared build_all.sh -- which run_bench.py invokes
+# to rebuild each target with a per-run secret -- keys protections off a
+# `case` on the directory name that only knows round 1's targets, and for any
+# other directory it reads that file and FAILS CLOSED if it is missing, since
+# protections ARE the measurement and must never be guessed.
+# benchmark/build_all_r2.sh (this round's own standalone builder) reads the
+# SAME files rather than keeping an independent case statement, so the two
+# builders cannot disagree about how a target was built. The `cflags:` field
+# below mirrors those files for readers of the manifest; it was generated
+# from them, and benchmark/corpus_r2/README.md's verify section covers the
+# check that the file, this field, and ground-truth checksec output all
+# agree.
+#
+# Protections listed under `protections:` are GROUND TRUTH, verified against
+# each built binary (pwntools ELF.canary/nx/pie/relro plus a manual
+# objdump/readelf cross-check for the two cases where that alone is
+# misleading -- both documented below, same discrepancy classes round 1's
+# corpus.yaml already flagged):
+#
+#   - 01_stack_shellcode_relay: pwntools' `nx` heuristic reported None for
+#     this binary; `readelf -l` shows the GNU_STACK segment as RWE
+#     (0x10, no PT_GNU_STACK NX bit), confirming nx=false, matching the
+#     `-z execstack` build flag's intent exactly.
+#   - 07_static_ret2syscall: checksec-style tools report "canary found"
+#     because __stack_chk_fail is always present as a *symbol* in a
+#     statically-linked glibc image (pulled in by other glibc internals
+#     compiled with stack-protector), regardless of whether this binary's
+#     OWN vuln() was compiled with it. Verified via
+#     `objdump -d --disassemble=vuln`: vuln() has no fs:0x28 canary
+#     load/store or __stack_chk_fail call anywhere in its body. The real,
+#     load-bearing protection state for target 07's own code is
+#     canary=OFF, matching -fno-stack-protector as built.
+#
+# FLAG CONVENTION (mandatory, applies to all 15 targets): the flag is NEVER
+# compiled into the binary. build_all_r2.sh (and the shared build_all.sh, via
+# SUPWNGO_BENCH_FLAG) generate a fresh random secret per build and write it
+# ONLY to that target's (gitignored) flag.txt, next to its executable. Every
+# target that has a dedicated flag-printing path reads flag.txt at RUNTIME
+# via a small print_flag()/read_flag_into() helper (fopen("flag.txt","r")) --
+# no target's source contains a FLAG{...} literal or a compile-time #define
+# whose value ends up in .rodata. Verified: `strings <binary> | grep 'FLAG{'`
+# finds nothing in any of the 15 built binaries (see corpus_r2/README.md's
+# verify section and benchmark/soundness_probes/negative_control_sweep.py's
+# `scrapeable` column). The four shell-obtaining targets (01, 02, 03, 07)
+# never print a flag from inside the binary at all; their intended solve path
+# lands a shell, from which the exploit reads flag.txt directly.
+#
+# LIVENESS/NECESSITY: every target's win path was checked to actually REQUIRE
+# the corrupted/exploited state the exploit creates, not merely to be
+# reachable -- and no target is solvable by a do-nothing script or benign
+# input alone. See benchmark/corpus_r2_reference/ablation.py: all 15 targets
+# have a case removing (or substituting a wrong value for) their one
+# essential gate/step, and none of the 15 produced the flag with that step
+# missing.
+#
+# difficulty tiers: easy | medium | hard
+# distribution: 5 easy (01,02,13,14,15), 6 medium (03,04,05,06,07,11),
+#               4 hard (08,09,10,12) -- close to the ~5/7/3 target spread;
+#               11 (heap tcache poisoning) and 12 (full 8-byte GOT overwrite)
+#               both legitimately could sit on either side of the
+#               medium/hard line, and were placed by how much of the chain
+#               is mechanical (11, once the count-gate trick is known) vs.
+#               how much still has to be freshly derived (12's multi-write
+#               byte-splitting).
+
+targets:
+  - slug: 01_stack_shellcode_relay
+    technique: stack_shellcode_relay
+    protections:
+      canary: false
+      nx: false
+      pie: false
+      relro: partial
+      linking: dynamic
+    cflags: [-fno-stack-protector, -no-pie, -z, execstack]
+    solve_path: >-
+      No protections at all; a leaked buf address plus an unbounded
+      memcpy()-based relay overflow places shellcode immediately after
+      the overwritten return address (not inside buf itself), redirects
+      there, and lands on the executable stack.
+    difficulty: easy
+    hand_verified: true
+
+  - slug: 02_ret2plt_strcat_system
+    technique: ret2plt_strcat_system
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    cflags: [-fno-stack-protector, -no-pie]
+    solve_path: >-
+      "/bin/sh" is assembled at runtime via strcpy()+strcat() into a
+      fixed-address global (no literal string to find via ELF.search()).
+      A bare-ret alignment fixer, pop rdi; ret, then system@plt complete
+      the ret2plt chain with no leak needed.
+    difficulty: easy
+    hand_verified: true
+
+  - slug: 03_pie_write_leak_ret2libc
+    technique: pie_write_leak_ret2libc
+    protections:
+      canary: false
+      nx: true
+      pie: true
+      relro: full
+      linking: dynamic
+    cflags: [-fno-stack-protector, -pie, -fPIE]
+    solve_path: >-
+      A raw 8-byte write@plt self-leak (not a textual %p) defeats PIE;
+      a second write@plt leaks puts's real libc address via the GOT;
+      the recovered libc base drives a final ret2libc system("/bin/sh").
+    difficulty: medium
+    hand_verified: true
+
+  - slug: 04_canary_relay_bypass
+    technique: canary_relay_bypass
+    protections:
+      canary: true
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    cflags: [-fstack-protector-all, -no-pie]
+    solve_path: >-
+      The canary is not adjacent to buf (an 8-byte compiler alignment
+      gap sits between them); it is leaked indirectly through a separate
+      16-byte relay_buf via memcpy()+write(), then relayed back into a
+      second overflow that reaches win() with the correct canary in
+      place.
+    difficulty: medium
+    hand_verified: true
+
+  - slug: 05_fmtstr_pie_leak
+    technique: fmtstr_pie_leak
+    protections:
+      canary: false
+      nx: true
+      pie: true
+      relro: full
+      linking: dynamic
+    cflags: [-fno-stack-protector, -pie, -fPIE]
+    solve_path: >-
+      A format-string arbitrary READ (%32$p) leaks a stack-spilled
+      self-pointer, giving the PIE base; a second, unrelated overflow
+      then redirects straight to win() using the now-known runtime
+      address.
+    difficulty: medium
+    hand_verified: true
+
+  - slug: 06_fmtstr_short_write
+    technique: fmtstr_short_write
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    cflags: [-fno-stack-protector, -no-pie]
+    solve_path: >-
+      A width-controlled %6$4919c%8$hn directive writes the exact 16-bit
+      magic value 0x1337 into a global auth_level gate via a single
+      2-byte format-string write, unlocking the flag-printing path.
+    difficulty: medium
+    hand_verified: true
+
+  - slug: 07_static_ret2syscall
+    technique: static_ret2syscall
+    protections:
+      canary: false  # see manifest header note: checksec-on-static false positive
+      nx: true
+      pie: false
+      relro: partial
+      linking: static
+    cflags: [-fno-stack-protector, -no-pie, -static]
+    solve_path: >-
+      Statically linked, so no libc ASLR and no leak needed at all. A
+      raw execve() ROP chain (pop rdi/rsi/rdx+rbx/rax; syscall) built
+      entirely from gadgets in the static image lands a shell directly.
+    difficulty: medium
+    hand_verified: true
+
+  - slug: 08_int_mul_overflow
+    technique: int_mul_overflow
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    cflags: [-fno-stack-protector, -no-pie]
+    solve_path: >-
+      (unsigned char)(len*8) truncates the size check while the real
+      copy loop still uses the untruncated len, permitting a 256-byte
+      write into a 64-byte buffer. The overflow also has to be crafted
+      to survive corrupting the loop's own control variables (which sit
+      between the buffer and the return address) before reaching and
+      overwriting the return address itself.
+    difficulty: hard
+    hand_verified: true
+
+  - slug: 09_heap_dangling_global
+    technique: heap_dangling_global
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    cflags: [-fno-stack-protector, -no-pie]
+    solve_path: >-
+      A single dangling global pointer (freed but never cleared) is left
+      live through an unrelated internal allocation (check_license())
+      that deterministically reuses the just-freed tcache chunk and
+      writes the real flag there; the dangling pointer's own display
+      path then reads it back out. Requires the free() to actually
+      happen first -- see ablation.py.
+    difficulty: hard
+    hand_verified: true
+
+  - slug: 10_ret2csu_execve
+    technique: ret2csu_execve
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    cflags: [-fno-stack-protector, -no-pie]
+    solve_path: >-
+      glibc >= 2.34 removed __libc_csu_init, so this target embeds its
+      own csu-style gadget pair via inline asm. The chain loads a
+      required magic argument through the classic ret2csu register
+      shuffle (pop rbx/rbp/r12-r15; ret, then the indirect call through
+      r15+rbx*8) into win(magic) -- no leak needed, win's address is a
+      fixed non-PIE constant.
+    difficulty: hard
+    hand_verified: true
+
+  - slug: 11_heap_overflow_tcache_poison
+    technique: heap_overflow_tcache_poison
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    cflags: [-fno-stack-protector, -no-pie]
+    solve_path: >-
+      A genuine heap buffer overflow (fill_note only bounds length
+      against a fixed ceiling, never the note's own allocated size)
+      corrupts a freed neighbor chunk's safe-linking-encoded tcache
+      `next` pointer, poisoning malloc() into returning a fixed-address
+      dispatch_table entry; a second overflow then overwrites that
+      table slot with win()'s address. Requires a count-gate filler
+      chunk freed first, or the poisoned entry is never reachable via
+      the tcache fast path -- see ablation.py.
+    difficulty: medium
+    hand_verified: true
+
+  - slug: 12_fmtstr_got_overwrite
+    technique: fmtstr_got_overwrite
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: partial  # GOT deliberately left writable (no -z now)
+      linking: dynamic
+    cflags: [-fno-stack-protector, -no-pie]
+    solve_path: >-
+      A full 8-byte format-string GOT overwrite (multiple %N$hn writes
+      via pwntools' fmtstr_payload, not a single 2-byte gate write)
+      redirects puts@got to win(), which the program's own subsequent,
+      already-present puts() call then invokes.
+    difficulty: hard
+    hand_verified: true
+
+  - slug: 13_off_by_one_retaddr_lsb
+    technique: off_by_one_retaddr_lsb
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    cflags: [-fno-stack-protector, -no-pie]
+    solve_path: >-
+      A classic fencepost loop bound (n < sizeof(buf)+1) allows exactly
+      one byte past buf, landing on the lowest-order byte of an adjacent
+      function pointer. safe_path() and win() share every byte except
+      that one, so a single-byte write flips the call target.
+    difficulty: easy
+    hand_verified: true
+
+  - slug: 14_oob_read_flag_array
+    technique: oob_read_flag_array
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: partial
+      linking: dynamic
+    cflags: [-fno-stack-protector, -no-pie]
+    solve_path: >-
+      Only a lower bound (idx < 0) is checked; there is no upper bound
+      at all, so idx in [8, 23] reads 64 bytes of an adjacent secret
+      buffer straight out of `arr`'s declared bounds, 4 bytes at a time,
+      with no address leak or control-flow hijack needed.
+    difficulty: easy
+    hand_verified: true
+
+  - slug: 15_ret2win_arg_gate
+    technique: ret2win_arg_gate
+    protections:
+      canary: false
+      nx: true
+      pie: false
+      relro: full
+      linking: dynamic
+    cflags: [-fno-stack-protector, -no-pie, "-Wl,-z,relro,-z,now"]
+    solve_path: >-
+      A plain stack overflow redirects through an explicitly embedded
+      pop rdi; ret gadget into win(magic), which only prints the flag if
+      the loaded argument equals a fixed magic constant -- a minimal,
+      sanity-check-tier ROP chain for the corpus's easy tier.
+    difficulty: easy
+    hand_verified: true

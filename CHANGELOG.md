@@ -347,6 +347,157 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are still attempted — just last.
 
 ### Added
+- **Round-2 cold (held-out) benchmark measurement: `docs/reports/BENCHMARK-R2-COLD-24SEP2026.md`
+  Part 2 — the figure is 4/15 (26.7 %)**, denominator 15, VOID list empty, at
+  `--reps 5 --jobs 8 --timeout 20`. Measured before a single line of exploitation code
+  was changed in response to R2, so it is the only generalization number this corpus can
+  ever produce; it is now spent. Primary endpoint (5/5 reliability) and secondary
+  (`solved`, ≥1/5) both 4/15 — there were **zero** intermittent successes, so best-of-N
+  and per-attempt reliability agree exactly. **Strict attribution equals default, 4/15**,
+  derived from the run's own transcripts rather than re-measured: all 20 credited reps are
+  behaviourally attributed with zero unwitnessed, and `--strict-attribution` has exactly
+  one scoring effect (`run_bench.py:810`, voiding an unwitnessed success), which is
+  therefore unreachable. Not like-for-like against R1's 13/13 on three compounding axes
+  (R1's denominator was post-hoc after discarding 2 unsound targets; R2's was pre-declared
+  with nothing discarded; R1 is the development corpus). The substantive finding is
+  narrower than the scalar: **all 4 wins are "control the return address, jump to an
+  already-known address"** (`ret2win` with an arg gate, static `ret2syscall`, `ret2csu`,
+  one-byte return-address LSB overwrite) and every failure needs a further primitive
+  first — format-string write, heap metadata control, a PIE leak, a canary disclosure, an
+  integer-overflow size confusion, or an OOB index. Protections do not separate the two
+  groups and the corpus's difficulty labels are near-uncorrelated with the result
+  (easy 2/5, medium 1/6, hard 1/4).
+- **Two findings about the benchmark instrument itself, recorded before step-3 development
+  changed any code** (report §2.10). First, the corpus's `easy`/`medium`/`hard` labels are
+  nearly uncorrelated with pipeline outcome (easy 2/5, medium 1/6, hard 1/4), while
+  **primitive depth** — how many leak/write/heap-state primitives must be acquired before
+  the control-flow redirect — separates the results completely: depth 0 scores **4/4**,
+  depth ≥1 scores **0/11**. Flagged as a post-hoc classification and therefore
+  *pre-registered as a falsifiable prediction* for R3/R4/R5, with depth to be assigned
+  from source before results are seen. Recommendation for R5's generator: stratify on
+  primitive depth and demote difficulty tiers to a secondary annotation, since those
+  tiers measure how hard a *person* finds the puzzle, not how many primitives a pipeline
+  must chain. Second, and sharper: **R2 turns out to be a *paired* shape-variant of R1** —
+  each R2 source header names the specific R1 target it re-shapes with a different surface
+  mechanic inside the same technique family. That makes R1↔R2 a paired design controlling
+  for technique family, and **of the 11 families R1 solved at 5/5, re-shaping broke 9 and
+  left 2 standing** — the 2 survivors being exactly the depth-0 pair. This is stronger
+  evidence that R1's 13/13 was overfit than the scalar drop is, because family is held
+  fixed; it also explains the stub concentration mechanically (the re-shapings add a
+  primitive acquisition step, so discovery pattern-matches on an absent shape). Carried
+  as a fourth axis on which R1↔R2 is not like-for-like, and as a caveat in the opposite
+  direction: 4/15 estimates performance on adversarially re-shaped variants of targets the
+  pipeline already solves, not on arbitrary binaries.
+- `benchmark/rep_divergence.py` + `tests/test_rep_divergence.py` — discriminates a
+  **stalled discovery probe** from a **genuine non-match** using only archived artifacts,
+  no new measurement. The pipeline's probes are bounded by timeouts hardcoded at 8
+  `deliver_parts` call sites (1.5/2.0/3.0 s) with no retry, and `deliver_parts` collapses
+  a timeout into empty output, so "this technique does not apply" and "the probe ran out
+  of time" are reported identically — and a stalled probe's FAILED verdict is not a
+  capability limit. The two modes differ across reps: a load-sensitive stall is a race and
+  does not lose the same race five times to land on byte-identical output (exactly how R1's
+  `04_canary_leak_bypass` presented, 9 identical working exploits and one stub), whereas a
+  genuine non-match is deterministic. Hashes every rep's generated script per target,
+  normalising ASLR'd addresses, and reports three states including **CANNOT DETERMINE**
+  when too few reps were archived. Applied to the R2 cold run: **15/15 deterministic, 0
+  divergent, 0 undetermined** — so no cold FAILED verdict is a flaky-stall artefact.
+  Documents its own limit in-file and in the report: identical artifacts rule out
+  *race-type* truncation only; a probe that times out **deterministically** produces
+  identical artifacts too, so a pass means "not a flaky stall", never "not a stall".
+  Because the tool asserts an **absence** — the failure family this project has shipped
+  repeatedly — its red path is proven rather than assumed: the tests assert that a
+  functional cross-rep difference exits 1, that an address-only difference does not, that a
+  **small** differing constant is still caught (the narrowness check, since an over-broad
+  normaliser would sand away a changed offset and make this another validation that cannot
+  fail), and that insufficient reps yield CANNOT DETERMINE instead of a silent pass.
+- `benchmark/summarize_cold.py` — per-target `solved` + `reliability` k/N table with
+  attribution witness class, outer-truncation check and the pre-registered
+  discovery-stall triage. Reports both endpoints side by side because neither is the
+  answer alone: best-of-N without the reliability split is cherry-picking, and a single
+  rep understates. Per-rep stub detection reads the generated scripts on disk, because
+  `report.json`'s `attempts[]` records carry no script and would silently make every rep
+  look non-stub.
+- `benchmark/contamination_check.sh` — replays the cold run's exact autopwn command line
+  under `strace -f -e trace=openat,open` for all 15 targets, to test behaviourally what
+  static audit only argues: that nothing on the `autopwn` route reads corpus `.c` sources
+  (`supwngo/analysis/source.py` does read them, but only via the separate `supwngo source`
+  verb). Result: **0 source opens, 0 reference-exploit opens, and 0 `flag.txt` opens by
+  the pipeline process, across all 15 traces**, with a coverage positive control (each
+  trace is 2 731–19 966 lines and shows the root Python process opening the target
+  binary) so that "found nothing" is distinguishable from "recorded nothing". The 259
+  `flag.txt` opens present are all non-Python processes — targets and the shells they
+  spawned — matching the attribution chains. Documents its own limit in-file: it is a
+  replay, not an observation of the cold executions.
+- `benchmark/ablation/ablate_r2.py` — necessity-ablation suite for the 15
+  `corpus_r2` targets, replacing `corpus_r2_reference/ablation.py` for scoring
+  purposes. The corpus's own suite cannot support its advertised "0/15 leaked":
+  every case runs only the *ablated* chain and asserts flag-absence, with no
+  intact-chain leg anywhere in the file, `EOFError` caught into `out = ""`, and
+  `main()` returning 0 whenever `leaks == 0` — so a changed prompt string, a read
+  timeout or a dead process all read as a pass, and its clean result is equally
+  consistent with 15 broken drivers. The replacement ports `ablate.py`'s guarantee:
+  one parametrised chain function per target whose defaults *are* the working
+  exploit, each ablation the same function with one keyword flipped, so the
+  positive control and the ablation traverse the identical driver path. Three-way
+  outcomes (`BLOCKED` / `NOT BLOCKED` = defect, exit 1 / `NOT MEASURABLE`, exit 2),
+  defect checked first so it cannot be masked by a setup failure. Result: 15/15
+  positive controls, 51/51 strict ablations blocked, 0 defects, plus 4 relaxation
+  probes recorded rather than hidden.
+- `benchmark/sample_load.sh` — samples loadavg and the concurrent `run_bench.py`
+  count for the duration of a benchmark run. A single pre-run load snapshot cannot
+  detect contention that *arises during* a run, and this host cannot be reserved
+  (other agents run the harness concurrently). Since exploit delivery is
+  contention-sensitive, a reliability k/N split taken under an unrecorded load spike
+  is not interpretable; the profile is reported alongside the numbers so an
+  excursion-overlapping rep can be flagged as a contention suspect rather than read
+  as a capability signal. Counting the concurrent harnesses is itself a trap, twice
+  over: `pgrep -f run_bench.py` matches the querying process and any
+  `until ! pgrep -f …` waiter (which therefore never exits — three agents in this
+  project have lost waiters this way), while `ps aux | grep "[r]un_bench.py"` fixes
+  only *self*-matching and still counts unrelated **shells**. Measured directly, that
+  second form reported **6 "live harnesses" when the true number of running Python
+  processes was 0**, the rest being 0 %-CPU `zsh` shells. The script therefore counts
+  only processes whose `/proc/<pid>/comm` is a Python interpreter. Note the residual
+  bias: that test can only *under*-count, so "no second harness" is an absence
+  assertion and is bounded structurally by `corpus_lock()`, not by the counter.
+- `benchmark/redact_report.py` — redacts a benchmark `report.json` so it can be
+  committed as evidence. `report.json` is gitignored because it embeds every rep's
+  per-run secret flag, but a digest of a file no reader can obtain cannot expose
+  selective transcription of the numbers into a prose report. This replaces each
+  secret with a placeholder, leaving structure, per-rep statuses, reasons,
+  attribution verdicts and timings independently checkable, and **fails closed**:
+  it refuses to write the output if any `FLAG{<32 hex>}`-shaped string survives,
+  via a check independent of the substitution itself.
+- Round-2 held-out benchmark corpus under `benchmark/corpus_r2/`, merged from
+  `feat/benchmark-corpus-r2-20260923` **only after** round 1 closed, so the
+  framework-hardening work could not have been tuned to it (the branch was kept
+  out of `integration/phases-0-4-7-20260923` for exactly that reason; rounds 3
+  and 4 remain held out): 15 fresh, hand-verified
+  x86-64 Linux ELF targets covering the same technique families as round 1
+  (stack shellcode, ret2plt/system, PIE-leak ret2libc, canary leak/bypass,
+  format-string read and write, integer/size-arithmetic bugs, heap bugs,
+  off-by-one, an indexing bug, and a ret2csu variant) but with genuinely
+  different code shapes, offsets, and gate mechanics, so a concurrent
+  framework-hardening effort cannot have been tuned to these specific files.
+  Includes `benchmark/build_all_r2.sh`, `benchmark/corpus_r2.yaml`, and
+  `benchmark/corpus_r2_reference/` (15 standalone pwntools reference
+  exploits plus `ablation.py`, which re-runs each target's intended chain
+  with one essential step removed and confirms none of the 15 leak their
+  flag). Two soundness fixes carried forward from a round-1 audit and
+  applied here from the start: (1) every target reads its flag from
+  `flag.txt` at **runtime** rather than compiling it in, so `strings`/
+  `ELF.search()` recover nothing (0/15 scrapeable, verified after 3
+  independent rebuild rotations, including one via the shared
+  `benchmark/build_all.sh`); (2) per-target protection flags are declared
+  in a `cflags` file beside each source (not a hardcoded case statement),
+  matching the shared `build_all.sh`'s fail-closed R9 fallback convention
+  so the two builders cannot silently disagree about what was built.
+  *Caveat recorded at merge time:* `benchmark/corpus_r2_reference/ablation.py`
+  contains **no positive control** — each case runs only the ablated chain and
+  asserts the flag is absent, so a broken driver, a changed prompt string or a
+  read timeout is indistinguishable from a genuinely blocked step. Its "0/15
+  leaked" result is therefore not by itself evidence the corpus is sound; see
+  `docs/plans/2026-09-24-benchmark-round2-cold-then-develop.md` §2.1.
 - Phase-1 benchmark corpus + measurement harness under `benchmark/`: 15 purposefully
   vulnerable, hand-verified x86-64 Linux ELF targets (`benchmark/corpus/<NN>_<slug>/`)
   spanning stack shellcode, ret2plt/system, PIE-leak ret2libc, canary leak+bypass,
