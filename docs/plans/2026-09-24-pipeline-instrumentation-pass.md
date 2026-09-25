@@ -707,6 +707,37 @@ census (§4.4) shows which legs have any natural subject.
    which legs were exercised and which could not be, rather than reporting a figure and letting
    coverage be inferred.
 
+> **ERRATUM (measured against the R1 re-run `20260924-235756Z`; the table above is left
+> standing deliberately).** Two rows of my own pre-registration were wrong, and the
+> pre-registration is what caught them — measuring the legs instead of assuming them is
+> the only reason these surfaced.
+>
+> 1. **I2 prologue timing: the table says "Yes, fully". It is "No, ever — via a run."**
+>    The three attributes (`static_analysis_duration_sec`, `dynamic_profile_duration_sec`,
+>    `leak_acquisition_duration_sec`) have **zero consumers**: measured by grep, they are
+>    assigned in `orchestrator.py` and read by *nothing* — not `cli.py --json`, not
+>    `run_bench.py`, so they never reach `report.json`. Confirmed present in 0 of 15
+>    targets. That half of I2 is therefore **write-only with no reader**: it instruments
+>    nothing any run can observe, and its only witness is a unit test that reads the
+>    attribute directly. This is a substantive defect in I2, not a bookkeeping slip — an
+>    instrument whose output nothing consumes is not an instrument yet.
+> 2. **I5 leg 1: pre-registered "Yes — naturally occurring — 12 FAILED", but that figure
+>    is R2's, not R1's.** In the R1 re-run `variable_overwrite` was attempted **once** in
+>    all 15 targets and produced **0** sweep-exhaustion reasons, because R1's targets are
+>    solved by earlier techniques and `variable_overwrite` is in `LAST_TECHNIQUES`. The
+>    table conflated the two runs under one "does the re-run exercise it?" column. Leg 1's
+>    subject lives in R2, and the R1 half of the re-run is silent on it.
+>
+> **Legs confirmed exercised, my own counts, R1 re-run:** I2 per-attempt `duration_sec`
+> 99/99 attempts carry the field and every one of the 27 non-SKIPPED attempts has a value
+> (the 72 nulls are exactly the SKIPPED set); I2b `duration_sec` 15/15 on both wrappers;
+> I3 field serialises 99/99. **Not constant-valued:** 27 distinct values of 27 for
+> per-attempt, 15 of 15 on both harness wrappers, 0 zeros — so these survive a
+> wrong-but-present mutation, not merely an absence one.
+>
+> **I3 provenance populated: 0, exactly as pre-registered.** That is the correct result and
+> is *not* evidence the instrument works; Fixtures A/B remain the only evidence either way.
+
 **Outstanding, and explicitly not blocking the R5 measurement precondition:** I5's legs 2 and 3
 need an induced fixture (a canary + `scanf` target that actually reaches
 `ScanfCanaryBypassExecutor`), and I1's and I4's raise/spawn-failure legs need induced faults.
@@ -831,6 +862,33 @@ an implementer reported, mine are authoritative and the discrepancy is recorded,
 | I3 provenance (`5c9d6da`) | **3 of 7** red | Yes — incl. the *wrong-but-present* mutation (constant-valued provenance), not absence only |
 | I2 attempt duration (`08e5520`) | **2** red | Yes — duration missing and duration constant. Implementer reported 4. |
 | I5 `failure_reason` (`e4c81cf`) | **2** red | Yes — reason absent at each of the two swallowing sites. Implementer reported 3. |
+
+## 5.4a R1 re-run result, and the F3 arm's determination
+
+**R1 re-run `benchmark/results/20260924-235756Z`, after the `conftest.py` import fix and
+the `run_bench.py` cache isolation. Configuration asserted like-for-like against the
+baseline before comparing** (jobs 8, reps 5, timeout 20.0, `strict_attribution` false; a
+mismatch would have aborted the comparison).
+
+**13/13 credited, reproducing the baseline exactly: 0 per-target differences** across
+status, winning technique, and per-target rep credit — including both VOIDs
+(`11_heap_uaf_leak`, `13_off_by_one`) landing VOID again.
+
+**The F3 conditional arm DOES NOT FIRE.** The trigger was "R1 differs from 13/13 on any
+target"; it differs on none, so the `08e5520^` run is not performed. The trigger was
+registered before the result existed and is discharged by it, which is the only reason
+that determination is worth anything.
+
+**Divergence: 13 deterministic, 0 DIVERGENT, 2 undetermined** (the VOIDs archive a single
+rep each). This matters specifically: my Class 2 sweep proved by injection that routing a
+duration through `record.notes` would have made **all 15 targets DIVERGENT** and destroyed
+the 15/15-deterministic finding. The landed I2/I3/I5 implementations did not — the
+structured-field constraint held in practice, not just in argument.
+
+**What this re-run does NOT do.** It is not validation of the instruments. Per §5.2 it
+supports a subset of legs and is silent on the rest, and the erratum above reduces that
+subset further: I2's prologue half is unobservable by any run, and I5 leg 1 has no subject
+in R1. A green re-run here means "no regression", nothing more.
 
 ## 5.4 Pre-registered trigger for the F3 confound arm
 
