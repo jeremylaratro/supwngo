@@ -1477,6 +1477,48 @@ F7 near-miss: a refuting instrument must be at least as wide as the claim it tes
 
 ### Outstanding, unfixed, and named rather than left to be discovered
 
+### C8 verified independently, clause by clause
+
+Six clauses, checked by me rather than inferred from a green suite. Clauses (c) and
+(e) are carried by the `candidate_id_index_diverges` mutant, which I confirmed dies
+by assertion (`DID NOT RAISE SchemaError`) rather than by crash. The other four,
+measured directly on a store holding one **retracted** and one **active** candidate:
+
+```
+(a) distinct ids 2 / 2 candidates                      -> bijection
+(b) f_551577b06cfc state=retracted  by_id(id) is c  -> True   (identity, not equality)
+    f_c2160215216e state=active     by_id(id) is c  -> True
+(f) active=1 terminal=1 -- the bijection holds over BOTH
+    validate_store on the retracted store            -> clean
+```
+
+Clause (f) was worth checking precisely because a reader assumes a terminal
+candidate has left the index; it has not, and `by_id` returns it by identity.
+
+**Clause (d), honestly:** `by_id` is annotated `-> Optional[Candidate]` and returns
+`None` for an id that is not stored. Whether that is the "declared absence" clause
+(d) demands is a judgement, and mine is that the annotation **does** declare it —
+`Optional` is not a silent `None`. Recorded rather than filed, with the residual
+below, because filing a deliberate and declared design as a gap costs a round
+exactly like skipping a sweep.
+
+### C8(d) residual, LOW, and left unfixed
+
+`by_id` conflates *malformed* with *absent*:
+
+```
+by_id('f_000...0')  -> None      # a well-formed id that names nothing: correct
+by_id('not_an_id')  -> None      # not an id at all
+by_id('')           -> None      # not an id at all
+```
+
+The module has `_ID_RE` and uses it to reject non-matching ids in log validation,
+so the inconsistency is internal: one consumer treats a malformed id as a hard
+error and another reports it as absence. A caller with a typo is told the candidate
+does not exist. LOW because no wrong candidate is ever returned and no digest is
+affected — C8's actual subject is unharmed — but named here rather than left for
+someone to rediscover.
+
 ### C10 verified independently — and a second near-miss, recorded not corrected
 
 The plan says *every* `__all__` entry taking a `ResolveContext` must raise. I did
