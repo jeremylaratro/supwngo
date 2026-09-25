@@ -1,7 +1,32 @@
 # Schema split, unit 1 of 3: canonicalisation
 
 **Date:** 2026-09-24
-**Status:** PLAN rev 5 — **round 2 returned NOT-APPROVED**, recorded verbatim at
+**Status:** PLAN rev 6 — **IMPLEMENTATION AUTHORIZED. There is no third plan
+review.**
+
+The escalation is recorded rather than assumed. `NEW` was **0 for three
+consecutive rounds**, and all five of round 2's INTRODUCED findings were
+re-created instances of classes already named to me — two of them under the same
+finding *number*. A loop whose output is its own previous output is not
+discovering anything, so round 4 of a plan review **escalates**; it does not
+proceed. The escalation is to change artifact: prose review has given what it has,
+and the remaining risk lives in whether the code does what this plan says, which
+only a review of the code can test.
+
+Rev 6 applies what round 2 specified concretely — C8's bijection strengthening,
+the per-arm exact-type policy, **P-E**, and the C3/C5/C9 assumption statements —
+**self-certifies with the sweeps instead of sending it back out**, and ships to
+implementation. The last review round is a **post-implementation review of the
+code** against C1–C10.
+
+**Every fix in rev 6 carries a `SCOPE` line** — the diagnosis's extent, the
+remedy's extent, and why they are the same set. Mis-scoping is its own protocol
+class (`1743788`), it has recurred in this plan in **both** directions (§4a wider,
+§4b narrower, §10 incomplete), and **the class is the mismatch, not the
+direction**. The scope ledger is §11.
+
+*(Rev 5 status, preserved for the audit trail: round 2 returned NOT-APPROVED,
+recorded verbatim at
 `docs/reviews/2026-09-24-schema-unit-1-review-round2.md`. RECURRENCES 4 / NEW 0 /
 INTRODUCED 5. **Held, not revised:** the counts are reported before the revision.
 **`NEW` is 0 for the third consecutive round.** All nine hits were checked against a
@@ -12,7 +37,7 @@ the three-round budget remains.
 The decomposition that matters: **all five INTRODUCED defects are instances of
 classes already named to me** — four by round 1 (two of them the same finding
 number), one by me in rev 3. Rev 5's remediation re-created five named classes; it
-did not surface new ones.
+did not surface new ones.)*
 
 *(Earlier status line, for the audit trail: rev 5 — revision authorized; round 1
 returned NOT-APPROVED, recorded
@@ -263,13 +288,13 @@ restate:**
 | --- | --- | --- |
 | C1 | `canonical` is **injective** over the **open** domain (evidence values). On the structural domain distinctness follows from the schema fixing the type per position — a different argument, see §4a and C7 | P21, widened per §5 |
 | C2 | The **open** domain is **closed and declared**, and every value outside it is **refused**, never coerced (§4a), with **exact-type** dispatch (§4b) | **behavioural**: a table of out-of-domain values — enum, `IntEnum`, `StrEnum`, tuple, set, dataclass, float, primitive subclasses, each **root and nested** — every one of which must raise. *Rev 5: the refusal-coverage instrument is **removed** from this column. It is control coverage only and cannot detect a value accepted along a path that raises nothing, so naming it here was an enforcement that does not enforce — the same defect this table exists to prevent.* |
-| C3 | `canonical` is a pure function of value, independent of the producer's Python types beyond the declared domain, so a fact serialised by another process reproduces the same digest | **C9's golden vectors**, which pin the bytes a second producer must reproduce. *Rev 5: "§4, option (c) rejected for exactly this" was reasoning, not enforcement — a rejected alternative constrains nothing about what ships. Unit 2 depends on C3 through `derive_id`, so it needs a gate.* |
+| C3 | `canonical` is a pure function of value, independent of the producer's Python types beyond the declared domain, so a fact serialised by another process reproduces the same digest | **two gates, because one of them is finite.** (i) A **property** quantifying over the generated domain: for every generated value, `canonical(v) == canonical(v)` across repeated and *interleaved* calls, and the byte string is independent of call order and of any prior call — this is the part that holds universally. (ii) **C9's golden vectors** as *regression evidence* that the bytes have not moved. *Rev 6, F-scope: rev 5 named only the vectors. A finite vector set cannot establish a universal claim; naming it as the enforcement of C3 is "names finite examples as enforcement", which is the original "names prose reasoning as enforcement" class with better manners. **Named assumption for the part the property cannot reach:** purity across *processes* is not in-process provable — the property tests one interpreter, so cross-producer agreement rests on the declared domain being type-closed (C2) plus `json.dumps` with fixed `sort_keys`/`separators`/`ensure_ascii` being version-stable. That assumption is unit 2's to re-examine if it ever ships a second producer.* |
 | C4 | The three digest projections are unchanged: `observations` and `state` remain in no digest | unit 3's P10 |
-| C5 | `Observation.digest()` distinguishes any two observations a caller can distinguish | follows from C1 + C2; the positive control is §2's merge case |
+| C5 | `Observation.digest()` distinguishes any two observations a caller can distinguish | follows from C1 + C2 — **and that dependency is now stated, because the consumer that relies on it is `_merge_observations`, which is not in C1's section** (§3b, P-E). Positive control: §2's merge case, **plus** P-E's — two `==`-distinct observations at an equal `at` must both survive `_merge_observations`. **Named assumption:** the union keys on a full 64-hex SHA-256, so beyond C1 it also rests on SHA-256 collision resistance. That is an assumption, not a defect, and it is stated rather than relied on silently. |
 | C6 | the refusal-coverage instrument declares its own scope: a site it cannot instrument is reported **out of scope**, never as uncovered | §6 |
 | C7 | at every **structural** position exactly one dataclass type may appear, **and no structural dataclass field is named a reserved tag** (§2a) | one mechanical check over the dataclass field annotations, §2a + §4a |
-| C8 | no consumer resolves a candidate id by **picking**: one id-index construction, duplicates rejected, `by_id` raises rather than returning the first match (§3a) | a test asserting every named consumer **errors** on a duplicate id |
-| C9 | for every previously accepted, **retained** wire value, canonical bytes and derived candidate IDs stay **byte-identical**; otherwise the schema version changes and a migration ships | **committed golden vectors** over canonical bytes, candidate IDs, dependency digests and log endpoints — a byte gate, not a sentence |
+| C8 | the id index is a **bijection** onto the stored candidates, not merely duplicate-free: (a) every stored candidate appears in the index **exactly once**; (b) `index[c.id] is c` — identity, not equality, so a stale copy cannot satisfy it; (c) `by_id(i)` agrees with `index[i]` for every stored id; (d) an id that is **not** stored yields a **declared absence**, not a silent `None` and not a wrong candidate; (e) a duplicate id **raises**, at every construction site; (f) the bijection holds over **active and terminal** candidates alike (§3a) | one test per clause (a)–(f), each shown red first. *Rev 6, F-scope: rev 5's "duplicates rejected + `by_id` raises" is the **contrapositive half** — it forbids one wrong answer without asserting the index is total and injective. A store could satisfy rev 5's C8 with a candidate missing from the index entirely, which is exactly how I8's domain shrank in silence. Clauses (a), (b), (d) and (f) are the half that was missing; (f) is there because a terminal candidate is the one a reader assumes is out of the index.* |
+| C9 | for every previously accepted **retained** wire value, canonical bytes and derived candidate IDs stay **byte-identical**; otherwise the schema version changes and a migration ships | **committed golden vectors** over canonical bytes, candidate IDs, dependency digests and log endpoints — a byte gate, not a sentence — stated as **regression evidence, not proof**. *Rev 6 defines "retained", which rev 5 left undefined and therefore unfalsifiable: the **retained set** is the intersection of the values the pre-change domain accepted with the values rev 6's domain accepts. Values the old domain accepted and rev 6 **refuses** — enum, `IntEnum`/`StrEnum`, tuple, set, dataclass, `float`, and every builtin subclass at an open position — are **deliberately not retained**; they are a compatibility break and get a schema-version bump plus a migration note, not a golden vector. **Named assumption:** the vectors are finite, so they can only witness that bytes moved, never that they cannot; the universal half of C9 is carried by C1's injectivity property and C3(i), and C9's own output must say so.* |
 | C10 | every public function reading a `ResolveContext` **validates** it; no exported decision function consumes a contract it does not enforce (§3b) | a test calling every `__all__` entry taking a context with each context `validate_context` refuses, requiring a **raise** |
 
 **Unit 2 (audit-log validation) depends on:** C1, C3, C5, **C8 and C9**.
@@ -457,15 +482,81 @@ denominator with sites that are immune. Four statements qualify.
 | **P-A** | *"ids uniquely identify immutable candidates, which is what `generation` and the 128-bit width above are for"* (:339–341) | named at :316 — `by_id`, pins, dependency lookup, witness selection | `validate_store` I6 (:916) — **1 of 2** `_validate_log` call sites | all 4 pick silently **and disagree**: `by_id` first, `current_pins` last, two dependency lookups differently. §3a |
 | **P-B** | *"Validation is a precondition, not a case — that is what makes the case analysis disjoint"* (:111, :463, :1090) | merge's two-case `DEDUPED`/`APPENDED` analysis | `merge` :1108, and every other mutating entry via `_append_log` / `_transition_candidate` snapshot→validate→restore | **nothing.** Measured: `merge`, `pin`, `unpin`, `retract` all reach `validate_store`. No consumer can observe an unvalidated candidate. **Enforced at the consumers.** |
 | **P-C** | *"context identities must be non-empty, so `"" not in ctx.identities` always"* (:521–523) | the reasoning that an `""` identity is unsatisfiable — i.e. `applicable`, the function that decides it | `validate_context`, called by `resolve` :1803, `conflicts` :1884, `agreements` :1922 | **`applicable` is public (in `__all__`) and calls no validator.** A second instance. |
-| **P-D** | `resolve`: *"a fact that was never measured has no candidate, and the caller must handle that"* (:1799) | callers, outside the module | — | **out of scope for this class:** the consumer is external, so there is no in-module site to enforce it at. Discharged structurally instead — `resolve` raises one of five declared refusals and has no `default` parameter, so a caller cannot receive a sentinel by accident. |
+| **P-D** | `resolve`: *"a fact that was never measured has no candidate, and the caller must handle that"* (:1799) | callers, outside the module | — | **external — made loud, not verified.** `resolve` raises one of five declared refusals and has no `default` parameter, so a caller cannot receive a sentinel by accident. *Rev 6 relabels this: rev 5 called it "discharged structurally", which claims more than the evidence. Nothing here verifies that callers handle the refusal; the module only guarantees the refusal is impossible to miss silently. "Made loud" is what was measured. "Discharged" would have been an absence assertion about code this unit cannot see.* |
+| **P-E** | `dedup_key`: *"`evidence` is deliberately excluded ... Evidence is preserved by `observations` instead, which is **strictly better** than being a dedup component"* (:386–390) | `observations` — concretely `_merge_observations` (:395–402), whose `setdefault` keeps **one** member per digest | **nowhere.** The claim is true only if C5 holds, and C5 follows from C1 — which is false today. C1's section and the consumer are in different parts of the module and nothing links them. | **one observation is silently dropped.** Measured, on the fully validated path: 2 live instances. A second live instance of round 1's class. |
 
 ```
-SWEEP RESULT  4 stated preconditions, 3 in scope for this class.
+SWEEP RESULT  (rev 6 -- re-run, one row added)
+              5 stated preconditions, 4 in scope for this class.
               P-A  NOT enforced at its 4 named consumers   (§3a, known)
               P-B  enforced at all 4 mutating call sites    clean
-              P-C  NOT enforced at `applicable`            NEW
-              => NOT "swept, no others". One further instance: P-C.
+              P-C  NOT enforced at `applicable`            (rev 5, NEW then)
+              P-E  NOT enforced at `_merge_observations`    NEW
+              P-D  external -- made loud, not verified      out of scope
+              => NOT "swept, no others". Two further instances: P-C and P-E.
 ```
+
+#### P-E, measured — and two of my four witnesses were wrong
+
+This is the *candidates-not-findings* rule applied to my own evidence, and it cost
+two of the four pairs I started with. Reported in the order I learned it:
+
+```
+witness                            ==-distinct?  one digest?  verdict
+IntEnum(1) vs 1   in a value          NO            yes       BENIGN -- collapsing
+StrEnum('a') vs 'a' in a value        NO            yes       BENIGN -- is correct dedup
+tuple-of-pairs vs list-of-lists       yes           yes       CLOSED ALREADY (below)
+set vs list       in a value          yes           yes       LIVE
+tuple vs list     in a value          yes           yes       LIVE
+```
+
+The enum pairs are **not** P-E instances. `IntEnum.ONE == 1` and `StrEnum.A == "a"`,
+so a caller cannot distinguish the two observations at all, and keeping one is
+*correct* deduplication rather than lost evidence. C5's own wording — "any two
+observations a caller **can** distinguish" — is what rules them out, and I only
+noticed because the script printed its own criterion instead of just its
+conclusion. Had it printed the conclusion alone I would have filed two false
+instances.
+
+The outer-container pair is also **not** a live instance: `_validate_candidate`
+normalises evidence to `tuple(sorted(ev_pairs, ...))` at :710 and there is exactly
+**one** `_validate_candidate` call site (:589), so no unnormalised evidence
+container reaches the union. A read of the docstring alone would have called it
+live.
+
+What is left is live on the fully validated path:
+
+```
+evidence {"trace": {1,2}}  ->  {"at":"...","evidence":[["trace",[1,2]]]}
+evidence {"trace": (1,2)}  ->  {"at":"...","evidence":[["trace",[1,2]]]}
+==-distinct after validation : True
+same digest at equal `at`    : True
+_merge_observations length    : 1        <-- an observation the caller can
+                                             distinguish is silently dropped
+```
+
+```
+FINDING  HIGH: `dedup_key` excludes evidence on the stated grounds that
+         `observations` preserves it; `_merge_observations` does not, because the
+         preservation claim depends on C1 and C1 is false today
+WHERE    supwngo/schema/resolve.py:386-390 (the claim), :395-402 (the consumer)
+CLASS    a precondition enforced at the source rather than at the consumers it
+         names  (round 1's class -- second instance after P-C)
+SWEEP    §3b's table, re-run with the fifth statement included
+RESULT   4 in scope; P-A, P-C and P-E fail; P-B clean; P-D external
+LABEL    NEW as an instance, RECURRENCE as a class -- the class is round 1's and
+         was already swept once in rev 5, so under protocol 1b456ca §6.1a the
+         class counts as a recurrence even though this instance is new.
+```
+
+**The remedy is the domain, not the union's key — and getting that backwards is
+the mis-scoping class.** Canonical *bytes* are equal in both live instances, so
+re-keying `_merge_observations` by canonical bytes instead of by digest **does not
+fix P-E**. It addresses only the separate cryptographic assumption named in C5.
+P-E is closed by §4a/§4b closing the open domain — `set` and `tuple` refused at an
+open position — i.e. **P-E needs no new code at all**, only a named dependency and
+a positive control. Shipping a byte-keyed union as "the P-E fix" would have been a
+remedy narrower than its diagnosis that also *looked* more substantial.
 
 #### P-C, measured — and it is a wrong answer, not merely an answer
 
@@ -787,6 +878,61 @@ of `canonical`'s consumers — which found enum, tuple and dataclass suppliers a
 no primitive-subclass supplier — it is good evidence and not a proof, and it is
 labelled as such.
 
+### The per-arm policy, stated per arm, because the diagnosis is per arm
+
+Round 2's condition: the remedy's extent must equal the diagnosis's. The diagnosis
+is "`_jsonable` dispatches on `isinstance` **at every arm**", so a remedy naming
+only the primitive arm is narrower than its diagnosis — which is precisely the
+defect rev 5 shipped. Measured: `MyBytes`, `MyList`, `MyDict`, `MyInt` and `MyStr`
+**all** collide with their bases today, so all five families are in the diagnosis.
+
+One row per arm of `_jsonable`, with the policy and what it costs:
+
+| arm | today | rev 6 policy | why |
+| --- | --- | --- | --- |
+| `None` | `obj is None` | unchanged | identity already exact |
+| `bool` | `isinstance` | exact by **construction** | `bool` cannot be subclassed — measured: `type('B',(bool,),{})` raises `TypeError: type 'bool' is not an acceptable base type`. No code needed; recorded so a reader does not add a redundant guard |
+| `int`, `str` | `isinstance` | `type(obj) is int` / `is str` | closes `MyInt`, `MyStr`, `IntEnum`, `StrEnum` |
+| `bytes` | `isinstance` | `type(obj) is bytes` | closes `MyBytes`; `bytearray` and `memoryview` stay refused |
+| `Mapping` | `isinstance(obj, Mapping)` | **open domain: `type(obj) is dict` only; every other `Mapping` is refused.** Structural domain: `dict` is what the module itself produces | rev 5 said both things at once — C2 called mapping subclasses out of domain while the code admitted any `Mapping`. **Decided, not left open:** a caller-supplied custom mapping at an *open* position is refused, because "refuse rather than guess" is this unit's rule and a custom mapping's iteration order and `items()` are not the module's to trust |
+| `set`, `frozenset` | sorted by `json.dumps` | **refused at open positions** (§4a), retained at structural positions **which do not exist** — see the coverage note below | a set and a list canonicalise to the same array (P-E's live instance) |
+| `list`, `tuple` | `isinstance(obj,(list,tuple))` | open: `type(obj) is list` only, `tuple` refused. Structural: `tuple`, per the declared annotations | a tuple and a list canonicalise identically, so admitting both at one position is non-injective by construction |
+| dataclass | `dataclasses.is_dataclass` | structural only, and the registry of admitted dataclass types is **explicit** rather than "anything with fields" (C7) | §2a's `_BYTES_TAG` collision came in through this arm |
+| enum | `isinstance(obj, Enum)` | **structural only, and dispatched BEFORE the primitive arms** | ordering is the fix, not an added check: an `IntEnum` reaching an `int` test first is encoded as an int whatever the enum branch says. C7's annotation check stays as a second line, not the first |
+| else | `raise SchemaError` | unchanged | |
+
+**Coverage note, measured and not comfortable.** Instrumenting `_jsonable` across
+the whole property suite and recording the exact type reaching each arm:
+
+```
+75 passed in 69.13s      (serial-safe by immunity: 0 files opened outside the worktree)
+none         326693  NoneType
+primitive        12  bool        667855  int      1964381  str
+enum          14347  ConflictClass  337808 Provenance  350945 Scope
+bytes             4  bytes
+mapping      337879  dict
+list/tuple    16985  list        1261020  tuple
+dataclass    350945  AppliesTo  ... Conflict, Observation, PinRecord, Ref
+refused           1  float
+set/frozenset     0  <-- NEVER REACHED
+non-exact types reaching an exact-typed arm: 0
+```
+
+Two things fall out, and the second is a gap rather than a reassurance:
+
+1. **Exact-type dispatch refuses nothing this suite produces** — every arm is
+   reached only by its canonical wire type. The compatibility cost measured on the
+   suite's reachable set is zero, for all five families, not just primitives. This
+   is the same immunity-not-isolation caveat as before: the suite's reachable set,
+   not the module's.
+2. **The `set`/`frozenset` arm is reached 0 times.** That arm's sorting rule is
+   entirely unexercised, which is *why* rev 3's set-sort mutant (candidate 5b) was
+   non-viable — I recorded it as "could not construct" when the honest statement is
+   **"the arm it mutates is dead in this suite"**. A rule no input reaches cannot
+   be mutated to red, and an unreached arm is a gate that cannot fail. Rev 6
+   therefore refuses sets at open positions **and** asserts the arm is unreachable
+   rather than leaving it live-but-untested: §8 item 13.
+
 ### Interaction with §4a's positional split
 
 These compose rather than conflict. §4a splits by **position** —
@@ -917,8 +1063,20 @@ argument for the instrument's design constraint:
 > **out of scope**, never as uncovered, and out-of-scope sites need a
 > hand-verified control named in the allowlist.
 
-Exactly one site is out of scope today (L200) and it is covered by hand at
-`tests/…:862`. The corrected figure is **28 of 106**.
+**Two** sites are out of scope today, and rev 6 corrects this sentence, which
+still read "exactly one" after rev 5 had already found the second — a stale claim
+left standing beside the corrected census two sections above it. This is the F7
+near-miss's mirror image: the refuting instrument must be at least as wide as the
+claim it tests, and my check for stale "exactly one" sentences had been a regex
+that required the sentence to end on one line, so this one — which wraps — was
+invisible to it. A plain `grep "out of scope"` finds it at once.
+
+| site | exception | why un-instrumentable | control |
+| --- | --- | --- | --- |
+| L200 | `TypeError` | builtin, `__init__` not assignable | hand-verified, `tests/test_context_resolve_properties.py:862` calls `bool(R.ABSENT)` |
+| L2154 | `SystemExit` | builtin, `__init__` not assignable | **`_main`'s exit path is excluded from the census by declaration, not by omission** — it is the CLI boundary, it carries a process exit status rather than a refusal, and C6 requires a named exclusion rather than a silent one. The exclusion is the control: the census prints it as an excluded CLI site every run |
+
+The corrected in-scope figure remains **28 of 106** (not re-measured — see §0).
 
 Cost: ~28s added to the suite, measured serially. Acceptable; it is the only
 instrument here that needs no hand-annotation to be true — provided it reports
@@ -1000,9 +1158,38 @@ its own blind spots, which is now a requirement rather than a hope.
     (§3b), so the test fails before the fix and the subtler mutation is
     "validate in `resolve` but not in `applicable`" — today's behaviour.
 11. **The new observation mutant** `observation_dedup_ignores_values` (§5) bound to
-    a merge property with **equal timestamps and differing evidence values**; and
-    `evidence_gate_type_only` registered `breaks=None`, because a mutant masked by
-    a second unchanged refusal is a must-pass, not a binding.
+    a merge property with **equal timestamps and differing evidence values**.
+    `evidence_gate_type_only` is **no longer registered `breaks=None`** (rev 6):
+    `breaks=None` routes a mutant to **P9 only**, and P9 never exercises evidence
+    validation, so the mutant was checked against a property that cannot see it —
+    a binding that cannot fail dressed as a deliberate must-pass. It now names an
+    explicit property that exercises the evidence gate with a non-primitive value,
+    or it does not ship.
+12. **P-E's positive control (§3b).** Two `==`-distinct observations at an *equal*
+    `at` must both survive `_merge_observations`. Shown red first: today
+    `{"trace": {1,2}}` and `{"trace": (1,2)}` collapse to one. No new production
+    code — the control passes once §4a/§4b close the open domain, which is the
+    point of filing P-E as a named dependency rather than a second fix.
+13. **The dead `set`/`frozenset` arm (§4b).** Two tests, because refusing it and
+    proving nothing reaches it are different claims: (a) a set at an open position
+    **raises**; (b) the structural encoder has **no** position whose declared
+    annotation admits a set — a mechanical check over the annotations, so the arm's
+    removal is justified by the schema rather than by the suite's silence.
+14. **The sixth subtler mutant:** `isinstance(obj, list)` restored in place of
+    `type(obj) is list`, with `class EvidenceList(list)` as the witness. It must go
+    red. This is the *container* half of §4b's diagnosis; rev 5 had a mutant for
+    the primitive half only, which is how the mis-scoped remedy passed its own
+    mutation table.
+15. **`bytes_tag_guards_mappings_only` is re-bound.** It cannot bind to P21 after
+    the positional split (P21 becomes an open-domain property and the mutant is a
+    structural-arm defect), so it binds to a helper property with a **synthetic
+    hostile dataclass** carrying a field named `_BYTES_TAG`'s value. Left on P21 it
+    would have been unbindable and silently dropped.
+16. **Hostile positive controls for C7's three absence checks.** Each of "one type
+    per structural position", "no field named a reserved tag", and "no structural
+    enum is a primitive subclass" gets a purpose-built violator that makes the
+    check go red. An absence check with no violator is this project's most repeated
+    defect; C7 shipped three of them in one row.
 
 ## 9. Risks
 
@@ -1043,8 +1230,14 @@ its own blind spots, which is now a requirement rather than a hope.
 
 Rev 1 summarised round 4 in prose and deferred "six other narrowness HIGHs" as a
 comma-separated list. Round 1 was right that this is not mechanically reconcilable
-and leaves defects without an owner. The manifest is now numbered, and **every row
-has exactly one owner**.
+and leaves defects without an owner. The manifest is numbered, and **every row has
+exactly one owner**.
+
+*Rev 6 makes that sentence true.* R4-5 and R4-7 each said "one owner" in the
+heading and then named two in the cell — the claim and the table disagreed, in a
+manifest whose entire purpose is that no defect lacks an owner. Both are split into
+lettered rows with one owner each, which is the third scope mismatch this plan has
+had to repair and the reason §11 exists.
 
 | # | class | owner | status |
 | --- | --- | --- | --- |
@@ -1052,9 +1245,11 @@ has exactly one owner**.
 | R4-2 | falsey value conflated with absent | closed in round 3 remediation + `085d4e5` | fixed; §2a is its bytes-tag cousin |
 | R4-3 | property narrowness — input set does not vary the dimension claimed | **unit 3** | the annotation exists and is falsifiable; the *relational* checker is unit 3's |
 | R4-4 | annotation entries that are false but well-formed | **unit 3** | all seven named below |
-| R4-5 | gate that cannot go red | **split**: unit 1 owns the refusal instrument's (§6); unit 3 owns P20's and the enumeration report's |
+| R4-5a | gate that cannot go red — the refusal instrument's | **unit 1** | §6; and §4b's dead `set` arm, found in rev 6 |
+| R4-5b | gate that cannot go red — P20's oracle and the enumeration report's | **unit 3** | `_merge_expecting_refusal`'s missing `else: raise`; `test_enumeration_bounds_are_reported`'s swallowed `AssertionError`. Both detailed below |
 | R4-6 | trust-boundary statement broader than what is in-process provable | **unit 2** | the seven in-process log properties |
-| R4-7 | subtler mutation of a bound rule survives its property | **unit 1** for canonicalisation rules (§5); unit 3 for the rest |
+| R4-7a | subtler mutation of a bound rule survives its property — canonicalisation rules | **unit 1** | §5, six mutants including rev 6's container mutant |
+| R4-7b | subtler mutation of a bound rule survives its property — every other bound rule | **unit 3** | the remaining bindings in `NARROWNESS` |
 | R4-8 | a precondition enforced at the source, not at the consumers it names | **unit 1** | §3a (P-A) + §3b (P-C); C8, C10 |
 
 ### R4-4: all seven false annotation entries, named
@@ -1091,3 +1286,67 @@ Both are in the property suite, both are **unit 3's**, and both are live now:
 
 Neither appeared in rev 1's deferral list. They are named here so the deferral is
 an assignment rather than a summary.
+
+---
+
+## 11. Rev 6 scope ledger — one `SCOPE` line per fix
+
+Required by the rev-6 authorization. Mis-scoping is protocol class `1743788`: *a
+remedy whose extent differs from its diagnosis's extent.* It has recurred in this
+plan in both directions — §4a's remedy was **wider** than its diagnosis, §4b's was
+**narrower**, §10's was **incomplete** — and **the class is the mismatch, not the
+direction**, so the check is mechanical rather than a judgement about over- or
+under-reach. A right diagnosis with a mis-scoped remedy passes review more easily
+than a wrong one, which is exactly why it needs a mechanical check.
+
+| fix | diagnosis extent | remedy extent | same set because |
+| --- | --- | --- | --- |
+| **§4b exact-type dispatch** | every `isinstance` arm of `_jsonable`: primitive (`bool`/`int`/`str`), `bytes`, `Mapping`, `set`/`frozenset`, `list`/`tuple`, dataclass, enum — 5 builtin-subclass families measured colliding | a policy row for **every one of those arms** (§4b's table), plus enum-before-primitive ordering | the table's rows are enumerated **from** `_jsonable`'s branches, not chosen; the arm list is the diagnosis restated. `bool` is in the remedy as "exact by construction" rather than omitted, so the row count matches the branch count |
+| **§4a positional split** | non-injectivity at *open* positions only; structural positions are schema-fixed and injective by a different argument | `_jsonable_open` closed; `_jsonable_structural` unchanged in domain | the split is **by position**, and the diagnosis was stated per position. Rev 1's error was applying an open-domain remedy globally; the extents are now both "open positions" |
+| **§3a/C8 bijection** | `by_id` first-wins, `current_pins` last-wins, `validate_store` raises, I8 saw 1 of 2 — four consumers disagreeing about one id | clauses (a)–(f): totality, identity, `by_id` agreement, declared absence, duplicate refusal, and **terminal as well as active** candidates | each clause maps to a measured disagreement, and (a)/(d)/(f) cover the *other* half of the diagnosis — a candidate **missing** from the index, which "duplicates rejected" does not address. Confined to index construction and `by_id`'s return contract; touches no encoding |
+| **§3b/C10 `applicable`** | one exported decision function reading a `ResolveContext` without validating it | **every** `__all__` entry taking a `ResolveContext` must raise on a refused context | the remedy's extent is the enumeration `__all__` ∩ takes-a-context. `applicable` is the only current member, so a one-function fix and a whole-set gate have the same extent **today** — and the gate keeps them equal as `__all__` grows, which a one-function fix would not |
+| **§3b/P-E** | `dedup_key`'s stated reason for excluding evidence depends on C1, which is false; 2 live instances, both nested open-domain container collisions | **no new production code** — a named dependency in C5 plus a positive control | the 2 instances are both open-domain collisions, so the extent of the defect is a **subset** of what §4a/§4b already close. A byte-keyed union would have had an extent **disjoint** from the diagnosis: it fixes a cryptographic assumption nobody measured failing and leaves both live instances live |
+| **§6/C6 second out-of-scope site** | one stale sentence ("exactly one site") beside a corrected census reading 2 | the sentence corrected **and** L2154 given a declared CLI exclusion with the census printing it every run | the diagnosis is "a site with no control and no declared exclusion"; the remedy supplies the exclusion and makes it recurring output. Correcting only the prose would have left the extent at 1 of 2 |
+| **§8.11 `evidence_gate_type_only`** | `breaks=None` routes to P9, which never exercises evidence validation — the binding cannot fail | an explicit property ID that exercises the evidence gate with a non-primitive value | the diagnosis is about **one** mutant's routing; the remedy changes **that** mutant's registration. The wider remedy (re-audit every `breaks=None`) is *not* taken here: the other must-pass mutant was verified against P9 deliberately, so widening would exceed the diagnosis |
+| **§10 manifest** | 2 rows claiming one owner and naming two | those 2 rows split into 4 lettered rows | the other 6 rows were checked and each names exactly one owner; the remedy touches the 2 that did not |
+
+### Mutants of shared components — the caller set each one runs against
+
+Round 2's condition: *a mutant that dies only against its own component's tests
+measures the mechanism, not the decision.* Each mutant below is a mutation of a
+component **several** callers decide behaviour with, so the gate is the union of
+those callers' tests, named here so a missing caller is visible rather than
+inferred.
+
+| mutated component | callers whose behaviour it decides | test set the mutant must be run against |
+| --- | --- | --- |
+| `_jsonable` / `canonical` | `dedup_key`, `derive_id`, `candidate_digest`, `canonical_document`, `Observation.digest`, `_validate_candidate`'s evidence gate (:712), `Ref.digest` | the whole property suite **plus** the byte-gated `docs/reference/context-resolution-tables.md` snapshot, because that document's bytes are a consumer of `canonical` that no test file mentions |
+| `dedup_key` | `merge`'s DEDUPED/APPENDED case analysis; P14's dedup projection | merge properties **and** P1's dedup-collision dimension — P1 is the *whole* coverage of `dedup_collision`, so a mutant not run against it is unmeasured |
+| `derive_id` | `by_id`, `PinRecord.candidate_id`, `by_candidate_id`, dependency lookup, `_validate_log`'s index, I6 | the store-invariant tests, the log tests, **and** C8's six clauses |
+| `candidate_digest` | `Ref.digest`, dependency staleness (P17), conflict records | P17 — the *whole* coverage of `dependency_depth` — plus the conflict tests |
+| `canonical_document` | `docs/reference/context-resolution-tables.md`'s byte gate; any exported document | the byte gate. **This is the caller with no test file**, and it is the one a component-local mutation table would miss |
+
+**The rule this encodes:** before a mutant is called dead, the components it
+touches are listed, each component's callers are enumerated, and the union of
+those callers' tests is the gate. "It died against `test_context_resolve_properties.py`"
+is a statement about one file, not about the decision.
+
+### Self-certification, in place of a third review
+
+Round 2's specified items, each with the sweep that checks it rather than a claim
+that it was done:
+
+| item | sweep run | result |
+| --- | --- | --- |
+| C8 bijection | clauses enumerated from the four measured consumer disagreements | 6 clauses, each mapped to a disagreement or to the missing-from-index half |
+| per-arm exact-type policy | `_jsonable`'s branches enumerated from source; exact type recorded per arm across 75 passing tests | 10 arms, 10 policy rows; 0 non-exact types reaching any exact-typed arm; **`set` arm reached 0 times** — a new gap, filed as §8.13 |
+| P-E | §3b's precondition sweep re-run with the fifth statement | 2 live instances; **2 of my 4 witnesses withdrawn as benign**, 1 as already-closed |
+| C3/C5/C9 assumptions | each enforcement column read for "is this finite or universal?" | C3 gains a domain-quantifying property beside the vectors; C5 and C9 gain named assumptions; "retained" defined as a set |
+| stale "exactly one" claims | `grep "out of scope"` — deliberately wider than the regex that missed it | 1 stale sentence, corrected |
+| one owner per manifest row | all 8 rows read | 2 wrong, split into 4 |
+
+**What this self-certification does not do:** it does not replace an adversarial
+reader. Every item above is a check I specified against a defect I already knew
+about, which is the definition of a gate whose failure mode I have already
+imagined. That is precisely why the remaining round is spent on the **code**, by a
+reviewer told that the plan is reviewed to convergence and is not the subject.
