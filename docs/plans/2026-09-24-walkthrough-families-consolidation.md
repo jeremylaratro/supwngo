@@ -214,3 +214,91 @@ measurements on this host. The sweep here collects facts and asks the registry
 which route wins — no exploitation, no timing, no scoring. The corpus binaries
 were compiled per target via `benchmark/build_all.sh <target>`, which is a
 `gcc` wrapper and not the harness.
+
+## Evidence provenance across the `d51f9bc` masking defect
+
+`d51f9bc` fixed a defect that silently collapsed walkthrough families to
+`triage` for the rest of any process in which the first `import pwn` happened
+inside a `CliRunner`. The review protocol (`f59ec04`) now holds that **any green
+result collected while a masking defect was live is uninformative, not
+probably-fine.** This section states, for this consolidation's own evidence, what
+was collected before that fix and what has been re-run since.
+
+### Test-level results: all re-run after the fix
+
+Everything in this document's "three verifications" section has been re-collected
+post-`d51f9bc`:
+
+| Result | When | Outcome |
+| --- | --- | --- |
+| Full suite | after | **834 passed, 14 skipped**, 0 pwntools load failures |
+| `-k walkthrough` | after | **396 passed**, 0 load failures |
+| `-k walkthrough`, two concurrent sessions | after | **396 passed each**, rc=0 both, 0 load failures |
+
+The pre-fix "791 passed / 14 skipped" figure is superseded by the 834 above and
+should not be cited.
+
+### Mutation tables: collected before the fix, and shown not to be exposed to it
+
+The heap 13-mutation table and the tie-sweep mutation table were both collected
+before `d51f9bc`. Re-running every mutant would be the safe default, so the
+narrower question was tested first: *can these files be masked at all?*
+
+Each was run one file per process — which is how the mutation tables were
+collected — with the masking defect **re-induced** (the `PWNLIB_NOTERM` default
+removed from `conftest.py`):
+
+| File | Verdict with the defect live | Poison signatures |
+| --- | --- | --- |
+| `test_walkthrough_heap.py` | GREEN, 52 passed | 0 |
+| `test_walkthrough_scores.py` | GREEN, 20 passed | 0 |
+| `test_walkthrough_route_sweep.py` | GREEN, 60 passed | 0 |
+| `test_walkthrough_fmtstr.py` | GREEN, 44 passed | 0 |
+| `test_walkthrough_model.py` | GREEN, 73 passed | 0 |
+
+None of them can be masked in that configuration, because none imports `pwn`
+through a `CliRunner` first — only `test_walkthrough_cli.py` does, and the
+poisoning needs it to run *earlier in the same process*. So the mutation evidence
+stands on its own terms, and the pre-fix mutation tables above are not withdrawn.
+
+The one result genuinely collected under a live masking defect was the *whole-suite*
+figure, and it has been superseded.
+
+### Correction: the `name` tie-break regression was **not** masked
+
+The record should not say it was. An interim version of `common.select_route`
+broke score ties on `name`, which silently flipped `fmtstr` to the `%n` write
+route in a case whose point is to report the read rejection. It is tempting — and
+it was initially reported — that this escaped because the masking defect hid the
+two `fmtstr` tests that catch it. That was tested directly rather than assumed:
+
+Reconstructing the exact interim state (conftest without `PWNLIB_NOTERM`, `fmtstr`
+ranking its rejections, `select_route` keyed on `name`) and running the minimal
+ordering pair that induces the poisoning:
+
+| State | `test_leak_with_no_consumer…` | `test_builds_when_the_cyclic_offset_probe_failed` |
+| --- | --- | --- |
+| interim code, masking defect **live** | **FAILED** | **FAILED** |
+| interim code, masking defect fixed | FAILED | FAILED |
+| current code | passed | passed |
+
+Both tests fail with the defect live, so the defect was not hiding them. (The
+defect *was* independently live in that run: a third test,
+`test_unreachable_write_target_is_marked_rather_than_offered`, failed only in the
+first row — that one is a genuine poisoning victim.)
+
+The real reason the regression survived is narrower and more useful: **the
+tie-sweep mutation table ran only `test_walkthrough_scores.py` and
+`test_walkthrough_route_sweep.py`.** It mutated the selector and ran the
+selector's own tests — never `test_walkthrough_fmtstr.py`, where the tests that
+encode which route `fmtstr` is *supposed* to pick actually live. The mutants all
+died, and the table read as thorough, because every test it ran was a test of the
+mechanism rather than of the behaviour the mechanism decides.
+
+This is the same shape as the schema property-test finding: narrowness in a
+verification reads exactly like correctness. The rule it yields is not about
+masking at all — **a mutation table is only as broad as the test selection it
+runs against, so mutating a shared component means running the tests of every
+caller whose behaviour it decides, not the component's own tests.** The regression
+was caught by the later full `-k walkthrough` run, which is the run that first
+included the callers.
