@@ -855,6 +855,91 @@ instrumentation. If the re-run reproduces 13/13 exactly, the arm does **not** fi
 
 ---
 
+## 5.5 Did the absence-collapse in `Binary._load_with_pwntools` touch the published figures?
+
+**Answer: no. 13/13 and 4/15 stand without annotation.** Established by direct
+measurement of the benchmark invocation path, not by inference from the artifacts —
+because the artifacts turned out to be unable to settle it.
+
+### First, a premise of mine that was wrong
+
+I offered `XDG_CACHE_HOME` isolation as the candidate fix for the cross-session test
+corruption, and it was **correlational**. My clean sample under an isolated cache was
+real but coincidental; the variable that actually moved was **import order**. The true
+cause was a poisoned `pwnlib` import: `pwnlib/term/text.py` calls `curses.setupterm()`
+at module scope guarded only by `except curses.error`, which does not catch the
+`io.UnsupportedOperation: fileno` that `click.testing.CliRunner` induces. Recorded here
+as my error, next to the defect class it belongs to — I confirmed an intervention
+correlated with a clean result and treated that as cause.
+
+The gadget-cache race **is** genuine and has a positive control; it was simply not this.
+The two are fixed separately and deliberately not conflated (root `conftest.py` for the
+import; `run_bench.py` for the cache).
+
+### The degraded signature, and why the archive cannot settle it
+
+`_load_with_pwntools` (`binary.py:211-212`) converts any load failure into a `warning`
+and continues, leaving `_elf=None`, `plt/got/imports` empty and no pwntools symbols.
+`_detect_protections` (`binary.py:313`) is `if self._elf:` with **no `else`**, so
+`protections` silently keeps dataclass defaults. "pwntools failed" is thereby renamed
+"this binary has no symbols and no protections".
+
+Two archive surfaces looked like they could testify, and neither can:
+
+1. **The report's `protections` block cannot testify at all.** `run_bench.py:881` takes
+   it from `target.get("protections")` — the corpus manifest's *declared* ground truth,
+   not a measurement. My first pass used it as evidence; that was wrong and I discarded
+   it. Had I kept it, I would have "confirmed" absence using a field that is identical in
+   both worlds.
+2. **`stderr_tail` is capped at 1500 chars** (`run_bench.py:972,978`). The load warning
+   occurs early, so its absence from a tail is weak evidence, not proof. All five
+   signature strings are absent across 137 archived files — recorded, but not relied on.
+
+**Behavioural proof, strictly scored** (a symbol/PLT-dependent technique producing a real
+`SUCCESS/FAILED/PARTIAL/ERROR`, i.e. one that got past `is_applicable`): **R1 13/15,
+R2 11/15.** The remaining 6 cannot be settled from the archive, and the reason is itself
+the defect class: **an empty symbol table and a genuinely win-less binary produce the
+same skip reason.** No amount of reading skip reasons distinguishes them.
+
+### So the path was measured instead of the output
+
+The trigger requires a stdout with no file descriptor. `run_bench.py` invokes the CLI via
+`subprocess.run(capture_output=True)` — a real OS pipe. A child was run in exactly that
+configuration with `PWNLIB_NOTERM` **explicitly absent** (the archived runs' state) and
+asserted, not assumed, to be in the right configuration:
+
+| check | measured |
+|---|---|
+| child stdout fd-backed | `HAS_FILENO=yes` |
+| `PWNLIB_NOTERM` | `None` — absent, so the result is not an artefact of the fix |
+| pwntools ELF object | `True` |
+| symbols / PLT entries | **59 / 6** — not degraded |
+| measured protections | `canary=False nx=True relro='Full RELRO'` — assigned, not defaults |
+| load-failure warning in stderr | **absent** |
+
+**Verdict: the benchmark path is not susceptible**, and never was. The distinguishing
+detail is visible in that child's stderr: pwnlib's *own* `curses.error` fallback fired
+benignly (`setupterm: could not find terminfo database`). `curses.error` **is** caught;
+the bug needs `io.UnsupportedOperation`, which only a non-fd-backed stdout produces, and
+a subprocess pipe never does. A benchmark process is structurally the wrong shape for
+this bug.
+
+**Consequence:** the figures keep standing with no caveat. This is the deliverable, and
+it is worth noting that the deliverable is an *absence* established by measuring the
+mechanism rather than by failing to find a string.
+
+### Still to fix, independently of the measurement question
+
+The collapse itself remains a live defect for any in-process caller (CliRunner, Jupyter,
+library use). A failed pwntools load must surface as its own loud state, distinguishable
+from a binary that genuinely has no symbols, and `_detect_protections` needs an explicit
+`else` so "never measured" is distinguishable from "measured all-false". Sequenced
+**after** the diagnostic re-run on purpose: landing a `binary.py` behaviour change while
+the re-run is in flight would add a third candidate cause to any movement, which is the
+exact mistake F3 already cost this round.
+
+---
+
 ## 6. Sequencing — gate first, then the safe instruments, then the risky ones
 
 Reordered per the review. The previous order ran I1 conversions against a count-only gate,
