@@ -1252,3 +1252,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path (which calls `identify_leaked_value`) repeatedly against a real compiled
   binary during this Phase 3 repair's benchmark spot-check; fixed both call sites
   to use `base_address`.
+- **A failed pwntools ELF load was silently renamed into "this binary has no
+  symbols / no protections"** (`supwngo/core/binary.py`). `_load_with_pwntools()`
+  ended in two broad `except` handlers (`ImportError`, then bare `Exception`)
+  that both only logged a `warning` and let `Binary.load()` continue into
+  `_load_with_pyelftools()`/`_detect_protections()` with `_elf` left `None` — so
+  a corrupt or unloadable ELF read exactly like a real, symbol-less binary, and
+  downstream `rop_chain` would abstain, silently collapsing to `triage`.
+  Separately, `_detect_protections()`'s `if self._elf:` had no `else`, so a
+  failed load left `protections` at its dataclass defaults, indistinguishable
+  from a genuine measurement of an unprotected binary. `Binary` now tracks a
+  new tri-state `pwntools_load_state` field (`PwntoolsLoadState`:
+  `NOT_ATTEMPTED` / `SUCCESS` / `PWNTOOLS_UNAVAILABLE` / `LOAD_FAILED`,
+  initialised to `NOT_ATTEMPTED` — never `SUCCESS` — so a code path that never
+  runs the loader cannot read as success) plus `pwntools_load_error` (the
+  exception text), and both failure arms now log at `error`, not `warning`.
+  `_detect_protections()` gained the missing `else`, setting a new
+  `protections_measured: bool` so "protections were never measured" is
+  distinguishable from "measured and every flag happens to be `False`" — the
+  same value would previously be returned in both cases. Deliberately kept out
+  of `AttemptRecord.notes`/`failure_reason` (`templates.py` renders both into
+  generated exploit scripts that `benchmark/rep_divergence.py` hashes per rep;
+  a value that varies per run would make every target `DIVERGENT`) — these are
+  structured `Binary` fields only. No changes to `benchmark/`, `corpus*`, or any
+  scoring/verification/attribution code.
