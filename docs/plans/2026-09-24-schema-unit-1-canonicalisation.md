@@ -1477,6 +1477,41 @@ F7 near-miss: a refuting instrument must be at least as wide as the claim it tes
 
 ### Outstanding, unfixed, and named rather than left to be discovered
 
+### §7's file list was incomplete, and its own sweep could not have caught it
+
+Measured — what the implementation actually changed, against what §7 claims:
+
+```
+CHANGELOG.md                                     claimed  ok
+supwngo/schema/resolve.py                        claimed  ok
+supwngo/schema/mutants.py                        claimed  ok
+tests/test_context_resolve_properties.py         claimed  ok
+tests/test_context_resolve_golden.py             NOT CLAIMED -- new file (C9)
+tests/test_context_resolve_refusal_coverage.py   NOT CLAIMED -- new file (C6/§6)
+docs/reference/context-resolution-tables.md      claimed, correctly hedged; bytes
+                                                 unchanged and the byte gate agreed
+```
+
+Two **new test files** exist that §7 never names, and §7 attributes the
+refusal-coverage gate to `tests/test_context_resolve_properties.py`, where it did
+not end up. The reference document's row is the one §7 got right, because it
+deferred to the byte gate instead of asserting an outcome.
+
+The instructive part is *why* §7's own sweep missed this. Rev 5 added a one-grep
+sweep over every **symbol** §7 claims a file gains, and concluded "**One error, now
+fixed; swept, no others**". That sweep was over symbols; the defect is over
+**files**. A new file contains no symbol the sweep was looking for, so the
+instrument could not have found it however carefully it was run.
+
+That is the **third** instance in this unit's implementation phase of one class:
+*a refuting instrument narrower than the claim it tests.* The F7 near-miss (a regex
+requiring a sentence to fit on one line), the C10 near-miss (a caller using one
+arity for functions with two), and this one. The protocol sentence already covers
+it — `1743788` §6.1b, *a refuting instrument must be at least as wide as the claim
+it tests* — and the addition this phase earns is that **the claim's dimension** has
+to be checked too, not only its breadth: §7's sweep was wide over symbols and had
+the wrong dimension entirely.
+
 ### C8 verified independently, clause by clause
 
 Six clauses, checked by me rather than inferred from a green suite. Clauses (c) and
