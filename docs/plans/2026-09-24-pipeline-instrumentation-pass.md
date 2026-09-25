@@ -990,6 +990,64 @@ silently becomes a wait-forever the moment a path assumption changes.** Two inde
 predicates, ORed, is the cheap general fix — recorded alongside the existing `pgrep -f`
 prohibition.
 
+## 5.4e NEW CLASS — "a correctly-computed field that nothing reads"
+
+**Two instances, found within one sequence, by the same question.** This is recorded as a
+class rather than two slips, per the convergence protocol.
+
+| instance | fields | consumers measured | status |
+|---|---|---|---|
+| I2 prologue timings (`orchestrator.py:170-172`) | 3 durations | **0** | wired (§5.4c) |
+| `Binary` pwntools load state (`3453f09`) | `pwntools_load_state`, `pwntools_load_error`, `protections_measured` | **0** | wired, same pass |
+
+**Class statement.** *A remedy that adds a correct field but no reader fixes the
+representation and leaves the behaviour unchanged.* The diagnosis in both cases was about
+what a run can **distinguish**; a field nobody reads distinguishes nothing. Worse than
+inert: it is a **false-provenance trap** — someone greps, sees the field assigned, and
+reports a capability that does not exist.
+
+**Detection rule earned.** *Before accepting a fix that adds a field, grep for its
+consumers and state the count.* Zero consumers means the fix is representation-only and must
+say so explicitly. This sits beside the existing rule about proving the subject of an
+absence search exists — here the search must be shown non-vacuous too: 9 occurrences of the
+load-state names inside `binary.py` confirm the subject exists, so **0 outside it** is a
+measured absence rather than a failed grep.
+
+**Why `3453f09` was not simply accepted.** Its scope hygiene was good and its tests are
+genuinely strong (below). But the pipeline still abstains, `report.json` still cannot tell a
+broken pwntools load from a symbol-less binary, and **the collapse is live exactly where it
+cost days.** Accepting it as "the collapse is closed" would have been the error; only its
+data model was closed.
+
+### Verification of `3453f09` — my own counts, per §5.1
+
+The committed **blob** was checked, not the implementer's report, because a mutation left in
+a commit silently invalidates everything downstream: no mutation markers, and the diff is
+the intended fix (4-state enum initialised to `NOT_ATTEMPTED` not `SUCCESS`, both failure
+arms distinguished, `warning` → `error`, explicit `else` in `_detect_protections`).
+
+| mutation | my count | caught by |
+|---|---|---|
+| A — both failure arms report `SUCCESS` | **2 red** | `test_generic_pwntools_failure_reports_load_failed_not_success`, `test_pwntools_unavailable_reports_its_own_distinct_state` |
+| B — `protections_measured` hardcoded `True` everywhere | **2 red** | `test_protections_never_measured_is_distinguishable_from_all_false`, `test_detect_protections_sets_measured_false_when_measurement_itself_raises` |
+| **C — subtler: `True` on the no-ELF path ONLY**, exception path left correct | **1 red** | `test_protections_never_measured_is_distinguishable_from_all_false` |
+
+**3 of 3 red; no blind spot to record.** Mutation C is the one that carried the weight: it
+keeps the tri-state present and reinstates the *original* collapse on the exact path the fix
+was written for. Surviving it would have meant the suite asserts the field's existence
+rather than its meaning. Each mutation target was asserted uniquely present before
+application, so none was vacuous, and the file was restored byte-identical to the committed
+blob between each.
+
+Counts: **7 passed** on the new file, **498 passed / 14 skipped / exit 0** full suite — both
+mine, and both matching what the implementer reported. The obligation to re-measure is not
+conditional on expecting a discrepancy.
+
+**Framing corrected.** The implementer wrote that it "did not attempt a mutation that failed
+to go red, so there is nothing to report there." That inverts the obligation: the duty is to
+name the subtler mutation of the same rule and either show it red **or record it as a known
+blind spot**. Absence of an attempt is not absence of a gap.
+
 ## 5.4 Pre-registered trigger for the F3 confound arm
 
 **Registered before the re-run, so the decision is not made after seeing which answer is
