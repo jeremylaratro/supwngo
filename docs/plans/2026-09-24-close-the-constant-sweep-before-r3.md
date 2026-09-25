@@ -1,7 +1,11 @@
 # Close the folklore-constant sweep before R3
 
 Date: 2026-09-24
-Status: **PLAN — needs an independent same-tier review before implementation.**
+Status: **PLAN, revision 2** — rev 1 was reviewed independently and **NOT-APPROVED**
+(3 BLOCKING, 6 MAJOR, 1 MINOR). Review preserved verbatim at
+`docs/reviews/2026-09-24-close-the-constant-sweep-plan-review-round1-sol.md`.
+This revision answers every finding by CLASS in §6, and reverses two of rev 1's own
+claims. **Round 1 of a 3-round budget.**
 Blocks: the cold measurement of **R3, R4 and R5** (see
 `2026-09-24-final-round-r5-unseen-corpus.md`, "Both preconditions above govern R3 and
 R4").
@@ -45,7 +49,7 @@ text and is in scope only so the sweep is complete:
 
 | site | role |
 | --- | --- |
-| `supwngo/exploit/pipeline/executors/stack_techniques.py:59` `MAGIC_VALUES` | `VariableOverwriteExecutor`'s sweep, 14 sizes × 9 values = 126 unconditional deliveries |
+| `supwngo/exploit/pipeline/executors/stack_techniques.py:59` `MAGIC_VALUES` | `VariableOverwriteExecutor`'s sweep, **13** offsets × 9 values = **117** unconditional deliveries (rev 1 said 14 × 9 = 126; see §0.2b) |
 | `supwngo/exploit/pipeline/executors/input_shape_techniques.py:48` `FALLBACK_MAGIC_VALUES` | appended unconditionally by `comparison_immediates()` |
 | `supwngo/exploit/enhanced_auto.py:119` `MAGIC_VALUES` | third copy |
 | `supwngo/exploit/strategy.py:920` | a suggestion string naming the constants — no sweep, but it will read as stale once the others change |
@@ -65,11 +69,19 @@ So the wider sweep was run too — every tracked `.py` containing **any** of the
 literals, which is the identity that matches the class rather than the artefact:
 
 ```
-git ls-files -- '*.py' | xargs grep -inl '0x1337bab3\|0xdeadbeef\|0xcafebabe\|0xbadc0de\
+# all NINE literals. Note the bare 0x1337 in first position - rev 1 omitted it,
+# which is why its count was 28. It also subsumes 0x1337bab3 by prefix.
+git ls-files -- '*.py' | xargs grep -inl '0x1337\|0xdeadbeef\|0xcafebabe\|0xbadc0de\
 \|0xfeedface\|0xbaadf00d\|0x0d15ea5e\|0x41414141'
 ```
 
-**28 of 228 tracked `.py` files.** Every one of the 24 beyond the table was inspected and
+Both the quoting and the count matter here. `git ls-files -- '*.py'` quotes the pattern so
+zsh cannot glob it, and the file count is printed rather than assumed — the two failure
+modes recorded in §5.
+
+**29 of 228 tracked `.py` files** — the command above is the *corrected* nine-literal
+pattern; rev 1's ran eight literals and returned 28, missing bare `0x1337` (§0.2a). Every
+one of the 25 beyond the table was inspected and
 is **out of scope, not uncovered** — two benign uses account for all of them:
 
 - `0x41414141` / `0x4141414141414141` as a **cyclic or offset marker**, searched for in
@@ -84,6 +96,88 @@ wider sweep therefore adds **0 instances** to the four — but the count is stat
 next reader can audit the disposition instead of inheriting it. Recording this because
 the narrow sweep alone would have read as full coverage while resting on an identity no
 one had written down.
+
+### 0.2 Corrections to rev 1, each verified by me before being written here
+
+Rev 1's review challenged three of its factual claims. I re-measured all three rather than
+accepting or rejecting the reviewer's account of them.
+
+**(a) The §0.1 sweep pattern omitted one of the nine literals — `0x1337` itself.**
+Confirmed, and it is the worst one to have missed: `0x1337` is the constant
+`14_negative_index` actually gates on. The pattern listed `0x1337bab3` and not the bare
+`0x1337`. Re-run with all nine:
+
+| sweep | files matched |
+| --- | --- |
+| rev 1, eight literals | 28 of 228 |
+| corrected, nine literals | **29 of 228** |
+
+The one added file is `benchmark/reference_exploits/14_negative_index_reference.py` — a
+**reference exploit**, which uses `0x1337` because that is the target's real gate value.
+It is not a framework candidate source, so §0.1's disposition is unchanged at **0
+additional in-scope instances**. *The conclusion survived; the instrument did not.* A
+sweep written to demonstrate that a narrow match identity under-reports was itself
+under-specified by one literal in nine. Recorded rather than quietly corrected, because
+the failure is the point.
+
+**(b) "14 sizes × 9 values = 126 unconditional deliveries" is wrong. It is 13 × 9 = 117.**
+Measured by parsing the two lists out of the source rather than counting them by eye:
+
+```
+COMMON_RET_OFFSETS entries: 13
+MAGIC_VALUES entries: 9
+product: 117
+```
+
+Note the direction: rev 1 **overstated** the cost of the folklore sweep, and so
+overstated the benefit of removing it. An error that flatters the proposal is the one to
+distrust. Table provenance now comes from a parse of the definitions.
+
+**(c) "the only one of 17 executors without an `is_applicable`" — confirmed.** Enumerated
+every `TechniqueExecutor` subclass under `supwngo/exploit/pipeline/executors/` and checked
+each class body: **17 subclasses, exactly 1 without `is_applicable`**, and it is
+`stack_techniques.py:VariableOverwriteExecutor`. This claim stands.
+
+### 0.3 A finding of my own, from verifying the review — and the sweep it owes
+
+The review asserted the regex misses byte-width comparisons, so §3's own example
+`if (x == 0x41)` "remains invisible when compiled as a byte-width comparison." I ran the
+discriminating experiment rather than adopting the claim: a probe with a byte gate, a
+32-bit gate and a 64-bit gate, compiled `-O0`, disassembled with the **exact** `objdump`
+command the function uses.
+
+| what the disassembly contains | recovered by the shipped regex? |
+| --- | --- |
+| `cmp $0x41` (the byte gate — gcc zero-extended into a register) | **yes** |
+| `cmp $0x1337` | yes |
+| `cmpb $0x0`, `cmpq $0x0` | **no** — suffixed mnemonics cannot match |
+| the 64-bit gate `0x1122334455` | **absent from the disassembly entirely** |
+
+The review's *mechanism* is real and its *example* did not reproduce. The regex is
+`\b(?:cmp|cmpl|cmpq|test)\s+\$0x…`, so `cmpb`/`cmpw` and `testb/w/l/q` cannot match it
+(after `cmp` the next character is `b`, not whitespace), and `cmpb $0x0` is demonstrably
+present in real output and unrecovered. But on this build the byte gate compiled to a
+register `cmp` and was visible. **Whether a byte gate is recoverable is a codegen
+question, not a property of this plan** — which is exactly why it must not be asserted
+either way without the compile.
+
+**The fourth row is a finding neither rev 1 nor the review had, and it is the worst of
+them.** The 64-bit gate produces *no `cmp` immediate at all* — gcc materialises the
+constant with `movabs` into a register and compares registers. So `value <= 0xFFFFFFFF` is
+**not** what hides 64-bit gates; there is nothing for an immediate-scraping recoverer to
+find at any filter setting. A recovered-only design has a **structural** blind spot for
+any gate wider than 32 bits, and widening the regex cannot close it.
+
+- CLASS: *an extractor that recognises one instruction encoding of a source-level
+  construct, and is described as recognising the construct.*
+- SWEEP: compile a fixture matrix — operand widths {8,16,32,64} × mnemonics
+  {`cmp`,`test`} × signedness × optimisation {`-O0`,`-O2`} — disassemble each with the
+  exact command, and record per cell whether the constant appears as an immediate at all,
+  and whether the regex recovers it.
+- RESULT: **not yet run. This is the sweep this plan owes before implementation.** Four
+  cells are measured; the matrix is not. Stated as owed rather than implied covered.
+
+This is why §2 below no longer claims a missed gate is *observable*.
 
 ## 1. Does removing the folklore constants cost real credit?
 
@@ -112,18 +206,82 @@ of silent.
 
 ## 2. Options
 
-### A — Recovered-only, plus an `is_applicable`, plus a declared skip *(recommended)*
-Delete the unconditional append; source candidates only from the target's own
-`cmp`/`test` stream. Give `VariableOverwriteExecutor` an `is_applicable` — it is the
-**only one of 17 executors without one** — returning false with a reason when recovery
-yields nothing, so the executor reports *"no gate immediates recovered"* rather than
-silently burning 126 deliveries.
+### A′ — A provenance contract enforced at the delivery sink *(recommended)*
 
-- Closes the precondition outright rather than labelling it.
-- Removes 126 unconditional `verify_payload` calls, which also matters under the 360 s
-  wall: time spent sweeping folklore is time not spent on a route that could work.
-- Converts the unverifiable held-out risk into an **observable**: a target whose gate is
-  not a comparison shows up as an explicit skip with a reason.
+**Rev 1's option A is withdrawn.** It was three separate edits at three sites plus a
+predicate, which is an instance-shaped remedy for a class-shaped defect: a fourth site
+added later would reintroduce the exposure and satisfy every check rev 1 specified. The
+review's proposed structure is better and this revision adopts it.
+
+**The contract.** One function performs recovery and returns a *structured result*, not a
+list:
+
+```python
+@dataclass(frozen=True)
+class GateCandidate:
+    value: int
+    instruction_addr: int     # where it was read from
+    mnemonic: str             # the instruction it was an immediate of
+
+class RecoveryStatus(Enum):
+    OBJDUMP_MISSING        = "objdump_missing"
+    OBJDUMP_FAILED         = "objdump_failed"       # nonzero returncode
+    OBJDUMP_TIMEOUT        = "objdump_timeout"
+    DISASSEMBLED_NO_MATCH  = "disassembled_no_match"
+    CANDIDATES_FOUND       = "candidates_found"
+
+@dataclass(frozen=True)
+class GateRecovery:
+    status: RecoveryStatus
+    candidates: tuple[GateCandidate, ...]   # empty unless CANDIDATES_FOUND
+    detail: str | None                      # the errno / stderr tail / exit code
+```
+
+**Then the rule that makes it a contract rather than a data structure:** a gate-value
+payload may only be delivered if the value it carries is `.value` of some `GateCandidate`
+in that target's own `GateRecovery`. The check lives at the **delivery sink**, not in the
+executor, so it binds every present and future candidate source. A value with no
+provenance record is refused, and the refusal is recorded.
+
+Three consequences, each answering a specific round-1 finding:
+
+- **The three live sites need no individual disposition** (answers BLOCKING 1). Whatever
+  `stack_techniques.py`, `input_shape_techniques.py` and `enhanced_auto.py` propose, the
+  sink rejects anything unprovenanced. The folklore lists can then be deleted as dead
+  code — and if one is missed, it is inert rather than exploitable-looking.
+- **An infrastructure failure is no longer an empty list** (answers BLOCKING 3). Rev 1
+  would have collapsed "objdump is not installed", "objdump exited nonzero", "objdump
+  timed out" and "disassembled cleanly, no comparisons" into one empty result and reported
+  all four as *"no gate immediates recovered"* — a four-way absence collapse introduced
+  **by the fix**, in a plan about absence collapse. The status enum keeps them distinct,
+  and `DISASSEMBLED_NO_MATCH` is the **only** status that may be read as evidence about the
+  target. The rest are evidence about the toolchain, and a target measured under them is
+  **NOT MEASURABLE**, not unsolvable. `proc.returncode` is currently never checked — the
+  function decodes `proc.stdout` regardless — so this is a live defect today and not only
+  a hazard of the change.
+- **Delivered ⊆ recovered becomes assertable** (answers MAJOR 8), which is the only check
+  that actually tests the thing the precondition is about. Every other verification in
+  rev 1 tested a component or an outcome.
+
+**What A′ does *not* do, stated because rev 1 claimed it did.** It does not make a missed
+gate observable. `is_applicable` predicating on `status == CANDIDATES_FOUND` returns true
+whenever *any* immediate was recovered, relevant or not, so a target whose real gate was
+never recovered but which happens to contain `cmp $0x20` looks applicable and emits no
+skip. Relevance cannot be determined without reading the target's source, which is
+prohibited on held-out corpora. **Rev 1's "converts the unverifiable risk into an
+observable" was an overclaim and is retracted.** The honest position: losslessness on
+R3/R4/R5 is a **disclosed residual risk**, and the residual is now bounded in the one
+direction that matters — a *wrong* gate value can no longer be delivered, even though a
+*missing* one cannot be detected.
+
+**Cost, net rather than gross** (answers MAJOR 7). Rev 1 advertised "removes 117
+deliveries" and did not count the replacement. At the current `limit=24`, 13 offsets × 24
+candidates is **312** deliveries — a possible net *increase* of 195. So A′ carries a
+binding budget criterion, not a talking point: **measured worst-case per-target wall time
+for this executor must not exceed its pre-change measurement**, on the worst target in R1
+and R2, with the number recorded before and after. If it does, `limit` comes down until it
+holds. The 360 s per-target budget is the ceiling; this criterion is stricter and is what
+gets checked.
 
 ### B — Keep the list, flag and report credit won through it
 The R5 spec's option 2. **Not recommended.** It keeps a brute-force channel alive, so
@@ -134,41 +292,145 @@ flagged figure invites "the headline number, ignoring the flagged one" downstrea
 The behaviour the docstring already claims. **Rejected as the primary fix** — it
 preserves the exposure precisely in the case that matters (recovery empty means the
 constant is *not* in the binary, so any hit is a guess), while making it look handled.
-*What would flip A to C:* a credited target, on any corpus, whose gate constant is
-genuinely unavailable from static recovery but reachable by list. R1 offers exactly one
-candidate and it is VOID and assignment-only. If R3 produces a real one, C becomes the
-honest answer and A's skip-with-reason is what will surface it.
+*What would flip A′ to C:* a credited target whose gate constant is genuinely
+unavailable from static recovery but reachable by list. R1 offers exactly one candidate
+and it is VOID and assignment-only.
+
+**Rev 1 added "if R3 produces a real one, C becomes the honest answer." That sentence is
+withdrawn.** It made a held-out corpus a design-selection signal, which spends the cold
+measurement to choose an implementation — the corpus can then never measure anything
+again, and the resulting figure is fitted to the thing it is supposed to test. R3/R4/R5
+are single-use. So, binding:
+
+- **The implementation and its configuration are frozen and hashed before R3 is
+  unsealed**, and the hash is recorded with the results. `limit`, the regex, the status
+  set and the sink check are all part of that freeze.
+- **No policy change, no re-run, and no parameter tuning between or during R3, R4 and
+  R5.** A result that suggests C is correct is a finding to be *reported*, and acted on
+  against a future corpus — never against the one that produced it.
+- Rev 1's flip condition was not observable anyway: per §2A′, an applicability skip cannot
+  establish that a folklore-reachable gate existed. Testing that claim would require
+  deliberately delivering an unprovenanced guess, which is the defect. So the condition is
+  replaced by the honest one — *it can only be settled on a corpus whose source may be
+  read*, i.e. by building a purpose-made fixture, not by watching a held-out round.
 
 ## 3. A coverage limit to fix while in there
 
 `comparison_immediates()` filters to `value >= 0x100`, dismissing smaller constants as
 "loop bounds and sizeof-style noise". That is defensible for ranking and wrong as a hard
-floor: `off_by_one`'s own comparisons are `cmpl $0x20`, and a gate written
-`if (x == 0x41)` is invisible to the recoverer today. Keep the ordering heuristic
-(small-and-interesting first), but **rank rather than exclude**, and record the change
-as affecting candidate order — not as a new capability claim.
+floor: `off_by_one`'s own comparisons are `cmpl $0x20`, and a small gate constant is
+invisible to the recoverer today.
+
+Rev 1 said "rank rather than exclude, and record the change as affecting candidate order —
+not as a new capability claim." **Both halves of that were wrong**, and the review was
+right on each.
+
+**It is not an order change, it is a set change.** Selection is
+`sorted(found, key=lambda v: (v.bit_length(), v))[:limit]`. With the floor removed, `0`,
+`1`, loop bounds and `sizeof` constants sort *first* by bit length and consume the 24
+slots, so a real higher gate can be **truncated out of the set entirely**. Relaxing a
+filter in front of a truncating sort changes what is delivered, what `is_applicable`
+returns, and therefore what can be credited. Ranking and truncation have to be redesigned
+together or not touched:
+
+- **Partition instead of ranking a single stream.** Keep a per-bucket reservation —
+  low-value candidates get a bounded share of the budget and cannot evict high-value ones,
+  and every candidate retains its `(addr, mnemonic)` record either way.
+- **Acceptance test that would have caught it:** a fixture with **more than 24 distinct low
+  loop and size comparisons plus one real higher gate**, asserting the gate survives
+  selection. Rev 1 specified no such test, and none of its five checks would have failed.
+
+**And the regex recognises fewer encodings than §3 claims.** Measured in §0.3: `cmpb` and
+`cmpw`, and the suffixed `test` forms, cannot match; and a gate wider than 32 bits leaves
+no immediate at all. So this section's scope is now explicitly:
+
+| gap | closed here? |
+| --- | --- |
+| `value >= 0x100` floor discarding small gates | yes — via partitioned selection |
+| `cmpb`/`cmpw`/`testb`/`testw`/`testl`/`testq` unmatched | yes — extend the mnemonic alternation, gated on the §0.3 fixture matrix |
+| `value <= 0xFFFFFFFF` ceiling | **moot** — see below |
+| gates wider than 32 bits | **NO — structurally out of reach.** Disclosed, not fixed. |
+
+The ceiling is moot because a 64-bit constant is materialised by `movabs` and compared
+register-to-register, so it is never an immediate to begin with. Raising the ceiling would
+look like closing that gap while closing nothing — the same shape as rev 1's own §0
+finding about calling `comparison_immediates()` and changing nothing. **The 64-bit case is
+recorded as a known limitation of the recovered-only design, and it is the strongest
+argument for keeping option C on the table** for a future corpus where a fixture can settle
+it.
+
+**Forward consistency with §1**, which the review flagged: §1 argues `13_off_by_one`'s
+`0xdeadbeef` is not recoverable, and its only comparisons are `$0x0`, `$0x20`, `$0x0`.
+Removing the floor makes `0x0`/`0x20` *recoverable*, so after this change the executor
+becomes **applicable** on that target instead of skipping. §1's conclusion is unaffected —
+`0xdeadbeef` is still not recoverable, it is still an assignment not a comparison, and the
+target is still VOID — but the *mechanism* changes from "skips" to "attempts two
+provenanced values and fails honestly", and that is the behaviour to expect in the re-run.
+Rev 1 implied a skip there. It would not have skipped.
 
 ## 4. Verification required
 
-1. **Positive control first.** `14_negative_index` must still yield `0x1337` *from
-   recovery*, asserted on provenance rather than on membership. My first attempt at this
-   check classified candidates by "is it in `FALLBACK_MAGIC_VALUES`", which cannot
-   distinguish *recovered* `0x1337` from *appended* `0x1337` — an instrument ambiguous
-   exactly where the question lives. Assert against the objdump stream.
-2. **Sweep all four sites** and state the result for each, including the advisory string
-   — then **re-run the wider §0.1 sweep after the change** and confirm the 24 out-of-scope
-   files are still out of scope. The disposition of §0.1 is a judgement about *current*
-   uses; a fix that introduces a single-constant guess somewhere would satisfy the narrow
-   sweep and be invisible to it.
-3. **Mutation, wrong-but-present:** pin recovery to return a fixed non-empty list and
-   require a red. An absence mutation alone passes against a hardwired value.
-4. **Re-run R1 and R2 and reproduce 13/13 and 4/15 target-for-target.** Both were
-   re-run post-import-fix and reproduced exactly, so the baseline is current and any
-   movement is attributable to this change. If either moves, that is the finding and it
-   is reported before anything else.
-5. **`is_applicable` needs a positive instance on both sides** — one target where it
-   returns true, one where it returns false with the reason populated. A predicate no
-   corpus exercises is unfalsifiable.
+Rev 1 listed five checks. The review's PASS 1 showed **every one of them could be
+satisfied while adding nothing** — the decisive criticism of the revision, and the reason
+this section is rewritten around one end-to-end invariant instead of five component
+checks.
+
+**4.1 The sink invariant — the only check that tests the precondition itself.**
+For every gate-value payload delivered during a run, record the value and require it to
+match a `GateCandidate` from that target's own `GateRecovery` by `(value,
+instruction_addr, mnemonic)`. Assert **delivered ⊆ recovered** over the whole R1 and R2
+corpora, and additionally reconcile every *credited* target's strace against that record.
+Rev 1 had no delivery-level oracle at all: its §4.1 asserted `0x1337` appears in the
+objdump stream and that the helper returns it, which does not establish that the executor
+delivered *that* occurrence. The hollow satisfaction the review named — "show `0x1337` in
+objdump and in output without proving the output came from that instruction" — is closed
+only by carrying the address through.
+
+**4.2 The status matrix must be red in each cell independently.** Induce each
+`RecoveryStatus` and require a distinct, correct outcome: `objdump` absent from `PATH`;
+`objdump` present but exiting nonzero; a timeout; a target that disassembles cleanly with
+no comparisons; and a normal target. The first three must report **NOT MEASURABLE**, not
+"no gate immediates". A single "recovery returned empty" test passes in all five cells
+and distinguishes nothing.
+
+**4.3 Mutation, wrong-but-present, at the sink rather than the helper.** The review named
+rev 1's version as hollow: a helper-level assertion can fail while the delivery path stays
+hardwired. So mutate the **sink**: make the provenance check accept any value, and require
+a red from the corpus-wide assertion in 4.1. Then separately mutate recovery to return a
+fixed non-empty *provenanced-looking* list with fabricated addresses, and require the
+address reconciliation to catch it.
+
+**4.4 The §0.3 fixture matrix, run in full.** Operand widths {8,16,32,64} × {`cmp`,`test`}
+× signedness × {`-O0`,`-O2`}. Record per cell whether the constant appears as an immediate
+and whether it is recovered. This is the sweep §0.3 owes; the mnemonic alternation may not
+be extended until the matrix says which encodings actually occur.
+
+**4.5 The truncation fixture.** More than 24 distinct low loop/size comparisons plus one
+real higher gate; assert the gate survives selection. None of rev 1's checks would have
+failed on the truncation defect.
+
+**4.6 Budget, measured before and after.** Per-target wall time for this executor on the
+worst target in R1 and R2, recorded pre-change and post-change. Post must not exceed pre.
+`limit` comes down until it holds. A gross "deliveries removed" count is not evidence
+(§2A′).
+
+**4.7 Re-run R1 and R2 and reproduce 13/13 and 4/15 target-for-target** — with the
+caveat the review raised and rev 1 missed: **reproducing the solved set can succeed
+through a remaining invalid route**, so this check is necessary and not sufficient, and it
+only means anything *in conjunction with* 4.1. Both figures were re-run post-import-fix
+and reproduced exactly, so the baseline is current and any movement is attributable. If
+either moves, that is the finding and it is reported before anything else.
+
+**4.8 Sweeps re-run after the change, with the corrected nine-literal pattern** (§0.2a),
+and the §0.1 disposition re-confirmed: all 25 out-of-scope files still out of scope. A fix
+that introduced a single-constant guess would satisfy the narrow `MAGIC_VALUES *=` sweep
+and be invisible to it. Print the iteration count and check the exit status (§5).
+
+**4.9 `is_applicable` needs a positive instance on both sides** — true on one target,
+false with a populated reason on another — **and** a case where recovery succeeded but
+every recovered value is irrelevant, whose expected result is *applicable, attempts, fails*
+(not a skip). That third case is the one that documents the retracted observability claim
+in executable form.
 
 ## 5. Method note worth keeping
 
@@ -188,3 +450,176 @@ loudly. The generalisation across both: **in zsh, a command that enumerates must
 enumerated** — print the count, and check the exit status, because the two failure modes
 are a silent zero and a hard abort that a `2>/dev/null` would have converted into a silent
 zero. Both instances occurred while verifying a document *about* absence collapse.
+
+---
+
+## 6. Answers to the round-1 findings
+
+Verdict answered: **NOT-APPROVED**, 3 BLOCKING / 6 MAJOR / 1 MINOR. Every finding is
+accepted except where marked. Two are accepted with a **correction to the reviewer**, and
+both corrections were measured, not argued.
+
+```
+FINDING  B1 - Option A prescribes no disposition for every live folklore source
+INSTANCE enhanced_auto.py had no action; strategy.py only to be "stated"
+CLASS    an instance-shaped remedy for a class-shaped defect: N edits at N known
+         sites, where site N+1 reintroduces the defect and passes every check
+SWEEP    replaced, not enumerated - §2A' moves the check to the delivery sink, so
+         the remedy's extent is "every candidate source that exists or will exist"
+OTHERS   the three lists become dead code; a missed one is inert, not exploitable
+SCOPE    diagnosis was "three sites unaddressed"; remedy is "no site can deliver an
+         unprovenanced value". Remedy is WIDER than the diagnosis, deliberately -
+         equal extent here would mean three more edits and the same defect class.
+RADIUS   §2A withdrawn and rewritten; §4 rewritten around the sink invariant; §3's
+         "capability claim" wording corrected; §1's conclusion re-checked, unchanged
+```
+
+```
+FINDING  B2 - the wider sweep is literal-shaped and omits one of the nine literals
+INSTANCE the §0.1 pattern had 0x1337bab3 but not bare 0x1337
+CLASS    syntactic occurrence search used as proof of semantic absence
+SWEEP    re-ran with all nine literals over all 228 tracked .py
+OTHERS   28 -> 29 files. The one addition is
+         benchmark/reference_exploits/14_negative_index_reference.py, a reference
+         exploit using the target's real gate value - out of scope. 0 additional
+         in-scope instances; §0.1's disposition survives, its instrument did not.
+SCOPE    ACCEPTED WITH A LIMIT STATED. The reviewer is right that no literal sweep
+         proves behavioural absence - decimal forms, computed values, imported
+         aliases, packed bytes and non-.py sources are all invisible to it. I am
+         not claiming otherwise, and I am not building an AST scan: §2A' makes the
+         literal inventory non-load-bearing, because the sink refuses an
+         unprovenanced value whatever spelling produced it. The sweep is retained
+         as an aid to deleting dead code, not as the proof.
+RADIUS   §0.1 count corrected; §0.2a records the omission; §4.8 re-runs corrected
+```
+
+```
+FINDING  B3 - removing the fallback turns infrastructure failure into "not applicable"
+INSTANCE exceptions caught to an empty list; proc.returncode never checked
+CLASS    error-as-empty collapse at a measurement boundary - a sentinel that is
+         representable as a legal measurement
+SWEEP    enumerate every outcome of the recovery step: objdump missing, nonzero
+         exit, timeout, clean disassembly with no matches, matches found
+OTHERS   five outcomes, rev 1 would have reported four of them identically. The
+         nonzero-returncode path is a LIVE defect today, not only a hazard of the
+         change: the function decodes proc.stdout without checking the exit code.
+SCOPE    diagnosis and remedy are equal in extent - the status enum has exactly one
+         member per enumerated outcome, and only DISASSEMBLED_NO_MATCH may be read
+         as evidence about the target. The other four yield NOT MEASURABLE.
+RADIUS   §2A' bullet 2; §4.2 requires each cell red independently
+```
+
+```
+FINDING  M4 - is_applicable tests for any immediate, not the relevant gate
+INSTANCE 13_off_by_one has 0x0/0x20; §3 makes them recoverable; predicate returns true
+CLASS    proxy predicate conflating incidental evidence with the observed event
+SWEEP    not applicable - the claim was withdrawn rather than repaired
+OTHERS   none; ACCEPTED IN FULL and rev 1's observability claim is RETRACTED
+SCOPE    relevance is undecidable without reading held-out source, so the honest
+         remedy is to stop claiming the observable and disclose the residual. The
+         residual is now bounded in one direction only: a WRONG gate value cannot be
+         delivered; a MISSING one cannot be detected. Stated, not glossed.
+RADIUS   §2A' "what A' does not do"; §3 forward-consistency note; §4.9 third case
+```
+
+```
+FINDING  M5 - the regex recognises selected spellings of the instruction class
+INSTANCE cmpb/cmpw and testb/w/l/q unmatched; <= 0xFFFFFFFF ceiling
+CLASS    an extractor recognising one encoding of a construct, described as
+         recognising the construct
+SWEEP    compiled a probe with byte/32-bit/64-bit gates, -O0, disassembled with the
+         exact objdump command (§0.3)
+OTHERS   CORRECTION TO THE REVIEWER, measured. (i) The mechanism is CONFIRMED -
+         cmpb $0x0 and cmpq $0x0 are present in real output and unrecovered.
+         (ii) The stated example was NOT reproduced - gcc compiled the byte gate
+         `c == 0x41` to a register `cmp $0x41`, which the regex matches, so
+         recoverability of a byte gate is a codegen question. (iii) The ceiling is
+         the WRONG mechanism for 64-bit gates: the constant is materialised by
+         movabs and compared register-to-register, so there is no immediate at any
+         filter setting. Raising the ceiling would close nothing while looking
+         like a fix - the same shape as this plan's own §0 finding.
+SCOPE    (iii) is a STRUCTURAL limit of recovered-only and is disclosed, not fixed.
+         The mnemonic alternation is not extended until §4.4's matrix says which
+         encodings occur - the fixture matrix is owed and is named as owed.
+RADIUS   §0.3 new; §3 scope table; §4.4; §2C's C-option argument strengthened
+```
+
+```
+FINDING  M6 - "rank rather than exclude" keeps a truncating sort that drops the gate
+INSTANCE sorted(key=(bit_length, v))[:24] with the floor removed promotes 0/1/bounds
+CLASS    filter relaxation without redesigning ranking and truncation together
+SWEEP    fixture with >24 distinct low comparisons plus one real higher gate
+OTHERS   none beyond this selection site
+SCOPE    ACCEPTED IN FULL, including the sharper half: it is a SET change, not an
+         order change. Rev 1's "record it as affecting candidate order, not a new
+         capability claim" is withdrawn - it changes the delivered set, hence
+         applicability, hence what can be credited. Remedy is partitioned
+         selection with a bounded low-value share, equal in extent to the defect.
+RADIUS   §3 rewritten; §4.5 adds the fixture; §1's 13_off_by_one mechanism updated
+         from "skips" to "attempts two provenanced values and fails honestly"
+```
+
+```
+FINDING  M7 - gross removal counted, net replacement search not
+INSTANCE "removes 126 deliveries" with no count of the replacement
+CLASS    gross-removal accounting presented as net resource analysis
+SWEEP    count both sides from the definitions rather than by eye
+OTHERS   and the gross figure was itself wrong - 13 offsets, not 14, so 117 not 126
+         (§0.2b). Replacement at limit=24 is 13 x 24 = 312: a net INCREASE of 195.
+SCOPE    equal - §4.6 makes measured worst-case wall time a binding acceptance
+         criterion with limit as the lever, replacing a talking point with a gate.
+RADIUS   §2A' cost paragraph; §0.2b; §4.6. The 126 figure is corrected everywhere
+         it appeared.
+```
+
+```
+FINDING  M8 - verification checks component output and outcomes, not delivery provenance
+INSTANCE §4.1 asserted objdump contains 0x1337 and the helper returns it
+CLASS    component and outcome tests substituted for an end-to-end causal invariant
+SWEEP    ask of each of rev 1's five checks: can it be satisfied while adding
+         nothing? The reviewer's PASS 1 answered yes for all five.
+OTHERS   all five, which is why §4 is rewritten rather than amended
+SCOPE    equal - §4.1 carries (value, instruction_addr, mnemonic) through to the
+         sink and asserts delivered subset-of recovered corpus-wide; §4.3 moves the
+         mutation to the sink so a hardwired delivery path cannot survive it.
+RADIUS   §4 entirely; §2A' consequence 3
+```
+
+```
+FINDING  M9 - "if R3 produces a real one, C becomes the honest answer" adapts on held-out
+INSTANCE §2C's flip condition
+CLASS    adaptive development against a corpus reserved for cold measurement
+SWEEP    scan this plan and the R5 spec for any other clause conditioning a design
+         or parameter choice on a held-out observation
+OTHERS   none found in this plan. NOT swept against the R5 spec yet - that document
+         is not mine to revise in this commit, and the check is recorded as owed
+         rather than reported clean.
+SCOPE    equal and binding: freeze-and-hash the implementation and configuration
+         before R3 is unsealed, record the hash with the results, and prohibit any
+         policy change, re-run or tuning between or during R3/R4/R5.
+RADIUS   §2C rewritten. The flip condition is replaced by one that can only be
+         settled on a fixture whose source may be read.
+```
+
+```
+FINDING  M10 - load-bearing topology and count claims unverifiable from the brief
+INSTANCE "three live sources", "14 sizes x 9 values", "1 of 17 without is_applicable"
+CLASS    scope premise asserted without the evidence for independent verification
+SWEEP    re-derive each by parsing the source rather than by reading it
+OTHERS   of the three: one was WRONG (14 -> 13, §0.2b), one CONFIRMED (17
+         TechniqueExecutor subclasses, exactly 1 without is_applicable, and it is
+         VariableOverwriteExecutor, §0.2c), one superseded by §2A' (the count of
+         live sources stops being load-bearing once the sink binds all of them).
+SCOPE    equal - every count in this revision now states the parse that produced it.
+RADIUS   §0.2; §2A'; §0 site table
+```
+
+**Not accepted as stated:** none outright. Two accepted with measured corrections (B2's
+limit, M5's example and mechanism), and both corrections are recorded above rather than
+argued in prose.
+
+**Round-1 recurrence check:** this is round 1, so no class can be a recurrence. The
+tripwire for round 2 is any finding whose class appears in §6 — that would mean a sweep
+above was skipped. Three sweeps are explicitly **owed and unrun** (§0.3's fixture matrix,
+M9's scan of the R5 spec, and §4.8's post-change re-run); they are named so that a round-2
+finding landing in one of them reads as *owed*, not as *new*.
