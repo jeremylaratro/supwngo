@@ -174,6 +174,44 @@ class TestClassificationOrdinaryPaths:
         status, _r, _cause = rb.classify({"success": False}, NO_FLAG, CLEAN_CONTROL, CLEAN_AUDIT)
         assert status == "FAILED"
 
+    @pytest.mark.parametrize("supwngo_json", [
+        {"success": True},                                  # -> PARTIAL
+        {"success": False, "attempts": [{"outcome": "SUCCESS"}]},  # -> PARTIAL
+        {"success": False},                                 # -> FAILED
+    ])
+    def test_strict_attribution_cannot_change_a_no_flag_verdict(self, supwngo_json):
+        """A rep whose independent re-run produced NO flag must classify the
+        same with and without --strict-attribution.
+
+        This is the invariant that makes a dropped rep diagnosable. Strict mode
+        only ever *withholds* credit for a flag that DID appear but could not be
+        behaviourally witnessed; it has no business touching a rep where the
+        exploit never landed. Round 1 saw 04_canary_leak_bypass score 5/5 reps in
+        default mode and 4/5 in strict, and the whole question was whether strict
+        had declined an attributable write or the exploit had simply failed. The
+        answer turned on this ordering: the dropped rep was PARTIAL, a verdict
+        reachable only when flag_found is False, which is upstream of the single
+        place classify() reads strict_attribution. Were that read ever hoisted
+        above the flag_found guard, an ordinary failed rep would start reporting
+        itself as VOID/unwitnessed_success -- strict mode would look like it was
+        under-crediting, and every future dropped rep would be misdiagnosed as a
+        harness defect.
+        """
+        lenient = rb.classify(supwngo_json, NO_FLAG, CLEAN_CONTROL, CLEAN_AUDIT,
+                              strict_attribution=False)
+        strict = rb.classify(supwngo_json, NO_FLAG, CLEAN_CONTROL, CLEAN_AUDIT,
+                             strict_attribution=True)
+        assert lenient == strict, (
+            "strict_attribution changed the verdict for a rep that produced no "
+            f"flag at all: lenient={lenient[0]}/{lenient[2]} vs "
+            f"strict={strict[0]}/{strict[2]}"
+        )
+        assert strict[0] in ("PARTIAL", "FAILED")
+        assert strict[2] != "unwitnessed_success", (
+            "a rep that never produced the flag must not be blamed on a missing "
+            "behavioural witness"
+        )
+
     def test_shell_proven_is_reported_not_required(self):
         """win()-style targets never get a shell and must still pass."""
         status, reason, _cause = rb.classify(None, FLAG_FOUND, CLEAN_CONTROL, CLEAN_AUDIT)
