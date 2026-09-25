@@ -24,6 +24,7 @@ import dataclasses
 import inspect
 import itertools
 import pathlib
+import typing
 from collections.abc import Mapping
 from typing import Any, Dict, List, Sequence, Tuple
 
@@ -2315,6 +2316,233 @@ def test_resolve_priority_covers_every_classifiable_conflict() -> None:
     assert not missing, (
         "CONFLICT_PRIORITY names classes classify_pair never produces: "
         f"{sorted(c.value for c in missing)}"
+    )
+
+
+# ===========================================================================
+# C7: the mechanical check over the module's dataclass/enum shapes, §2a/§4b.
+#
+# ``_jsonable_structural`` encodes every dataclass as a bare mapping of its
+# field names -- it does not tag the mapping with the type it came from -- so
+# C7 is what stands in for that missing tag: at every structural position
+# exactly one dataclass type may appear (no two dataclasses share, or one is a
+# subset of, the other's field-name set), no structural dataclass field is
+# named the reserved bytes tag, and no structural enum is a primitive
+# (int/str) subclass that would silently reach the primitive arm if the enum
+# dispatch were ever reordered.  Each of the three is an absence check, and an
+# absence check with no violator is this project's most repeated defect (round
+# 3 shipped three of them in one row), so each gets a purpose-built hostile
+# control below that proves it can go red.
+# ===========================================================================
+
+
+def _structural_dataclass_types() -> Tuple[type, ...]:
+    """Every dataclass type defined in :mod:`resolve`.
+
+    C7's first clause is measured over *all* of these, not only the ones a
+    document reaches today (``AppliesTo``, ``Ref``, ``Observation``,
+    ``PinRecord``, ``Conflict``): the risk it guards against is a *future*
+    structural position reusing one of the other five, not today's shape.
+    """
+    return tuple(sorted(
+        (obj for obj in vars(R).values()
+         if isinstance(obj, type) and dataclasses.is_dataclass(obj)),
+        key=lambda t: t.__name__))
+
+
+def _structural_enum_types() -> Tuple[type, ...]:
+    """Every ``enum.Enum`` subclass defined in :mod:`resolve`."""
+    return tuple(sorted(
+        (obj for obj in vars(R).values()
+         if isinstance(obj, type) and issubclass(obj, R.enum.Enum)),
+        key=lambda t: t.__name__))
+
+
+def _check_c7_one_type_per_structural_position(
+        dataclass_types: Sequence[type]) -> None:
+    """C7 clause 1: no two dataclass types may share, or have one be a subset
+    of, the other's field-name set.  Encoded as bare mappings, either would be
+    indistinguishable from the other at whatever position reused it."""
+    field_sets = {t: frozenset(f.name for f in dataclasses.fields(t))
+                  for t in dataclass_types}
+    for a, b in itertools.combinations(field_sets, 2):
+        fa, fb = field_sets[a], field_sets[b]
+        if fa == fb:
+            raise AssertionError(
+                f"C7: {a.__name__} and {b.__name__} have identical "
+                f"field-name sets {sorted(fa)}; encoded as mappings they are "
+                "indistinguishable")
+        if fa <= fb or fb <= fa:
+            smaller, larger = (a, b) if fa <= fb else (b, a)
+            raise AssertionError(
+                f"C7: {smaller.__name__}'s fields are a subset of "
+                f"{larger.__name__}'s; a {smaller.__name__} mapping could be "
+                f"mistaken for a partial {larger.__name__}")
+
+
+def _check_c7_no_reserved_field_name(dataclass_types: Sequence[type]) -> None:
+    """C7 clause 2: no structural dataclass field is named the reserved bytes
+    tag.  Checked here statically, alongside the runtime guard already inside
+    ``_jsonable_structural``'s dataclass arm -- belt and braces on the
+    collision round 3 shipped."""
+    for t in dataclass_types:
+        for f in dataclasses.fields(t):
+            if f.name == R._BYTES_TAG:
+                raise AssertionError(
+                    f"C7: {t.__name__}.{f.name} is named the reserved bytes "
+                    f"tag {R._BYTES_TAG!r}")
+
+
+def _check_c7_no_primitive_subclass_enum(enum_types: Sequence[type]) -> None:
+    """§4b: no structural enum may be a primitive (``int``/``str``) subclass.
+
+    Enum dispatch runs first in ``_jsonable_structural``, so this is not live
+    today -- but the check does not depend on that ordering.  It is what
+    keeps a future ``IntEnum``/``StrEnum`` from silently reopening the
+    collision if the arms are ever reordered, rather than trusting every
+    future edit to preserve an ordering nothing here enforces.
+    """
+    for t in enum_types:
+        if issubclass(t, (int, str)):
+            raise AssertionError(
+                f"C7: {t.__name__} is a primitive-subclass enum "
+                f"({t.__mro__}); its members collide with the primitive "
+                "they wrap once the enum arm is bypassed")
+
+
+def test_c7_one_type_per_structural_position() -> None:
+    _check_c7_one_type_per_structural_position(_structural_dataclass_types())
+
+
+def test_c7_one_type_per_structural_position_hostile_control() -> None:
+    """The violator: two synthetic dataclasses with identical field-name
+    sets, and a second pair where one is a strict subset of the other."""
+    @dataclasses.dataclass(frozen=True)
+    class _HostileA:
+        key: str
+        value: Any
+
+    @dataclasses.dataclass(frozen=True)
+    class _HostileB:
+        key: str
+        value: Any
+
+    with pytest.raises(AssertionError, match="identical field-name sets"):
+        _check_c7_one_type_per_structural_position((_HostileA, _HostileB))
+
+    @dataclasses.dataclass(frozen=True)
+    class _HostileSubset:
+        key: str
+
+    with pytest.raises(AssertionError, match="subset"):
+        _check_c7_one_type_per_structural_position((_HostileA, _HostileSubset))
+
+
+def test_c7_no_reserved_field_name() -> None:
+    _check_c7_no_reserved_field_name(_structural_dataclass_types())
+
+
+def test_c7_no_reserved_field_name_hostile_control() -> None:
+    """The violator: a synthetic dataclass with a field literally named the
+    reserved bytes tag."""
+    @dataclasses.dataclass(frozen=True)
+    class _HostileBytesSpoof:
+        key: str
+        __bytes_b64__: str = ""
+
+    with pytest.raises(AssertionError, match="reserved bytes tag"):
+        _check_c7_no_reserved_field_name((_HostileBytesSpoof,))
+
+
+def test_c7_no_primitive_subclass_enum() -> None:
+    _check_c7_no_primitive_subclass_enum(_structural_enum_types())
+
+
+def test_c7_no_primitive_subclass_enum_hostile_control() -> None:
+    """The violator: a synthetic ``IntEnum``-shaped enum -- exactly the shape
+    that used to reach the primitive arm before enum dispatch was moved
+    first."""
+    class _HostileIntEnum(int, R.enum.Enum):
+        A = 1
+
+    with pytest.raises(AssertionError, match="primitive-subclass enum"):
+        _check_c7_no_primitive_subclass_enum((_HostileIntEnum,))
+
+
+# ---------------------------------------------------------------------------
+# §8 item 13: the dead set/frozenset arm.  Refusing it and proving nothing
+# reaches it are different claims, so both are tested.
+# ---------------------------------------------------------------------------
+
+
+def test_open_position_refuses_a_set() -> None:
+    """§8 item 13(a): a set at the one open position raises, rather than
+    being silently sorted into an array indistinguishable from one that was
+    always a list."""
+    with pytest.raises(R.SchemaError):
+        R._jsonable_open({1, 2})
+    with pytest.raises(R.SchemaError):
+        R._jsonable_open(frozenset({1, 2}))
+
+
+#: The dataclasses whose fields the structural encoder actually walks with
+#: its dataclass arm as *declared, non-open* positions.  ``Candidate`` is
+#: excluded: its ``value`` field is ``Any``, constrained at runtime by the
+#: ``FACT_KEYS`` registry (see
+#: ``test_value_domain_keeps_the_deleted_canonical_gate_dead``) rather than by
+#: a static annotation, and the whole ``Candidate`` is never canonicalised in
+#: one step -- only individual fields are.  ``FactSpec``, ``ResolveContext``,
+#: ``Selected`` and ``Agreement`` are excluded because none of them is ever
+#: passed to ``canonical``/``_jsonable_structural`` at all.
+_SET_CHECKED_STRUCTURAL_TYPES: Tuple[type, ...] = (
+    R.AppliesTo, R.Ref, R.Observation, R.PinRecord, R.Conflict,
+)
+
+
+def _annotation_admits_a_set(tp: Any) -> bool:
+    """True if ``tp`` is, or recursively contains, ``set``/``frozenset``."""
+    if tp in (set, frozenset):
+        return True
+    origin = typing.get_origin(tp)
+    if origin in (set, frozenset):
+        return True
+    return any(_annotation_admits_a_set(a) for a in typing.get_args(tp))
+
+
+def _structural_field_annotations() -> List[Tuple[type, str, Any]]:
+    out = []
+    for t in _SET_CHECKED_STRUCTURAL_TYPES:
+        open_fields = R._STRUCTURAL_OPEN_FIELDS.get(t, frozenset())
+        hints = typing.get_type_hints(t)
+        for f in dataclasses.fields(t):
+            if f.name in open_fields:
+                continue      # the one open position: covered by (a) above.
+            out.append((t, f.name, hints[f.name]))
+    return out
+
+
+def test_c7_no_structural_annotation_admits_a_set() -> None:
+    """§8 item 13(b): the structural encoder has **no** position whose
+    declared annotation admits a set -- a mechanical check over the
+    annotations, so the removed arm's absence is justified by the schema
+    rather than by this suite's silence."""
+    for t, name, hint in _structural_field_annotations():
+        assert not _annotation_admits_a_set(hint), (
+            f"{t.__name__}.{name} is annotated {hint!r}, which admits a "
+            "set; the set/frozenset arm _jsonable_structural no longer has "
+            "is not justified by the schema"
+        )
+
+
+def test_c7_no_structural_annotation_admits_a_set_hostile_control() -> None:
+    """The violator: a synthetic dataclass field annotated ``FrozenSet``."""
+    @dataclasses.dataclass(frozen=True)
+    class _HostileSetField:
+        tags: typing.FrozenSet[str]
+
+    hint = typing.get_type_hints(_HostileSetField)["tags"]
+    assert _annotation_admits_a_set(hint), (
+        "hostile control is broken: FrozenSet[str] must be detected"
     )
 
 
