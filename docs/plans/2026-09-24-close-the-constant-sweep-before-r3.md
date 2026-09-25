@@ -45,10 +45,45 @@ text and is in scope only so the sweep is complete:
 
 | site | role |
 | --- | --- |
-| `stack_techniques.py:59` `MAGIC_VALUES` | `VariableOverwriteExecutor`'s sweep, 14 sizes × 9 values = 126 unconditional deliveries |
-| `input_shape_techniques.py:48` `FALLBACK_MAGIC_VALUES` | appended unconditionally by `comparison_immediates()` |
-| `enhanced_auto.py:119` `MAGIC_VALUES` | third copy |
-| `strategy.py:920` | a suggestion string naming the constants — no sweep, but it will read as stale once the others change |
+| `supwngo/exploit/pipeline/executors/stack_techniques.py:59` `MAGIC_VALUES` | `VariableOverwriteExecutor`'s sweep, 14 sizes × 9 values = 126 unconditional deliveries |
+| `supwngo/exploit/pipeline/executors/input_shape_techniques.py:48` `FALLBACK_MAGIC_VALUES` | appended unconditionally by `comparison_immediates()` |
+| `supwngo/exploit/enhanced_auto.py:119` `MAGIC_VALUES` | third copy |
+| `supwngo/exploit/strategy.py:920` | a suggestion string naming the constants — no sweep, but it will read as stale once the others change |
+
+Paths are given in full deliberately. An earlier revision of this table used bare
+basenames, and the repo currently carries 24 agent worktrees under `.claude/worktrees/`,
+each with its own `enhanced_auto.py` — a basename is not a resolvable reference here.
+
+### 0.1 The sweep's match identity, and what it therefore cannot see
+
+The table above is the result of matching on **`MAGIC_VALUES *=`**, i.e. *sites that
+define the nine-value list*. That identity is narrower than the class. A site that
+supplies **one** folklore constant as a gate-value guess, without the other eight, is the
+same defect and is invisible to a list-shaped sweep.
+
+So the wider sweep was run too — every tracked `.py` containing **any** of the nine
+literals, which is the identity that matches the class rather than the artefact:
+
+```
+git ls-files -- '*.py' | xargs grep -inl '0x1337bab3\|0xdeadbeef\|0xcafebabe\|0xbadc0de\
+\|0xfeedface\|0xbaadf00d\|0x0d15ea5e\|0x41414141'
+```
+
+**28 of 228 tracked `.py` files.** Every one of the 24 beyond the table was inspected and
+is **out of scope, not uncovered** — two benign uses account for all of them:
+
+- `0x41414141` / `0x4141414141414141` as a **cyclic or offset marker**, searched for in
+  program output or register dumps (`offset_finder.py:358`, `auto_leak.py:283`,
+  `advisor.py:392`, `auto.py:1613`, and the test files). Not a value delivered to a gate.
+- `0xdeadbeef` as a **placeholder return address in emitted template text**
+  (`templates.py:195`, `auto.py:2537` — both inside generated-script string literals).
+  Emitted for a human to replace; never compared against by the framework.
+
+Neither is a folklore *guess at a target's comparison constant*, which is the defect. The
+wider sweep therefore adds **0 instances** to the four — but the count is stated so the
+next reader can audit the disposition instead of inheriting it. Recording this because
+the narrow sweep alone would have read as full coverage while resting on an identity no
+one had written down.
 
 ## 1. Does removing the folklore constants cost real credit?
 
@@ -120,7 +155,11 @@ as affecting candidate order — not as a new capability claim.
    check classified candidates by "is it in `FALLBACK_MAGIC_VALUES`", which cannot
    distinguish *recovered* `0x1337` from *appended* `0x1337` — an instrument ambiguous
    exactly where the question lives. Assert against the objdump stream.
-2. **Sweep all four sites** and state the result for each, including the advisory string.
+2. **Sweep all four sites** and state the result for each, including the advisory string
+   — then **re-run the wider §0.1 sweep after the change** and confirm the 24 out-of-scope
+   files are still out of scope. The disposition of §0.1 is a judgement about *current*
+   uses; a fix that introduces a single-constant guess somewhere would satisfy the narrow
+   sweep and be invisible to it.
 3. **Mutation, wrong-but-present:** pin recovery to return a fixed non-empty list and
    require a red. An absence mutation alone passes against a hardwired value.
 4. **Re-run R1 and R2 and reproduce 13/13 and 4/15 target-for-target.** Both were
@@ -140,3 +179,12 @@ found the two rows above. An empty result from a loop that never iterated is
 indistinguishable from a clean bill of health — the same shape as
 [[validation-that-cannot-fail]] instance 12, in the verification of a plan about
 absence-collapse. **Print the iteration count.**
+
+**It happened a second time while running the §0.1 sweep**, by a different zsh mechanism:
+`grep -rn 'MAGIC_VALUES *=' --include=*.py .` aborted with `no matches found:
+--include=*.py`, because zsh tries to glob the unquoted `*.py` in the *flag's* argument
+and fails the whole command when nothing matches in the cwd. That one at least failed
+loudly. The generalisation across both: **in zsh, a command that enumerates must prove it
+enumerated** — print the count, and check the exit status, because the two failure modes
+are a silent zero and a hard abort that a `2>/dev/null` would have converted into a silent
+zero. Both instances occurred while verifying a document *about* absence collapse.
