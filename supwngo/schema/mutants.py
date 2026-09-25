@@ -157,7 +157,7 @@ def _canonical_document_unsorted(store: R.FactStore) -> str:
     import json
 
     facts = {
-        key: [{"id": c.id, "value": R._jsonable(c.value),
+        key: [{"id": c.id, "value": R._jsonable_structural(c.value),
                "provenance": c.provenance.value}
               for c in store.candidates(key)]      # <-- insertion order
         for key in store.keys()
@@ -640,7 +640,7 @@ MUTANTS: Dict[str, Mutant] = {
                     "when a terminal sibling existed, so on a fresh store "
                     "arrival order decided the surviving id"),
         Mutant("canonical_coerces_keys", "round-3 finding 3", "P21",
-               {"_jsonable": _jsonable_coerces_keys}),
+               {"_jsonable_structural": _jsonable_coerces_keys}),
         Mutant("log_shape_only", "round-3 finding 5", "P22",
                {"_validate_log": _validate_log_shape_only}),
         Mutant("conflicts_unvalidated", "round-3 finding 6", "P23",

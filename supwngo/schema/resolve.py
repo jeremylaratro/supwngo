@@ -219,43 +219,158 @@ ABSENT = Absent()
 _BYTES_TAG = "__bytes_b64__"
 
 
-def _jsonable(obj: Any) -> Any:
-    """Project to a JSON-canonicalisable form.  Raises for anything else, so a
-    non-canonicalisable value is a validation failure rather than a surprise
-    inside a digest."""
-    if obj is None or isinstance(obj, (bool, int, str)):
+def _refuse_mapping_keys(obj: Mapping) -> None:
+    """Shared by both encoders below: keys must already *be* strings, and the
+    reserved bytes tag is refused as an ordinary key.
+
+    Coercing keys with ``str(k)`` made ``1`` and ``"1"`` project to the same
+    key and tie on the sort, so one overwrote the other and equal mappings
+    could canonicalise differently depending on insertion order -- in a
+    digest.  The reserved-tag refusal is what stops a real mapping from
+    spoofing the single-key shape :func:`bytes` encodes to.
+    """
+    for k in obj:
+        if type(k) is not str:
+            raise SchemaError(
+                f"mapping keys must be strings, got {type(k).__name__} ({k!r})"
+            )
+        if k == _BYTES_TAG:
+            raise SchemaError(f"{_BYTES_TAG!r} is reserved for the bytes encoding")
+
+
+def _jsonable_open(obj: Any) -> Any:
+    """Project a caller-supplied EVIDENCE VALUE to canonicalisable JSON.
+
+    This is the **open** domain (C2): the type at this position is not fixed
+    by the schema, so the encoding must be closed and declared rather than
+    guessed at.  Exact type only -- ``type(obj) is ...``, never
+    ``isinstance`` -- so a subclass of an admitted type (``IntEnum``,
+    ``StrEnum``, ``MyInt``, ``MyStr``, ``MyBytes``, ``MyList``, a custom
+    ``dict`` subclass, any other ``Mapping`` that is not exactly ``dict``)
+    reaches no arm and is refused by the final ``raise`` below, named by its
+    type.  ``bool`` needs no subclass guard: CPython forbids subclassing
+    ``bool`` outright, so ``type(obj) is bool`` is already exact by
+    construction.
+
+    Refused outright, and deliberately not encoded at all: ``float``,
+    ``tuple``, ``set``, ``frozenset``, every ``Enum`` (``IntEnum``/``StrEnum``
+    included), every dataclass, and every subclass of an admitted type.  Round
+    3's bytes-vs-string collision and this unit's five-plus measured
+    collisions (enum-vs-value, tuple-vs-list, set-vs-list, frozenset-vs-list,
+    dataclass-vs-mapping, ``IntEnum``-vs-int, ``StrEnum``-vs-str) are all
+    instances of the same class: two different Python types projecting to the
+    same JSON shape at a position the caller controls.  Refusing everything
+    outside a small, closed, exact-type set removes the class instead of
+    enumerating its instances.
+    """
+    if obj is None:
+        return None
+    t = type(obj)
+    if t is bool or t is int or t is str:
         return obj
-    if isinstance(obj, float):
-        raise SchemaError("floats are not canonicalisable; addresses are ints")
-    if isinstance(obj, enum.Enum):
-        return obj.value
-    if isinstance(obj, bytes):
-        # Tagged, not prefixed.  ``"b64:" + b64`` collided with the *string*
-        # ``"b64:..."``, so distinct evidence encoded identically and the
-        # observation union silently discarded one of the two.  A single-key
-        # mapping cannot collide with a string, and the reserved key below is
-        # refused as a mapping key so it cannot collide with a real mapping.
+    if t is bytes:
         return {_BYTES_TAG: base64.b64encode(obj).decode("ascii")}
-    if isinstance(obj, Mapping):
-        # Keys must already *be* strings.  Coercing with ``str(k)`` made the
-        # keys ``1`` and ``"1"`` project to the same key and tie on the sort,
-        # so one overwrote the other and equal mappings could canonicalise
-        # differently depending on insertion order -- in a digest.
-        for k in obj:
-            if not isinstance(k, str):
-                raise SchemaError(
-                    f"mapping keys must be strings, got {type(k).__name__} ({k!r})"
-                )
-            if k == _BYTES_TAG:
-                raise SchemaError(f"{_BYTES_TAG!r} is reserved for the bytes encoding")
-        return {k: _jsonable(v) for k, v in sorted(obj.items())}
-    if isinstance(obj, (frozenset, set)):
-        return sorted((_jsonable(v) for v in obj), key=lambda v: json.dumps(v, sort_keys=True))
-    if isinstance(obj, (list, tuple)):
-        return [_jsonable(v) for v in obj]
+    if t is dict:
+        _refuse_mapping_keys(obj)
+        return {k: _jsonable_open(v) for k, v in sorted(obj.items())}
+    if t is list:
+        return [_jsonable_open(v) for v in obj]
+    raise SchemaError(f"not canonicalisable at an open position: {t.__name__}")
+
+
+#: THE declared open position (§4a/§4b of the unit-1 plan): the one place a
+#: structural dataclass field holds caller-supplied evidence rather than a
+#: schema-fixed value.  Declared as data -- a mapping from dataclass type to
+#: its open field names -- rather than as an ``if`` buried in the dataclass
+#: arm below, so a reader (and C7's mechanical check) can enumerate every
+#: open position from one place instead of re-deriving it from control flow.
+_STRUCTURAL_OPEN_FIELDS: Dict[type, frozenset] = {}
+
+
+def _jsonable_evidence_field(value: Any) -> Any:
+    """``Observation.evidence``: ``Tuple[Tuple[str, Any], ...]``.
+
+    The OUTER tuple-of-pairs and the str NAMES are structural -- the schema
+    fixes that shape, so ``_validate_candidate`` already normalises it before
+    an ``Observation`` is ever constructed.  Each VALUE is caller-supplied
+    evidence and is the one open position, so it goes through
+    :func:`_jsonable_open` rather than :func:`_jsonable_structural`.
+    """
+    if type(value) is not tuple:
+        raise SchemaError(f"evidence must be a tuple of pairs, got {type(value).__name__}")
+    out = []
+    for pair in value:
+        if type(pair) is not tuple or len(pair) != 2:
+            raise SchemaError("evidence entries must be (name, value) pairs")
+        name, val = pair
+        if type(name) is not str:
+            raise SchemaError(f"evidence names must be strings, got {type(name).__name__}")
+        out.append([name, _jsonable_open(val)])
+    return out
+
+
+def _jsonable_structural(obj: Any) -> Any:
+    """Project a SCHEMA-FIXED value to canonicalisable JSON.
+
+    This is the **structural** domain: every position this function is
+    called on has its type fixed by the schema (an ``AppliesTo`` field is
+    always an ``AppliesTo``, ``conditions`` is always a tuple of ``(str,
+    str)`` pairs), so distinctness at these positions follows from the
+    *position*, not from this function being injective the way
+    :func:`_jsonable_open` must be (C1).  The one exception -- the one open
+    position inside an otherwise-structural value -- is
+    ``Observation.evidence``, routed through :data:`_STRUCTURAL_OPEN_FIELDS`
+    and :func:`_jsonable_evidence_field` rather than recursing here.
+
+    Enum dispatch runs **first**, ahead of the primitive arms, and that
+    ordering is load-bearing rather than cosmetic: an ``IntEnum``/``StrEnum``
+    member is also an ``int``/``str``, so if the primitive arm ran first it
+    would encode the member as a bare int/string and silently collide with an
+    unrelated primitive of the same value -- exactly the collision this unit
+    closes.  Every other arm dispatches on exact type
+    (``type(obj) is ...``), never ``isinstance``, so a primitive subclass
+    cannot reach the primitive arm either -- see C7.  ``float``, ``set`` and
+    ``frozenset`` reach no arm and fall to the final ``raise``: no structural
+    position's declared annotation admits a set (checked mechanically, not
+    merely by this suite's silence -- see the dead-arm coverage note in the
+    unit-1 plan §4b), and addresses are ints, not floats.
+    """
+    if isinstance(obj, enum.Enum):            # FIRST -- see the note above.
+        return obj.value
+    if obj is None:
+        return None
+    t = type(obj)
+    if t is bool or t is int or t is str:
+        return obj
+    if t is bytes:
+        return {_BYTES_TAG: base64.b64encode(obj).decode("ascii")}
     if dataclasses.is_dataclass(obj):
-        return {f.name: _jsonable(getattr(obj, f.name)) for f in dataclasses.fields(obj)}
-    raise SchemaError(f"not canonicalisable: {type(obj).__name__}")
+        # C7's second clause, enforced here as well as measured statically:
+        # a structural dataclass field named the reserved bytes tag would
+        # encode identically to real bytes.  Round 3's own fix reserved the
+        # tag in the mapping arm only and left this arm unguarded (§2a); this
+        # closes it at the one remaining source rather than trusting every
+        # future dataclass to avoid the name.
+        open_fields = _STRUCTURAL_OPEN_FIELDS.get(type(obj), frozenset())
+        result: Dict[str, Any] = {}
+        for f in dataclasses.fields(obj):
+            if f.name == _BYTES_TAG:
+                raise SchemaError(
+                    f"{type(obj).__name__}.{f.name} is named the reserved "
+                    f"bytes tag {_BYTES_TAG!r}"
+                )
+            value = getattr(obj, f.name)
+            if f.name in open_fields:
+                result[f.name] = _jsonable_evidence_field(value)
+            else:
+                result[f.name] = _jsonable_structural(value)
+        return result
+    if t is dict:
+        _refuse_mapping_keys(obj)
+        return {k: _jsonable_structural(v) for k, v in sorted(obj.items())}
+    if t is tuple or t is list:
+        return [_jsonable_structural(v) for v in obj]
+    raise SchemaError(f"not canonicalisable at a structural position: {t.__name__}")
 
 
 def canonical(obj: Any) -> str:
@@ -263,9 +378,14 @@ def canonical(obj: Any) -> str:
 
     Arrays are *not* sorted here -- array order is fixed by the canonical
     array-ordering rule in :func:`canonical_document`, so that order is a
-    function of content rather than of insertion order.
+    function of content rather than of insertion order.  Routes to
+    :func:`_jsonable_structural`: every call site in this module passes
+    either a schema-fixed value or a value (like an ``Observation``) whose
+    only open sub-position is handled internally via
+    :data:`_STRUCTURAL_OPEN_FIELDS`.
     """
-    return json.dumps(_jsonable(obj), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(_jsonable_structural(obj), sort_keys=True,
+                      separators=(",", ":"), ensure_ascii=False)
 
 
 def _sha(text: str) -> str:
@@ -287,6 +407,13 @@ class Observation:
 
     def digest(self) -> str:
         return _sha(canonical(self))
+
+
+#: THE declared open position (§4a/§4b): Observation.evidence's VALUES are
+#: caller-supplied and open; the outer tuple-of-pairs and the names are
+#: structural.  Registered here, immediately after the type it describes, so
+#: the declaration sits next to what it is about.
+_STRUCTURAL_OPEN_FIELDS[Observation] = frozenset({"evidence"})
 
 
 @dataclasses.dataclass(frozen=True)
@@ -709,7 +836,12 @@ def _validate_candidate(raw: Any) -> Candidate:
         if len({n for n, _ in ev_pairs}) != len(ev_pairs):
             raise SchemaError("observation.evidence names a field twice")
         ev_items = tuple(sorted(ev_pairs, key=lambda kv: kv[0]))
-        canonical(ev_items)  # evidence values are open, so this one CAN fail
+        # Evidence VALUES are the one open position (§4a); gate each value
+        # individually through the open-domain encoder rather than
+        # canonicalising the whole tuple, which is narrower and names the
+        # particular value that failed.
+        for _, ev_value in ev_items:
+            _jsonable_open(ev_value)
         observations.append(Observation(at, ev_items))
     if not observations:
         raise SchemaError("a candidate needs at least one observation")
@@ -1975,15 +2107,15 @@ def canonical_document(store: FactStore) -> str:
             {
                 "id": c.id,
                 "key": c.key,
-                "value": _jsonable(c.value),
+                "value": _jsonable_structural(c.value),
                 "provenance": c.provenance.value,
-                "applies_to": _jsonable(c.applies_to),
-                "derived_from": _jsonable(c.derived_from),
+                "applies_to": _jsonable_structural(c.applies_to),
+                "derived_from": _jsonable_structural(c.derived_from),
                 "method": c.method,
                 "by": c.by,
                 "state": c.state.value,
                 "generation": c.generation,
-                "observations": _jsonable(
+                "observations": _jsonable_structural(
                     sorted(c.observations, key=lambda o: (o.at, o.digest()))
                 ),
             }
@@ -1994,8 +2126,8 @@ def canonical_document(store: FactStore) -> str:
         "facts": facts,
         # ``seq`` is unique by I7, so this total order needs no tiebreak and
         # cannot depend on a free-text ``at``.
-        "resolutions": _jsonable(sorted(store.resolutions, key=lambda r: r.seq)),
-        "conflicts": _jsonable(
+        "resolutions": _jsonable_structural(sorted(store.resolutions, key=lambda r: r.seq)),
+        "conflicts": _jsonable_structural(
             sorted(store.conflicts, key=lambda c: (c.key, c.cls.value, c.candidate_ids))
         ),
     }

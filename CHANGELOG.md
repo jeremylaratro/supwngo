@@ -230,6 +230,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   payload-only verification, attempt ordering, label-driven leak parsing, missing
   technique implementations) and the per-target work they imply.
 
+### Changed
+- **BREAKING: the canonicalisation domain is now closed per position and per
+  exact type** (`supwngo/schema/resolve.py`). `canonical()`/`_jsonable` used to
+  accept anything `isinstance`-matched a known shape at *any* position, which is
+  how an `IntEnum`/`StrEnum` collided with the plain `int`/`str` it wraps, how a
+  `tuple` collided with the `list` it would otherwise encode as, how a `set` or
+  `frozenset` silently became a sorted array indistinguishable from one that was
+  always a list, and how a hostile `bytes`/`dict`/`list` subclass could ride
+  through unmodified — every one of these is a distinct value colliding onto the
+  same canonical bytes as an unrelated, legitimate one. The encoder is now split
+  by position: schema-fixed *structural* positions (`Candidate.value`,
+  `applies_to`, `derived_from`, observations, resolutions, conflicts, and every
+  dataclass field that is not itself the one declared open slot) keep today's
+  enum/dataclass/tuple/set/mapping repertoire, but only for the *exact* runtime
+  type declared for that slot — `type(obj) is X`, never `isinstance` — so a
+  subclass masquerading as its parent is refused rather than silently accepted.
+  The one remaining open position is `Observation.evidence`'s *values*: caller-
+  supplied evidence is now restricted to `None`, `bool`, `int`, `str`, tagged
+  `bytes`, `list`, and `str`-keyed `Mapping` — an `enum`, `tuple`, `set`,
+  `frozenset`, `float`, or `dataclass` instance placed in evidence is refused
+  with `SchemaError` instead of being silently coerced into whatever JSON shape
+  it happened to resemble. Any caller that was relying on an enum, tuple, set,
+  frozenset, float, or dataclass being accepted at an evidence-value position,
+  or on a builtin-subclass spoofing its parent type at any canonicalised
+  position, will now get `SchemaError` where it previously got a byte string —
+  that byte string was never trustworthy, since it was frequently
+  indistinguishable from a different value's.
+
 ### Removed
 - **Phase 5 — two superseded stack executors** (`pipeline/executors/stack_techniques.py`).
   `negative_size_bypass` guessed the return-address offset from five hardcoded values and
