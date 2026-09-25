@@ -1,5 +1,16 @@
 # supwngo Writeup Capability Assessment
 
+> **⚠️ Methodology caveat — read before citing these numbers.** The "45/46 tests passed (98%)" and
+> "13/13 (100%)" figures below measure whether supwngo's individual technique classes (ROP
+> builders, heap primitives, etc.) execute correctly when called **directly, with parameter values
+> already known from a human-written writeup** (offsets, libc, gadget addresses, and so on) — i.e.
+> "does the primitive work given correct hand-fed values," not autonomous end-to-end exploitation
+> starting from a raw binary. These numbers do not substantiate an autopwn/`solve` success rate and
+> should not be quoted as one. They're kept here for historical/comparative value (not deleted), but
+> `docs/plans/2026-09-23-effectiveness-and-usability.md` Phase 1 (reproducible benchmark corpus +
+> measurement harness) is the process that will supersede this document with honest, reproducible,
+> fully-autonomous success numbers.
+
 Assessment of supwngo's exploitation capabilities against 16 CTF writeups.
 
 ## Test Results Summary

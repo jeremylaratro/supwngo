@@ -1,0 +1,13 @@
+# Built binaries, object files, and generated flag files are reproducible
+# from committed C source (see build_all.sh) and are intentionally not
+# committed -- only sources + the build recipe are checked in.
+corpus/*/*
+!corpus/*/*.c
+
+# Benchmark run output (timestamped) is generated, not committed. Everything
+# under results/ is reproducible from the corpus + the harness.
+results/*
+results_*/
+
+# run_bench.py's concurrency lock (see corpus_lock()) is runtime state.
+corpus*/.run_bench.lock

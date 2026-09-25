@@ -1004,123 +1004,6 @@ def batch(ctx, directory, output):
 
 @cli.command()
 @click.argument("binary", type=click.Path(exists=True))
-@click.option("-t", "--technique", type=click.Choice(["ret2win", "shellcode", "ret2system", "srop", "all"]),
-              default="all", help="Specific technique to try")
-@click.option("--offset", type=int, help="Known buffer offset")
-@click.option("--timeout", default=5.0, type=float, help="Timeout per attempt")
-@click.option("-l", "--libc", type=click.Path(exists=True), help="Custom libc file for ret2libc")
-@click.option("-o", "--output", type=click.Path(), help="Save exploit script to file")
-@click.option("--run", is_flag=True, help="Try to run the exploit automatically")
-@click.pass_context
-def autopwn(ctx, binary, technique, offset, timeout, libc, output, run):
-    """
-    Attempt automatic exploitation of binary.
-
-    Tries various exploitation techniques automatically:
-    - ret2win: Return to win function
-    - uaf: Use-After-Free with function pointer overwrite
-    - shellcode: Direct shellcode (if NX disabled)
-    - ret2system: ret2libc system() call
-    - srop: Sigreturn-oriented programming
-
-    Examples:
-        supwngo autopwn ./vuln_binary
-        supwngo autopwn ./vuln_binary -t ret2win --offset 40
-        supwngo autopwn ./vuln_binary -o exploit.py
-    """
-    from supwngo.core.binary import Binary
-    from supwngo.exploit.auto import AutoExploiter, auto_exploit
-
-    console.print(f"\n[bold cyan]{'=' * 60}[/bold cyan]")
-    console.print(f"[bold cyan]  AutoPwn: {Path(binary).name}[/bold cyan]")
-    console.print(f"[bold cyan]{'=' * 60}[/bold cyan]\n")
-
-    # Load binary
-    with console.status("Loading binary..."):
-        bin_obj = Binary.load(binary)
-
-    # Create exploiter
-    exploiter = AutoExploiter(bin_obj, timeout=timeout, libc_path=libc)
-
-    if offset:
-        exploiter._offset = offset
-        console.print(f"[cyan]Using provided offset: {offset}[/cyan]")
-
-    if libc:
-        console.print(f"[cyan]Using custom libc: {libc}[/cyan]")
-
-    # Determine techniques to try
-    if technique == "all":
-        techniques = ["ret2win", "formatstring", "intoverflow", "uaf", "doublefree", "shellcode", "ret2system", "srop"]
-    else:
-        techniques = [technique]
-
-    console.print(f"[cyan]Techniques to try: {', '.join(techniques)}[/cyan]\n")
-
-    # Run exploitation
-    with console.status("Attempting automatic exploitation..."):
-        report = exploiter.run(techniques)
-
-    # Display results
-    if report.successful:
-        console.print(Panel(f"""
-[bold green]✓ Exploitation Successful![/bold green]
-
-Technique: [bold cyan]{report.technique_used}[/bold cyan]
-Payload Length: {len(report.final_payload)} bytes
-""", title="AutoPwn Result", border_style="green"))
-
-        if report.final_payload:
-            console.print(f"\n[bold]Payload (hex):[/bold]")
-            console.print(f"  {report.final_payload[:64].hex()}...")
-
-    else:
-        console.print(Panel(f"""
-[bold yellow]⚠ Automatic exploitation did not succeed[/bold yellow]
-
-Attempts: {len(report.attempts)}
-""", title="AutoPwn Result", border_style="yellow"))
-
-    # Show all attempts
-    console.print("\n[bold]Exploitation Attempts:[/bold]")
-    table = Table()
-    table.add_column("Technique", style="cyan")
-    table.add_column("Result")
-    table.add_column("Notes")
-
-    for attempt in report.attempts:
-        result_style = {
-            "SUCCESS": "green",
-            "PARTIAL": "yellow",
-            "FAILED": "red",
-            "ERROR": "red",
-        }.get(attempt.result.name, "white")
-
-        table.add_row(
-            attempt.technique,
-            f"[{result_style}]{attempt.result.name}[/{result_style}]",
-            "; ".join(attempt.notes[:2]) if attempt.notes else "-"
-        )
-
-    console.print(table)
-
-    # Show/save exploit script
-    if report.exploit_script:
-        if output:
-            with open(output, "w") as f:
-                f.write(report.exploit_script)
-            console.print(f"\n[green]Exploit script saved to: {output}[/green]")
-        else:
-            console.print("\n[bold]Generated Exploit Script:[/bold]")
-            console.print(Panel(
-                report.exploit_script[:2000] + "..." if len(report.exploit_script) > 2000 else report.exploit_script,
-                title="exploit.py",
-                border_style="cyan"
-            ))
-
-
-@cli.command()
-@click.argument("binary", type=click.Path(exists=True))
 @click.option("-t", "--technique", type=click.Choice([
     "ret2win", "shellcode", "ret2system", "ret2libc", "srop", "leak", "auto"
 ]), default="auto", help="Exploit technique template")
@@ -2512,100 +2395,625 @@ def race_analysis(ctx, binary, toctou, signals, thread_unsafe, templates, json_o
         console.print_json(json.dumps(result, indent=2))
 
 
+def _render_handoff_report(report) -> None:
+    """Render a `handoff.HandoffReport` (Phase 4) as a clear, structured
+    hand-off instead of the sparse "here's a generic template" output
+    `autopwn` used to fall back to. Matches the Table/Panel style already
+    used elsewhere in this file (see `analyze`/`rop`)."""
+    console.print("\n[bold yellow]Full auto-exploitation did not reach verified SUCCESS.[/bold yellow]")
+    console.print("[bold]Structured hand-off:[/bold]\n")
+
+    if report.attempts_detail:
+        table = Table(title="Attempts")
+        table.add_column("Technique", style="cyan")
+        table.add_column("Outcome", style="magenta")
+        table.add_column("Stage reached", style="white")
+        table.add_column("Failure reason", style="yellow")
+        for a in report.attempts_detail:
+            outcome_style = {
+                "SUCCESS": "[bold green]SUCCESS[/bold green]",
+                "PARTIAL": "[yellow]PARTIAL[/yellow]",
+                "FAILED": "[red]FAILED[/red]",
+                "SKIPPED": "[dim]SKIPPED[/dim]",
+                "ERROR": "[bold red]ERROR[/bold red]",
+            }.get(a.outcome, a.outcome)
+            table.add_row(a.technique, outcome_style, a.stage_reached, a.failure_reason or "-")
+        console.print(table)
+    else:
+        console.print("[dim](no technique attempts were recorded)[/dim]")
+
+    if report.blocking_unknowns:
+        console.print("\n[bold red]Blocking unknowns:[/bold red]")
+        for unknown in report.blocking_unknowns:
+            console.print(f"  ! {unknown}")
+
+    if report.strategy_warnings:
+        console.print("\n[bold yellow]Strategy warnings:[/bold yellow]")
+        for warning in report.strategy_warnings:
+            console.print(f"  ! {warning}")
+
+    if report.suggested_next_steps:
+        console.print("\n[bold green]Suggested next step:[/bold green]")
+        for step in report.suggested_next_steps:
+            console.print(Panel(
+                (f"[bold]{step.approach}[/bold] (priority {step.priority}, "
+                 f"confidence {step.confidence:.0%})\n{step.description}\n\n"
+                 + (f"Requirements: {', '.join(step.requirements)}\n" if step.requirements else "")
+                 + (f"Steps:\n" + "\n".join(f"  {i}. {s}" for i, s in enumerate(step.steps, 1)) + "\n"
+                    if step.steps else "")
+                 + (f"Notes:\n" + "\n".join(f"  - {n}" for n in step.notes) if step.notes else "")
+                 + (f"\n\nRelated attempt failure: {step.related_attempt_failure_reason}"
+                    if step.related_attempt_failure_reason else "")
+                 ).strip(),
+                title="Recommended strategy", border_style="green",
+            ))
+
+    if report.best_partial:
+        console.print(
+            f"\n[bold]Best partial artifact[/bold] "
+            f"({report.best_partial.kind}, source: {report.best_partial.source}):"
+        )
+        lines = report.best_partial.content.split('\n')
+        console.print(Panel('\n'.join(lines[:40]), border_style="blue"))
+        if len(lines) > 40:
+            console.print(f"[dim]... ({len(lines) - 40} more lines; use -o/--output to save in full)[/dim]")
+
+
 @cli.command()
 @click.argument("binary", type=click.Path(exists=True))
 @click.option("-o", "--output", type=click.Path(), help="Output exploit script to file")
 @click.option("--timeout", default=5.0, help="Timeout for each attempt (seconds)")
+@click.option("--offset", type=int, help="Known buffer offset (skips offset discovery)")
 @click.option("--libc", type=click.Path(exists=True), help="Path to libc for ret2libc")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def autopwn(ctx, binary, output, timeout, libc, json_output):
+def autopwn(ctx, binary, output, timeout, offset, libc, json_output):
     """
-    Enhanced auto-exploitation - try multiple techniques automatically.
+    Automatic exploitation - try multiple techniques automatically.
 
-    Techniques tried (in order):
-    1. Variable overwrite (magic value comparison bypass)
-    2. ret2win (if win function found)
-    3. Direct shellcode (if NX disabled)
-    4. Negative size bypass (signed/unsigned comparison)
-    5. Stack shellcode (if stack leak available)
-    6. Format string exploitation
-    7. ret2libc
+    Drives supwngo's canonical auto-exploitation pipeline
+    (CanonicalAutopwnEngine): static analysis, dynamic profiling, strategy
+    ranking (StrategySuggester), then a strategy-ordered walk of pluggable
+    technique executors (variable overwrite, ret2win, direct shellcode,
+    negative-size bypass, stack shellcode, format string, ret2libc, SROP,
+    scanf-canary bypass, UAF, double-free). Every attempt is recorded with
+    a typed AttemptRecord, and a successful attempt is confirmed with a
+    unique per-run verification receipt rather than raw stdout matching.
 
-    Always generates a template even if full exploit fails.
+    Always generates a fallback exploit template even if no technique is
+    fully verified, so this command never returns silence.
+
+    See docs/architecture/2026-09-23-autopwn-pipeline.md for the design.
     """
     from supwngo.core.binary import Binary
-    from supwngo.exploit.enhanced_auto import EnhancedAutoExploiter
+    from supwngo.exploit.pipeline import CanonicalAutopwnEngine
 
-    console.print(f"\n[bold]Enhanced Auto-Exploit:[/bold] {binary}\n")
+    console.print(f"\n[bold]Auto-Exploit:[/bold] {binary}\n")
 
     with console.status("Loading binary..."):
         bin_obj = Binary.load(binary)
 
     with console.status("Running auto-exploitation..."):
-        exploiter = EnhancedAutoExploiter(
+        engine = CanonicalAutopwnEngine(
             bin_obj,
             timeout=timeout,
             libc_path=libc,
         )
-        exploiter.run()
+        if offset:
+            engine.context.offset = offset
+            console.print(f"[cyan]Using provided offset: {offset}[/cyan]")
+        engine.run()
 
     if json_output:
         result = {
             "binary": str(binary),
-            "success": exploiter.successful,
-            "verified": exploiter.verification_level.name if exploiter.verification_level else "NONE",
-            "flag": exploiter._captured_flag,
-            "technique": exploiter.technique_used,
-            "payload_length": len(exploiter.final_payload),
-            "attempts": exploiter.attempts,
+            "success": engine.successful,
+            "verified": engine.context.verification_level.name if engine.context.verification_level else "NONE",
+            "flag": engine.context.captured_flag,
+            "technique": engine.technique_used,
+            "payload_length": len(engine.final_payload),
+            "attempts": [a.to_dict() for a in engine.context.attempts],
             "profile": {
-                "has_menu": exploiter.profile.has_menu,
-                "has_alarm": exploiter.profile.has_alarm,
-                "leaked_addresses": {k: hex(v) for k, v in exploiter.profile.leaked_addresses.items()},
+                "has_menu": engine.context.profile_has_menu,
+                "has_alarm": engine.context.profile_has_alarm,
+                "leaked_addresses": {k: hex(v) for k, v in engine.context.leaks.items()},
             },
+            # Structured hand-off (Phase 4 of the effectiveness/usability
+            # plan) - always present for a stable schema, but only
+            # populated beyond `attempts_detail` when `success` is False.
+            # See supwngo/exploit/pipeline/handoff.py for the frozen shape.
+            "handoff": engine.handoff_report.to_dict(),
         }
-        console.print_json(json.dumps(result, indent=2))
+        console.print_json(json.dumps(result, indent=2, default=str))
     else:
-        console.print(exploiter.summary())
+        console.print(engine.summary())
 
-        if exploiter.successful:
-            console.print(f"\n[bold green]SUCCESS![/bold green] Technique: {exploiter.technique_used}")
-            console.print(f"Payload length: {len(exploiter.final_payload)} bytes")
+        if engine.successful:
+            console.print(f"\n[bold green]SUCCESS![/bold green] Technique: {engine.technique_used}")
+            console.print(f"Payload length: {len(engine.final_payload)} bytes")
 
             # Show flag prominently if captured
-            if exploiter._captured_flag:
-                console.print(f"\n[bold magenta]FLAG: {exploiter._captured_flag}[/bold magenta]")
+            if engine.context.captured_flag:
+                console.print(f"\n[bold magenta]FLAG: {engine.context.captured_flag}[/bold magenta]")
 
             # Show verification status
-            if exploiter.verification_level:
+            if engine.context.verification_level:
                 from supwngo.exploit.verification import VerificationLevel
-                if exploiter.verification_level == VerificationLevel.SHELL_ACCESS:
+                level = engine.context.verification_level
+                if level == VerificationLevel.SHELL_ACCESS:
                     console.print("[bold green]Shell access verified via file creation[/bold green]")
-                elif exploiter.verification_level == VerificationLevel.FULL_CONTROL:
+                elif level == VerificationLevel.FULL_CONTROL:
                     console.print("[bold green]Full shell control verified[/bold green]")
-                elif exploiter.verification_level == VerificationLevel.FLAG_CAPTURED:
+                elif level == VerificationLevel.FLAG_CAPTURED:
                     console.print("[bold green]Exploitation verified by flag capture[/bold green]")
 
             if output:
                 with open(output, 'w') as f:
-                    f.write(exploiter.exploit_script)
+                    f.write(engine.exploit_script)
                 console.print(f"[green]Exploit script saved to: {output}[/green]")
             else:
                 console.print("\n[bold]Generated Exploit Script:[/bold]")
-                console.print(exploiter.exploit_script)
+                console.print(engine.exploit_script)
         else:
-            console.print("\n[yellow]Full exploitation failed. Generated template:[/yellow]")
+            _render_handoff_report(engine.handoff_report)
+
             if output:
+                artifact = engine.exploit_script or engine.exploit_template
                 with open(output, 'w') as f:
-                    f.write(exploiter.exploit_template)
-                console.print(f"[yellow]Template saved to: {output}[/yellow]")
-            else:
-                # Show first part of template
-                lines = exploiter.exploit_template.split('\n')[:50]
-                console.print('\n'.join(lines))
-                if len(exploiter.exploit_template.split('\n')) > 50:
-                    console.print("... (truncated)")
+                    f.write(artifact)
+                kind = "Partial exploit script" if engine.exploit_script else "Fallback template"
+                console.print(f"\n[yellow]{kind} saved to: {output}[/yellow]")
+
+
+# === `solve` - Phase 6 of docs/plans/2026-09-23-effectiveness-and-usability.md ===
+#
+# `solve` is a thin wrapper over `autopwn`'s CanonicalAutopwnEngine (same
+# engine, same pipeline - see docs/architecture/2026-09-23-autopwn-pipeline.md's
+# "solve vs autopwn" addendum for why both commands exist rather than one
+# being deleted). It differs from `autopwn` in three ways: a minimal,
+# opinionated flag surface (`--remote`/`--libc`/`--timeout`/`--json`, no
+# `--offset` escape hatch), a guaranteed default output path even without
+# `-o` (`autopwn` only writes a script when `-o` is explicitly given), and
+# an optional `--interactive` guided-fallback retry.
+
+DEFAULT_SOLVE_OUTPUT_DIR = "./solve_output"
+
+#: Human-readable hints for the value guided-fallback (`--interactive`)
+#: prompts for, keyed by the `handoff.BLOCKING_UNKNOWN_FACT_KEYS` value.
+_KNOWN_FACT_PROMPT_HINTS = {
+    "offset": "buffer-to-return-address offset in bytes, e.g. 40 or 0x28",
+    "canary_value": "leaked stack canary value, e.g. 0xab12cd34ef56ab00",
+    "libc_base": "leaked libc base address, e.g. 0x7ffff7a00000",
+    "pie_base": "leaked PIE/binary base address, e.g. 0x555555554000",
+}
+
+
+def _default_solve_output_path(binary: str) -> Path:
+    """Predictable default artifact path used when `-o`/`--output` isn't
+    given. "One command produces a usable artifact" (Phase 6) requires
+    `solve` to write the result *somewhere* by default, not only print to
+    stdout - unlike `autopwn`, where `-o` is opt-in."""
+    return Path(DEFAULT_SOLVE_OUTPUT_DIR) / f"{Path(binary).stem}_exploit.py"
+
+
+def _parse_remote_target(remote: str) -> "tuple[str, int]":
+    try:
+        host, port_str = remote.rsplit(":", 1)
+        port = int(port_str)
+    except ValueError:
+        raise click.BadParameter(
+            "must be HOST:PORT, e.g. chal.example.com:1337", param_hint="--remote"
+        )
+    if not host:
+        raise click.BadParameter("host must not be empty", param_hint="--remote")
+    return host, port
+
+
+def _fill_remote_placeholders(script: str, host: Optional[str], port: Optional[int]) -> str:
+    """Every script this pipeline generates (the universal template, the
+    SROP/scanf-canary-bypass templates, and `generate_success_script`'s
+    fallback) shares the same ``REMOTE_HOST = ""`` / ``REMOTE_PORT = 0``
+    placeholder convention, so a single string substitution works
+    regardless of which generator produced the script `solve` is about to
+    write out.
+
+    NOTE (documented limitation, not an oversight): this only changes
+    where the *written script* connects by default. `CanonicalAutopwnEngine`
+    itself still runs every technique attempt locally against `BINARY` for
+    verification - the pipeline's executors spawn the binary directly
+    (`supwngo/exploit/pipeline/executors/_shared.py::spawn_and_send`) and
+    do not yet have a remote-delivery path (see
+    docs/architecture/2026-09-23-autopwn-pipeline.md's "solve vs autopwn"
+    addendum). `--remote` gets you a script that's ready to replay against
+    the real target once you've verified it locally - it does not make
+    `solve` attack the remote target directly."""
+    if not host or not script:
+        return script
+    return (
+        script.replace('REMOTE_HOST = ""', f'REMOTE_HOST = "{host}"')
+        .replace("REMOTE_PORT = 0", f"REMOTE_PORT = {port}")
+    )
+
+
+def _write_solve_artifact(content: str, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(content)
+    try:
+        output_path.chmod(0o755)
+    except OSError:
+        pass
+
+
+DEFAULT_WALKTHROUGH_OUTPUT_DIR = "./walkthrough_output"
+
+
+def _walkthrough_output_path(binary: str, output: Optional[str], markdown: bool) -> Path:
+    if output:
+        return Path(output)
+    suffix = ".md" if markdown else ".py"
+    stem = f"{Path(binary).name}_walkthrough{suffix}"
+    return Path(DEFAULT_WALKTHROUGH_OUTPUT_DIR) / stem
+
+
+def _emit_walkthrough(
+    binary: str,
+    *,
+    output: Optional[str],
+    family: Optional[str],
+    offset: Optional[int],
+    probe: bool,
+    libc: Optional[str],
+    markdown: bool,
+    remote_host: Optional[str],
+    remote_port: Optional[int],
+    handoff=None,
+) -> Optional[Path]:
+    """Generate, render and write a walkthrough. Returns the path written.
+
+    Errors are reported rather than swallowed. The one thing this must never do
+    is fall back to writing a placeholder stub: `offset = 0  # TODO` is the
+    artifact this whole feature exists to replace, so if generation genuinely
+    fails the user gets the reason and a non-zero exit, not a fake walkthrough.
+    """
+    from supwngo.exploit.walkthrough import explain_binary
+
+    with console.status("Building walkthrough..."):
+        walkthrough, text = explain_binary(
+            binary,
+            offset=offset,
+            probe=probe,
+            libc_path=libc,
+            handoff=handoff,
+            family=family,
+            markdown=markdown,
+        )
+
+    if not markdown:
+        text = _fill_remote_placeholders(text, remote_host, remote_port)
+
+    output_path = _walkthrough_output_path(binary, output, markdown)
+    _write_solve_artifact(text, output_path)
+
+    route = walkthrough.primary_route
+    console.print(f"\n[bold green]Walkthrough written to: {output_path}[/bold green]")
+    console.print(f"  Family     : {walkthrough.family}")
+    if route:
+        console.print(f"  Route      : {route.name}  (score {route.score:g})")
+    console.print(f"  Steps      : {len(walkthrough.steps)}")
+
+    # Say plainly what is not known. This is the honest-degradation contract:
+    # an unresolved value is named, with the step that resolves it, never
+    # silently defaulted.
+    if walkthrough.unknowns:
+        console.print("\n[yellow]Values this walkthrough could NOT determine:[/yellow]")
+        for fact in walkthrough.unknowns:
+            step = walkthrough.step(fact.resolved_by)
+            number = walkthrough.number_of(fact.resolved_by)
+            console.print(f"  [yellow]{fact.name}[/yellow]: {fact.unknown_reason}")
+            console.print(f"    plausible range: {fact.plausible}")
+            console.print(f"    resolve by running: step {number} ({step.title})")
+    else:
+        console.print("\n[dim]Every value in it was measured or derived.[/dim]")
+
+    # A Markdown render is not runnable, so telling the reader to `python3` it
+    # would be the first instruction in the artifact that does not work.
+    if markdown:
+        console.print("\n[dim]Read it, then regenerate without --markdown to run it.[/dim]")
+    else:
+        console.print(f"\n[dim]Start with:  python3 {output_path} steps[/dim]")
+    return output_path
+
+
+@cli.command()
+@click.argument("binary", type=click.Path(exists=True))
+@click.option(
+    "-o", "--output", type=click.Path(),
+    help=f"Output path (default: {DEFAULT_WALKTHROUGH_OUTPUT_DIR}/<binary-name>_walkthrough.py)",
+)
+@click.option(
+    "--family",
+    help="Force a technique family (rop_chain, syscall, integer, stack_bof, "
+         "fmtstr, heap, triage) "
+         "instead of taking the best-scoring route",
+)
+@click.option(
+    "--offset", type=int,
+    help="Supply the buffer-to-return-address offset instead of measuring it",
+)
+@click.option(
+    "--no-probe", is_flag=True,
+    help="Do not execute the binary while gathering facts. The offset is then "
+         "reported as UNKNOWN with the step that measures it, never guessed.",
+)
+@click.option("--libc", type=click.Path(exists=True), help="Target libc, for ret2libc routes")
+@click.option(
+    "--remote",
+    help="Remote target HOST:PORT, templated into the walkthrough's "
+         "REMOTE_HOST/REMOTE_PORT",
+)
+@click.option("--markdown", is_flag=True, help="Render as Markdown instead of a runnable script")
+@click.option("--json", "json_output", is_flag=True, help="Output the walkthrough structure as JSON")
+@click.pass_context
+def explain(ctx, binary, output, family, offset, no_probe, libc, remote, markdown, json_output):
+    """
+    Teach the exploit: emit a step-by-step, runnable walkthrough.
+
+    Unlike `exploit` or `solve`, which aim to produce a working script, this
+    aims to produce an artifact a human can *follow* -- every step runnable on
+    its own, with what to expect, how to tell it worked, what to do when it
+    does not, and the reasoning that ties the technique to the binary's
+    measured protections.
+
+    A route is always produced. When analysis finds little, the guided-triage
+    route teaches the discovery workflow itself (confirm protections, enumerate
+    symbols and gadgets, drive the input to a crash, measure the offset, then
+    re-evaluate) rather than emitting a placeholder.
+
+    \b
+      supwngo explain ./vuln
+      supwngo explain ./vuln --family syscall
+      supwngo explain ./vuln --no-probe --markdown
+    """
+    remote_host: Optional[str] = None
+    remote_port: Optional[int] = None
+    if remote:
+        remote_host, remote_port = _parse_remote_target(remote)
+
+    if json_output:
+        from supwngo.exploit.walkthrough import explain_binary
+
+        walkthrough, _text = explain_binary(
+            binary, offset=offset, probe=not no_probe, libc_path=libc, family=family
+        )
+        console.print_json(json.dumps(walkthrough.to_dict(), indent=2, default=str))
+        return
+
+    print_banner()
+    console.print(Panel(f"[bold]Explaining:[/bold] {binary}", style="cyan"))
+
+    _emit_walkthrough(
+        binary,
+        output=output,
+        family=family,
+        offset=offset,
+        probe=not no_probe,
+        libc=libc,
+        markdown=markdown,
+        remote_host=remote_host,
+        remote_port=remote_port,
+    )
+
+
+def _guided_fallback(engine, binary: str, libc: Optional[str], timeout: float):
+    """Phase 6 guided fallback mode: present the failed/partial run's
+    `blocking_unknowns`, let the user supply ONE of them, and retry.
+
+    Capped deliberately at "supply one missing fact and resume" per the
+    plan - this is a simplified resume (a fresh `CanonicalAutopwnEngine`
+    run with the fact pre-seeded via `run(known_facts=...)`), not true
+    mid-pipeline resumption. Wiring true incremental resume (skipping
+    already-completed stages/attempts rather than re-running the whole
+    pipeline) would need the orchestrator's attempt loop to be
+    checkpoint/resumable, which is more pipeline surgery than this
+    "thin CLI wrapper" phase's scope - see `CanonicalAutopwnEngine.run()`'s
+    docstring for the same note. Re-running is cheap in practice (the
+    profiling stages are fast and idempotent), so the simplification costs
+    wall-clock time, not correctness.
+
+    Returns the engine to report on: the new one if the user supplied a
+    fact, otherwise the original.
+    """
+    from supwngo.exploit.pipeline.handoff import BLOCKING_UNKNOWN_FACT_KEYS
+
+    report = engine.handoff_report
+    choices = [u for u in report.blocking_unknowns if u in BLOCKING_UNKNOWN_FACT_KEYS]
+    if not choices:
+        console.print(
+            "\n[dim]--interactive: no guided-fallback-eligible blocking "
+            "unknowns to resolve for this run.[/dim]"
+        )
+        return engine
+
+    console.print("\n[bold cyan]Guided fallback:[/bold cyan] supply ONE missing fact to retry with it known.")
+    for i, unknown in enumerate(choices, 1):
+        console.print(f"  {i}. {unknown}")
+    console.print("  0. Skip (keep the current result)")
+
+    choice = click.prompt("Which fact can you supply", type=click.IntRange(0, len(choices)), default=0)
+    if not choice:
+        return engine
+
+    unknown = choices[choice - 1]
+    fact_key = BLOCKING_UNKNOWN_FACT_KEYS[unknown]
+    hint = _KNOWN_FACT_PROMPT_HINTS.get(fact_key, "value")
+    raw_value = click.prompt(f"Value for '{unknown}' ({hint})")
+    try:
+        value = int(raw_value, 0)
+    except ValueError:
+        console.print(f"[red]Could not parse '{raw_value}' as an integer - skipping guided fallback.[/red]")
+        return engine
+
+    console.print(f"[cyan]Resuming with {fact_key} = {hex(value)}...[/cyan]")
+
+    from supwngo.core.binary import Binary
+    from supwngo.exploit.pipeline import CanonicalAutopwnEngine
+
+    bin_obj = Binary.load(binary)
+    with console.status("Retrying with the supplied fact..."):
+        new_engine = CanonicalAutopwnEngine(bin_obj, timeout=timeout, libc_path=libc)
+        new_engine.run(known_facts={fact_key: value})
+
+    if new_engine.successful:
+        console.print("[bold green]Guided fallback reached verified SUCCESS.[/bold green]")
+    else:
+        console.print("[yellow]Guided fallback did not reach verified SUCCESS either.[/yellow]")
+
+    return new_engine
+
+
+@cli.command()
+@click.argument("binary", type=click.Path(exists=True))
+@click.option(
+    "-o", "--output", type=click.Path(),
+    help=f"Output exploit script path (default: {DEFAULT_SOLVE_OUTPUT_DIR}/<binary-name>_exploit.py)",
+)
+@click.option(
+    "--remote",
+    help="Remote target HOST:PORT, templated into the written exploit script's "
+         "REMOTE_HOST/REMOTE_PORT. Technique attempts still run locally against "
+         "BINARY for verification - see docs/architecture/2026-09-23-autopwn-pipeline.md.",
+)
+@click.option("--libc", type=click.Path(exists=True), help="Path to target libc (for ret2libc/one_gadget)")
+@click.option("--timeout", default=5.0, help="Timeout for each technique attempt (seconds)")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.option(
+    "--interactive", is_flag=True,
+    help="On a partial/failed result, offer a guided fallback: supply ONE missing fact and retry",
+)
+@click.option(
+    "--walkthrough", "walkthrough", is_flag=True,
+    help="Also emit a step-by-step teaching walkthrough (see `supwngo explain`), "
+         "informed by what this run already tried. Most useful when the run "
+         "FAILS: it replaces the placeholder template with a followable strategy.",
+)
+@click.pass_context
+def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, walkthrough):
+    """
+    One command: binary in, working exploit (or a clear explanation why
+    not) out.
+
+    Runs the same canonical pipeline `autopwn` drives (static analysis,
+    dynamic profiling, strategy-ranked technique attempts, verification) with
+    a minimal flag surface and opinionated defaults: auto-detected arch/bits,
+    strategy-priority-ordered technique attempts, local verification, and -
+    unlike `autopwn` - a working exploit script always written to a
+    predictable path on success, even without -o.
+
+    On failure, always shows the Phase-4 structured hand-off (what was
+    tried, why, and what's still needed). Pass --interactive to be walked
+    through supplying one of the hand-off's blocking_unknowns and retrying.
+
+    `solve` is a thin wrapper over CanonicalAutopwnEngine, the same engine
+    `autopwn` drives - see docs/architecture/2026-09-23-autopwn-pipeline.md,
+    "solve vs autopwn", for why both commands exist.
+    """
+    if json_output and interactive:
+        raise click.UsageError("--interactive requires a terminal and cannot be combined with --json")
+
+    remote_host: Optional[str] = None
+    remote_port: Optional[int] = None
+    if remote:
+        remote_host, remote_port = _parse_remote_target(remote)
+
+    output_path = Path(output) if output else _default_solve_output_path(binary)
+
+    from supwngo.core.binary import Binary
+    from supwngo.exploit.pipeline import CanonicalAutopwnEngine
+
+    console.print(f"\n[bold]solve:[/bold] {binary}\n")
+
+    with console.status("Loading binary..."):
+        bin_obj = Binary.load(binary)
+
+    with console.status("Running canonical auto-exploitation pipeline..."):
+        engine = CanonicalAutopwnEngine(bin_obj, timeout=timeout, libc_path=libc)
+        engine.run()
+
+    if interactive and not engine.successful:
+        engine = _guided_fallback(engine, binary, libc, timeout)
+
+    if json_output:
+        result = {
+            "binary": str(binary),
+            "success": engine.successful,
+            "verified": engine.context.verification_level.name if engine.context.verification_level else "NONE",
+            "flag": engine.context.captured_flag,
+            "technique": engine.technique_used,
+            "output_path": str(output_path),
+            "attempts": [a.to_dict() for a in engine.context.attempts],
+            "handoff": engine.handoff_report.to_dict(),
+        }
+        artifact = engine.exploit_script if engine.successful else (engine.exploit_script or engine.exploit_template)
+        _write_solve_artifact(_fill_remote_placeholders(artifact, remote_host, remote_port), output_path)
+        if walkthrough:
+            from supwngo.exploit.walkthrough import explain_binary
+
+            wt, text = explain_binary(
+                binary, libc_path=libc, handoff=engine.handoff_report
+            )
+            wt_path = _walkthrough_output_path(binary, None, False)
+            _write_solve_artifact(
+                _fill_remote_placeholders(text, remote_host, remote_port), wt_path
+            )
+            result["walkthrough"] = wt.to_dict()
+            result["walkthrough_path"] = str(wt_path)
+        console.print_json(json.dumps(result, indent=2, default=str))
+        return
+
+    console.print(engine.summary())
+
+    if engine.successful:
+        console.print(f"\n[bold green]SUCCESS![/bold green] Technique: {engine.technique_used}")
+        if engine.context.captured_flag:
+            console.print(f"\n[bold magenta]FLAG: {engine.context.captured_flag}[/bold magenta]")
+
+        script = _fill_remote_placeholders(engine.exploit_script, remote_host, remote_port)
+        _write_solve_artifact(script, output_path)
+        console.print(f"\n[green]Exploit script saved to: {output_path}[/green]")
+        if remote_host:
+            console.print(
+                f"[dim]Script defaults to REMOTE_HOST={remote_host!r} REMOTE_PORT={remote_port} - "
+                f"edit it to switch back to a local run.[/dim]"
+            )
+    else:
+        _render_handoff_report(engine.handoff_report)
+
+        artifact = engine.exploit_script or engine.exploit_template
+        artifact = _fill_remote_placeholders(artifact, remote_host, remote_port)
+        _write_solve_artifact(artifact, output_path)
+        kind = "Partial exploit script" if engine.exploit_script else "Fallback template"
+        console.print(f"\n[yellow]{kind} saved to: {output_path}[/yellow]")
+        if not walkthrough:
+            console.print(
+                "[dim]That template is a starting point, not a strategy. Re-run "
+                "with --walkthrough for a step-by-step route to a shell.[/dim]"
+            )
+
+    if walkthrough:
+        # Pass the hand-off report through: the walkthrough's header tells the
+        # reader what this run already tried, so they do not repeat dead ends.
+        _emit_walkthrough(
+            binary,
+            output=None,
+            family=None,
+            offset=None,
+            probe=True,
+            libc=libc,
+            markdown=False,
+            remote_host=remote_host,
+            remote_port=remote_port,
+            handoff=engine.handoff_report,
+        )
 
 
 def main():

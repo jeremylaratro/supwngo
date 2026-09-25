@@ -14,6 +14,26 @@ from supwngo.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+#: Declared fields that nothing in the tree ever measures --
+#: `ProtectionAnalyzer.analyze()` assigns none of them, so they only ever hold
+#: their declared default. They are deliberately excluded from `to_dict()`:
+#: emitting `cfi: false` when no CFI detector exists would publish an
+#: unmeasured default as though it were a finding, indistinguishable from a
+#: measured `nx: false`. Write a detector for one of these and it must move
+#: out of this set in the same change -- `tests/test_protections_to_dict.py`
+#: fails on any field that is neither serialized nor listed here.
+_UNMEASURED = frozenset(
+    {
+        "stack_clash_protection",
+        "safe_stack",
+        "cfi",
+        "shadow_stack",
+        "rpath",
+        "runpath",
+    }
+)
+
+
 @dataclass
 class DetailedProtections(Protections):
     """Extended protection information."""
@@ -44,6 +64,42 @@ class DetailedProtections(Protections):
     # libc details
     libc_version: str = ""
     uses_tcache: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize every measured protection, not just the inherited six.
+
+        `Protections.to_dict()` hard-codes six keys, so inheriting it silently
+        discarded the ten additional facts `ProtectionAnalyzer.analyze()`
+        actually measures -- `supwngo analyze --json` did the work and threw
+        it away. This emits all sixteen.
+
+        The result is a superset of the base form: every inherited key keeps
+        its name, type and meaning, so existing readers are unaffected.
+
+        Fields in `_UNMEASURED` are deliberately absent rather than emitted as
+        `False`; nothing measures them, and a serialized default is
+        indistinguishable from a finding. Keep this in step with
+        `_UNMEASURED` -- `tests/test_protections_to_dict.py` fails on any
+        field that is in neither.
+        """
+        return {
+            **super().to_dict(),
+            # RELRO, decomposed
+            "full_relro": self.full_relro,
+            "partial_relro": self.partial_relro,
+            # Compiler hardening
+            "stack_protector": self.stack_protector,
+            "fortify_level": self.fortify_level,
+            # Position independence
+            "pie_type": self.pie_type,
+            # Linking and symbols
+            "stripped": self.stripped,
+            "static": self.static,
+            "has_debug_info": self.has_debug_info,
+            # libc
+            "libc_version": self.libc_version,
+            "uses_tcache": self.uses_tcache,
+        }
 
 
 class ProtectionAnalyzer:

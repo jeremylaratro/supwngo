@@ -242,6 +242,7 @@ test_all_binaries.py
 
 # Exploit output
 generated_exploits/
+walkthrough_output/
 
 # IDE and editor
 .idea/
