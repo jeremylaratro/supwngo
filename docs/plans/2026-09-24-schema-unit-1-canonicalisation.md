@@ -1477,6 +1477,48 @@ F7 near-miss: a refuting instrument must be at least as wide as the claim it tes
 
 ### Outstanding, unfixed, and named rather than left to be discovered
 
+### C10 verified independently — and a second near-miss, recorded not corrected
+
+The plan says *every* `__all__` entry taking a `ResolveContext` must raise. I did
+not take it on trust that `applicable` was the only member: I enumerated `__all__`
+myself and found **six** entries with a context parameter — `validate_context`
+(the validator itself) plus five consumers, including **`try_resolve`**, which is
+named nowhere in this plan.
+
+My first run reported **8 C10 leaks**: `conflicts` and `agreements` raising
+`TypeError` rather than `SchemaError` for all four refused contexts. That would
+have been a HIGH finding filed against correct code. It was **my instrument**:
+
+```
+conflicts    (store, ctx)              <- two parameters
+agreements   (store, ctx)
+resolve      (store, key, ctx)         <- three
+```
+
+I had called all five with `(store, key, ctx)`, so the `TypeError` was my own
+arity error. Re-run correctly:
+
+```
+              list-identities  empty-str-identity  non-str-condition  bad-mode
+applicable    SchemaError      SchemaError         SchemaError        SchemaError
+resolve       SchemaError      SchemaError         SchemaError        SchemaError
+try_resolve   SchemaError      SchemaError         SchemaError        SchemaError
+conflicts     SchemaError      SchemaError         SchemaError        SchemaError
+agreements    SchemaError      SchemaError         SchemaError        SchemaError
+C10 leaks: 0   (5 consumers x 4 refused contexts = 20 cases)
+```
+
+**C10 holds, measured, with zero leaks.** This is the F7 pattern a second time —
+an instrument whose shape did not match the claim it was testing, producing a
+confident wrong answer about correct code — and the only reason it did not become
+a filed finding is that `TypeError` from five functions at once is too uniform to
+be a real defect, so I checked the signatures before writing it up. Recorded
+rather than quietly fixed, because a silently corrected near-miss is
+indistinguishable from never having erred and teaches nobody. The generalisation
+it supports is the one already in protocol: **a crash is not a finding any more
+than it is a proof** — when an instrument reports the same exception from every
+target, suspect the instrument.
+
 - **LOW.** `tests/test_context_resolve_golden.py`'s purity property is described as
   quantifying over a "**generated** domain", but `_purity_domain()` returns a fixed
   list of 20 values. It is an *enumerated* domain. The distinction is exactly the
