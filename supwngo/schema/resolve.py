@@ -2500,7 +2500,7 @@ def canonical_document(store: FactStore) -> str:
             for c in sorted(store.candidates(key), key=lambda c: c.id)
         ]
     doc = {
-        "schema_version": "supwngo.context/v1",
+        "schema_version": "supwngo.context/v2",
         "facts": facts,
         # ``seq`` is unique by I7, so this total order needs no tiebreak and
         # cannot depend on a free-text ``at``.

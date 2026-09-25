@@ -231,6 +231,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   technique implementations) and the per-target work they imply.
 
 ### Changed
+- **BREAKING: the context schema is now `supwngo.context/v2`**
+  (`supwngo/schema/resolve.py`). `canonical_document()`'s `schema_version`
+  field moves from `supwngo.context/v1` to `supwngo.context/v2` (F7): the
+  closed-canonicalisation-domain change above is a genuine compatibility
+  break (evidence an `enum`, `tuple`, `set`, `frozenset`, `float`, or
+  `dataclass` that v1 silently accepted is now refused with
+  `SchemaError`), and C9 requires the version identifier to move in the
+  same commit as a break, not stay pinned to the old one. **Migration:**
+  a v1 document, or a v1-era `Candidate`/evidence payload relying on any of
+  those now-refused types, must be re-validated under v2 before use — there
+  is no automatic upgrade path, because the break is a *refusal*, not a
+  re-encoding. `tests/test_context_resolve_golden.py`'s small-store document
+  vector is split in two: the v1 bytes are retained, unrenamed in meaning
+  but relabelled `..._PRE_V2_RECORD`, as a frozen historical string rather
+  than a live call (`canonical_document()` can no longer produce v1 bytes at
+  all); a new vector next to it captures the same fixture's v2 bytes via a
+  live call, identical except the trailing `schema_version`.
 - **BREAKING (follow-up): every structural position's DECLARED type is now
   enforced, not merely dispatched on by the value's own runtime type**
   (`supwngo/schema/resolve.py`). The exact-type registry check and

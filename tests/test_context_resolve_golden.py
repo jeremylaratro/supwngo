@@ -145,7 +145,57 @@ def test_golden_pin_record_id():
 # ---------------------------------------------------------------------------
 
 
+def test_golden_canonical_document_small_store_PRE_V2_RECORD():
+    """**PRE-V2 HISTORICAL RECORD -- not a live call into resolve.py.**
+
+    This is the exact byte string ``canonical_document()`` produced for the
+    fixture below under schema ``supwngo.context/v1``, captured before F7's
+    fix bumped the version. It is a literal frozen string, not derived by
+    calling the runtime, because ``canonical_document()`` now always emits
+    ``supwngo.context/v2`` -- there is no longer any way to ask it for v1
+    bytes. Retained here, byte for byte, because C9 requires a vector that
+    changes to be replaced by a version bump plus a migration note, not
+    silently overwritten; see CHANGELOG.md for the migration note. The live
+    equivalent under v2 is :func:`test_golden_canonical_document_small_store`
+    immediately below -- identical byte for byte except the trailing
+    ``schema_version``.
+    """
+    doc_v1 = (
+        '{"conflicts":[{"candidate_ids":["f_061afc3e10c1433e7ee898a23f8258b2",'
+        '"f_fa0ac41b17534efea05c7ec4a175507e"],"cls":"equally_specific",'
+        '"key":"stack.return_offset"}],"facts":{"libc.system_offset":'
+        '[{"applies_to":{"binding":null,"conditions":[],"identity":null,'
+        '"scope":"libc_file"},"by":"supwngo offset","derived_from":[],'
+        '"generation":0,"id":"f_5578f75b99bbacf9c8a9e8e13698d5b4",'
+        '"key":"libc.system_offset","method":"m3","observations":'
+        '[{"at":"t1","evidence":[]}],"provenance":"measured","state":"active",'
+        '"value":4096}],"stack.return_offset":[{"applies_to":{"binding":null,'
+        '"conditions":[],"identity":"t_main","scope":"build"},'
+        '"by":"supwngo offset","derived_from":[],"generation":0,'
+        '"id":"f_061afc3e10c1433e7ee898a23f8258b2",'
+        '"key":"stack.return_offset","method":"m1","observations":'
+        '[{"at":"t1","evidence":[]}],"provenance":"measured","state":"active",'
+        '"value":72},{"applies_to":{"binding":null,"conditions":[],'
+        '"identity":"t_main","scope":"build"},"by":"supwngo offset",'
+        '"derived_from":[],"generation":0,'
+        '"id":"f_fa0ac41b17534efea05c7ec4a175507e",'
+        '"key":"stack.return_offset","method":"m2","observations":'
+        '[{"at":"t1","evidence":[]}],"provenance":"measured","state":"active",'
+        '"value":80}]},"resolutions":[{"actor":"op","at":"t3",'
+        '"by_candidate_id":null,'
+        '"candidate_id":"f_061afc3e10c1433e7ee898a23f8258b2","cls":"pin",'
+        '"key":"stack.return_offset","reason":"operator chose it","seq":1}],'
+        '"schema_version":"supwngo.context/v1"}'
+    )
+    assert hashlib.sha256(doc_v1.encode("utf-8")).hexdigest() == (
+        "b4b79839ed70096dff4d71f30d7f2a4eddc864eaf620877bb655fbccc1b7e9fe"
+    )
+
+
 def test_golden_canonical_document_small_store():
+    """The v2 live equivalent of the pre-v2 record above (F7): same fixture,
+    same bytes except the trailing ``schema_version``, captured by actually
+    calling ``canonical_document()`` post-bump."""
     s = R.FactStore()
     R.merge(s, _raw())
     R.merge(s, _raw(value=80, method="m2"))
@@ -179,10 +229,10 @@ def test_golden_canonical_document_small_store():
         '"by_candidate_id":null,'
         '"candidate_id":"f_061afc3e10c1433e7ee898a23f8258b2","cls":"pin",'
         '"key":"stack.return_offset","reason":"operator chose it","seq":1}],'
-        '"schema_version":"supwngo.context/v1"}'
+        '"schema_version":"supwngo.context/v2"}'
     )
     assert hashlib.sha256(doc.encode("utf-8")).hexdigest() == (
-        "b4b79839ed70096dff4d71f30d7f2a4eddc864eaf620877bb655fbccc1b7e9fe"
+        "5012c11b6bf95e9889b776b715fd6c5af3e6ef215eb0cbaac37858b2bc3f364c"
     )
 
 
