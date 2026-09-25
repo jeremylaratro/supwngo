@@ -444,7 +444,7 @@ def _jsonable_coerces_keys(obj: Any) -> Any:
     raise R.SchemaError(f"not canonicalisable: {type(obj).__name__}")
 
 
-def _validate_log_shape_only(store: R.FactStore, index) -> None:
+def _validate_log_shape_only(store: R.FactStore) -> None:
     """Round-3 finding 5: check the *shape* of a log record and nothing else.
 
     A well-formed record naming a candidate that does not exist, or one filed
@@ -531,6 +531,17 @@ def _validate_store_noop(store: R.FactStore) -> None:
     the controls are controls rather than descriptions.
     """
     return None
+
+
+def _candidate_id_index_unchecked(store: R.FactStore) -> Dict[str, R.Candidate]:
+    """C8's shipped gap: build the id index with a plain dict comprehension,
+    so a later duplicate silently overwrites an earlier one instead of
+    raising I6.  This is the one function ``FactStore.by_id`` and
+    ``_validate_log`` (and therefore ``current_pins``) both route through, so
+    patching it alone reproduces the exact historical divergence: three
+    readers of one store, and only ``validate_store`` -- which builds its own
+    independent index inline -- still refuses it."""
+    return {c.id: c for c in store.all_candidates()}
 
 
 def _optional_name_type_only(raw: Any, what: str) -> Any:
@@ -659,5 +670,12 @@ MUTANTS: Dict[str, Mutant] = {
                note="the shipped defect: identity=\"\" and binding=\"\" were "
                     "accepted, giving a second dedup_key for one proposition, "
                     "and an identity no context can ever satisfy"),
+        # Unit 1 (canonicalisation domain closure), C8.
+        Mutant("candidate_id_index_diverges", "C8", "P29",
+               {"_candidate_id_index": _candidate_id_index_unchecked},
+               note="the shipped gap: by_id and current_pins each built "
+                    "their own unchecked id index, so a duplicate id that "
+                    "validate_store correctly refused was silently accepted "
+                    "by both"),
     ]
 }

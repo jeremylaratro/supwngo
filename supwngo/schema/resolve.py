@@ -943,10 +943,14 @@ class FactStore:
             yield from self.candidates(key)
 
     def by_id(self, cid: str) -> Optional[Candidate]:
-        for c in self.all_candidates():
-            if c.id == cid:
-                return c
-        return None
+        """C8: the candidate id space must be a bijection.  A first-match
+        linear scan answered this even when a second candidate shared the
+        same id, silently returning whichever came first in iteration order
+        -- a different, wrong answer from ``validate_store``'s I6, which
+        does reject the same store.  Routes through the one checked index
+        instead, so a duplicate id is refused here exactly as it is
+        everywhere else."""
+        return _candidate_id_index(self).get(cid)
 
     # -- writes ---------------------------------------------------------
     def _bucket(self, key: str) -> List[Candidate]:
@@ -1067,7 +1071,7 @@ def validate_store(store: FactStore) -> None:
             # and rejecting a partial graph would make a fragment unmergeable.
             # It is handled where it belongs -- ``is_stale`` treats a dangling
             # ref as stale, so nothing is *consumed* on an unresolvable lineage.
-    _validate_log(store, seen_ids)                                    # I7, I8
+    _validate_log(store)                                               # I7, I8
     _validate_conflicts(store, seen_ids)                              # I9
 
 
@@ -1080,7 +1084,25 @@ _LOG_TERMINAL: Dict[str, State] = {
 }
 
 
-def _validate_log(store: FactStore, index: Mapping[str, Candidate]) -> None:
+def _candidate_id_index(store: FactStore) -> Dict[str, Candidate]:
+    """C8: the candidate id space is a bijection.  Build the id -> candidate
+    index and raise I6 on the first duplicate found, and do it in the one
+    place both ``_validate_log`` and :meth:`FactStore.by_id` call -- not as
+    two independently hand-rolled lookups that could (and did) disagree with
+    ``validate_store`` about whether a given store is even valid.  A dict
+    comprehension silently lets a later duplicate overwrite an earlier one;
+    this raises instead, the same way ``validate_store``'s own id-uniqueness
+    check does.
+    """
+    index: Dict[str, Candidate] = {}
+    for c in store.all_candidates():
+        if c.id in index:
+            raise SchemaError(f"I6 duplicate candidate id {c.id}")
+        index[c.id] = c
+    return index
+
+
+def _validate_log(store: FactStore) -> None:
     """I7: the log is well formed, uniquely sequenced, attributed **and
     referentially sound**.  I8: no terminal state without a record.
 
@@ -1098,7 +1120,13 @@ def _validate_log(store: FactStore, index: Mapping[str, Candidate]) -> None:
     boundary being defended is the *document*, and what is enforced is that
     every record crossing it is well formed, uniquely sequenced, attributed and
     consistent with the candidate it names.
+
+    The id index used below is built here, via :func:`_candidate_id_index`,
+    rather than accepted as a parameter: a caller-supplied index let
+    ``current_pins`` build one with a plain dict comprehension that silently
+    dropped a duplicate instead of rejecting the store (C8).
     """
+    index = _candidate_id_index(store)
     seen_seq = set()
     for rec in store.resolutions:
         if not isinstance(rec, PinRecord):
@@ -1819,7 +1847,7 @@ def current_pins(store: FactStore) -> Dict[str, str]:
     # forged record must now at least be well formed, uniquely sequenced and
     # *attributed*, and it is in the audit log either way.  The enforceable
     # boundary is the document, and I7 is what guards it.)
-    _validate_log(store, {c.id: c for c in store.all_candidates()})
+    _validate_log(store)
     latest: Dict[str, PinRecord] = {}
     for rec in store.resolutions:
         if rec.cls not in ("pin", "unpin"):

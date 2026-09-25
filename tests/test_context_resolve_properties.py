@@ -220,7 +220,21 @@ def prop_P1_merge_totality_and_semantics() -> None:
                 f"missing {expected - got}, extra {got - expected}"
             )
             for cid, st in before_states.items():
-                now = s.by_id(cid)
+                # C8: by_id is a bijection and raises SchemaError on a
+                # duplicate id rather than silently returning a first
+                # match -- so a mutant that makes merge produce a
+                # colliding id (e.g. merge_supersedes_on_rank) must be
+                # diagnosed here as a totality violation, the same way
+                # the R.merge() call above turns a SchemaError into an
+                # AssertionError, rather than left to crash the property.
+                try:
+                    now = s.by_id(cid)
+                except R.SchemaError as exc:
+                    raise AssertionError(
+                        f"merge produced a store where by_id({cid!r}) is no "
+                        f"longer a bijection: {exc}. Store held "
+                        f"{[c.id for c in s.all_candidates()]}"
+                    ) from exc
                 assert now is not None, f"merge removed {cid}"
                 assert now.state is st, f"merge changed state of {cid}: {st} -> {now.state}"
             n += 1
@@ -2047,6 +2061,57 @@ def prop_P27_every_invariant_has_a_positive_control() -> None:
     _count("P27 invariants controlled", len(controlled))
 
 
+def _duplicate_candidate_id_store() -> Tuple[R.FactStore, str]:
+    """A store where two candidates -- one superseded, one active -- share one
+    id, built with no id-forcing and no hash collision.
+
+    ``state`` is excluded from every digest projection
+    (:data:`R.DERIVED_FIELDS`), so two candidates identical in every other
+    content field legitimately ``derive_id()`` to the same value the moment
+    they differ only in ``state``.  Forcing an id mismatch instead (via
+    ``dataclasses.replace(..., id=...)``) trips I2 inside
+    ``validate_candidate``'s own re-derivation before I6 -- the invariant on
+    trial here -- ever gets a chance to fire, which is why this is built by
+    injecting directly into the store's internal bucket rather than through
+    two ``merge()`` calls.  The order -- superseded filed first, active
+    second -- matches the unit-1 plan's own worked transcript.
+    """
+    active = R.validate_candidate(raw())
+    superseded = dataclasses.replace(active, state=R.State.SUPERSEDED)
+    assert active.id == superseded.id, (
+        "fixture is broken: these two candidates must share one id for the "
+        "scenario to be about I6 rather than I2"
+    )
+    s = R.FactStore()
+    s._facts[KEY] = [superseded, active]
+    return s, active.id
+
+
+def prop_P29_candidate_id_index_is_a_bijection() -> None:
+    """C8: the candidate id space is a bijection, and every reader of "the
+    candidate this id names" agrees, not just ``validate_store``.
+
+    The shipped defect: ``FactStore.by_id`` did a first-match linear scan and
+    ``current_pins`` built its id index with a bare dict comprehension, so
+    both silently answered a duplicate-id store as if it were valid while
+    ``validate_store`` correctly refused it -- three readers of one store,
+    two different answers to "is this store even valid".
+    """
+    s, dup_id = _duplicate_candidate_id_store()
+    with pytest.raises(R.SchemaError, match="I6"):
+        R.validate_store(s)
+    with pytest.raises(R.SchemaError, match="I6"):
+        s.by_id(dup_id)
+    with pytest.raises(R.SchemaError, match="I6"):
+        R.current_pins(s)
+    # The control: a store with no duplicate answers all three cleanly.
+    s2, a, _b = _pinned_store()
+    R.validate_store(s2)
+    assert s2.by_id(a.id) == a
+    R.current_pins(s2)
+    _count("P29 duplicate-id readers checked", 3)
+
+
 PROPERTIES = {
     "P1": prop_P1_merge_totality_and_semantics,
     "P1b": prop_P1b_validation_is_the_only_raiser,
@@ -2077,6 +2142,7 @@ PROPERTIES = {
     "P25": prop_P25_conflict_views_are_one_notion,
     "P26": prop_P26_resolve_is_total_over_contexts,
     "P27": prop_P27_every_invariant_has_a_positive_control,
+    "P29": prop_P29_candidate_id_index_is_a_bijection,
 }
 
 
@@ -2343,6 +2409,9 @@ NARROWNESS: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...]]] = {
     "P27": (("state", "generation", "derived_from", "log_record_shape",
              "conflict_record_shape", "scope", "candidate_id", "fact_key"),
             ("value", "provenance", "identity", "conditions")),
+    "P29": (("candidate_id", "state", "dedup_collision"),
+            ("value", "provenance", "scope", "identity", "conditions",
+             "fact_key")),
 }
 
 
