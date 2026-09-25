@@ -1632,6 +1632,28 @@ def prop_P21_canonicalisation_is_injective() -> None:
     class _HostileDict(dict):
         pass
 
+    # F3: C2's refusal table omitted several required type/depth cells --
+    # measured to still refuse correctly, but untested, which lets a future
+    # widening of exactly one of these arms pass this property unnoticed. A
+    # plain Enum (no int/str mixin), a custom int/str/bytes subclass, an
+    # unregistered dataclass, and NESTED forms of tuple/set/frozenset/float/
+    # list-subclass/dict-subclass (previously exercised only at the root).
+    class _ProbePlainEnum(R.enum.Enum):
+        ONLY = "only"
+
+    class _ProbeInt(int):
+        pass
+
+    class _ProbeStr(str):
+        pass
+
+    class _ProbeBytes(bytes):
+        pass
+
+    @dataclasses.dataclass
+    class _ProbeDataclass:
+        x: int = 1
+
     refused_open_values = [
         _ProbeIntEnum.THREE,             # collides with plain int 3
         _ProbeStrEnum.HELLO,             # collides with plain str "hello"
@@ -1640,11 +1662,27 @@ def prop_P21_canonicalisation_is_injective() -> None:
         [_ProbeStrEnum.HELLO],
         {"s": _ProbeStrEnum.HELLO},
         (1, 2),                          # collides with the list [1, 2]
+        [(1, 2)],                        # nested tuple
         {1, 2},
+        [{1, 2}],                        # nested set
         frozenset({1, 2}),
+        [frozenset({1, 2})],             # nested frozenset
         EvidenceList([1, 2]),            # collides with a real list
+        [EvidenceList([1, 2])],          # nested list subclass
         _HostileDict({"a": 1}),          # collides with a real dict
+        [_HostileDict({"a": 1})],        # nested dict subclass
         3.5,
+        [3.5],                           # nested float
+        _ProbePlainEnum.ONLY,            # a plain Enum, no int/str mixin
+        [_ProbePlainEnum.ONLY],
+        _ProbeInt(7),                    # a custom int subclass
+        [_ProbeInt(7)],
+        _ProbeStr("x"),                  # a custom str subclass
+        [_ProbeStr("x")],
+        _ProbeBytes(b"x"),               # a custom bytes subclass
+        [_ProbeBytes(b"x")],
+        _ProbeDataclass(),               # an unregistered dataclass
+        [_ProbeDataclass()],
     ]
     for value in refused_open_values:
         try:
@@ -2181,6 +2219,45 @@ def prop_P27_every_invariant_has_a_positive_control() -> None:
     _count("P27 invariants controlled", len(controlled))
 
 
+#: F8: how to build a legal argument for each NON-context parameter name a
+#: derived consumer might declare, so a call can be constructed generically
+#: rather than by hand per function. Every ``__all__`` consumer discovered
+#: today happens to use exactly these three names; a future consumer using
+#: a name outside this table is a DERIVATION GAP the property itself
+#: reports (see the ``unbuildable`` check below), not a silent skip.
+_P28_ARG_VALUES: Dict[str, Any] = {
+    "c": lambda s, c: c,
+    "store": lambda s, c: s,
+    "key": lambda s, c: KEY,
+}
+
+
+def _context_consumers() -> Dict[str, Tuple[Any, "inspect.Signature", str]]:
+    """F8: every function in ``R.__all__`` that takes a
+    :class:`R.ResolveContext` parameter, derived MECHANICALLY from
+    ``__all__`` and ``typing.get_type_hints`` -- not a hand-maintained
+    tuple. A future ``__all__`` addition with a ``ResolveContext``
+    parameter is picked up automatically, which is what C10's "every
+    context consumer" promises rather than "today's five".
+
+    Checks parameter NAMES via ``inspect.signature`` (excludes ``'return'``
+    by construction), not every key ``get_type_hints`` returns -- a
+    function's RETURN type annotated ``ResolveContext`` would otherwise be
+    mistaken for a parameter.
+    """
+    consumers: Dict[str, Tuple[Any, "inspect.Signature", str]] = {}
+    for name in R.__all__:
+        obj = getattr(R, name)
+        if not inspect.isfunction(obj):
+            continue
+        hints = typing.get_type_hints(obj)
+        sig = inspect.signature(obj)
+        ctx_params = [p for p in sig.parameters if hints.get(p) is R.ResolveContext]
+        if ctx_params:
+            consumers[name] = (obj, sig, ctx_params[0])
+    return consumers
+
+
 def prop_P28_every_context_consumer_validates_it() -> None:
     """C10: every ``__all__`` function that takes a :class:`ResolveContext`
     validates it, not just the three P26 already exercises.
@@ -2190,20 +2267,41 @@ def prop_P28_every_context_consumer_validates_it() -> None:
     malformed field the body happened to read first (``identity_mode`` before
     ``identities``, before ``conditions``), which is a decision made on bad
     input rather than a refusal of it.
+
+    F8: the consumer set below is :func:`_context_consumers`'s mechanical
+    derivation, not a hard-coded tuple of today's five names.
     """
+    consumers = _context_consumers()
+    assert consumers, (
+        "no __all__ function takes a ResolveContext parameter -- the "
+        "derivation itself is broken, not that this module stopped having "
+        "any context consumers"
+    )
+    known = {"applicable", "resolve", "try_resolve", "conflicts", "agreements"}
+    assert known <= set(consumers), (
+        f"expected at least today's known ResolveContext consumers "
+        f"{sorted(known)}; derived only {sorted(consumers)}"
+    )
+    unbuildable = sorted(
+        (name, p) for name, (_fn, sig, ctx_param) in consumers.items()
+        for p in sig.parameters if p != ctx_param and p not in _P28_ARG_VALUES
+    )
+    assert not unbuildable, (
+        f"P28 cannot mechanically build a call for {unbuildable} -- a new "
+        "consumer uses a parameter name _P28_ARG_VALUES has no builder for"
+    )
+
     s = store_of(raw(), raw(value=80, method="m2"))
     c = s.candidates(KEY)[0]
     checked = 0
     for label, ctx in _malformed_contexts():
-        for fn_name, call in (
-            ("applicable", lambda ctx=ctx: R.applicable(c, ctx)),
-            ("resolve", lambda ctx=ctx: R.resolve(s, KEY, ctx)),
-            ("try_resolve", lambda ctx=ctx: R.try_resolve(s, KEY, ctx)),
-            ("conflicts", lambda ctx=ctx: R.conflicts(s, ctx)),
-            ("agreements", lambda ctx=ctx: R.agreements(s, ctx)),
-        ):
+        for fn_name, (fn, sig, ctx_param) in sorted(consumers.items()):
+            kwargs = {
+                p: (ctx if p == ctx_param else _P28_ARG_VALUES[p](s, c))
+                for p in sig.parameters
+            }
             try:
-                result = call()
+                result = fn(**kwargs)
             except R.SchemaError:
                 continue
             except Exception as exc:  # noqa: BLE001 - the wrong type IS the bug
@@ -2217,7 +2315,13 @@ def prop_P28_every_context_consumer_validates_it() -> None:
                 f"context ({label}) instead of validating it first; a "
                 "decision made on bad input is a decision, not a refusal")
         checked += 1
-    # The control: every well-formed context is accepted by all five.
+    # The control: every well-formed context is accepted by applicable --
+    # it is total (P26/P6), so it must return a plain bool for every legal
+    # context rather than raise. (resolve/conflicts/agreements may
+    # legitimately raise a declared LookupError -- FactUnavailable and
+    # friends -- for a VALID context depending on store content, which is
+    # an answer, not a validation failure, so they are not re-checked
+    # here.)
     for ctx in _resolve_contexts():
         assert R.applicable(c, ctx) in (True, False)
     _count("P28 malformed contexts", checked)
@@ -2258,20 +2362,79 @@ def prop_P29_candidate_id_index_is_a_bijection() -> None:
     both silently answered a duplicate-id store as if it were valid while
     ``validate_store`` correctly refused it -- three readers of one store,
     two different answers to "is this store even valid".
+
+    F6: a bijection has more clauses than "rejects a duplicate", and the
+    identity half was checked with ``==`` -- a stale
+    ``dataclasses.replace(c)`` copy is equal to ``c`` but a DIFFERENT
+    object, and only ``is`` catches an index that silently started
+    returning copies. Four clauses each get their own direct assertion
+    below: (a) totality -- ``by_id`` resolves every id genuinely in the
+    store; (b) identity -- it returns the SAME object, not an equal one;
+    (d) declared absence -- an id naming no candidate returns ``None``, per
+    ``by_id``'s own ``Optional[Candidate]`` signature, rather than raising
+    or crashing; (f) a TERMINAL candidate is still indexed and still
+    resolved by identity, not filtered out for no longer being active.
     """
+    checked = 0
     s, dup_id = _duplicate_candidate_id_store()
     with pytest.raises(R.SchemaError, match="I6"):
         R.validate_store(s)
+    checked += 1
     with pytest.raises(R.SchemaError, match="I6"):
         s.by_id(dup_id)
+    checked += 1
     with pytest.raises(R.SchemaError, match="I6"):
         R.current_pins(s)
-    # The control: a store with no duplicate answers all three cleanly.
-    s2, a, _b = _pinned_store()
+    checked += 1
+
+    # The control: a store with no duplicate answers all three cleanly, and
+    # clauses (a)/(b): by_id resolves EVERY candidate's own id (totality),
+    # and does so by IDENTITY (not an equal-but-different object).
+    s2, a, b = _pinned_store()
     R.validate_store(s2)
-    assert s2.by_id(a.id) == a
+    for c in s2.all_candidates():
+        found = s2.by_id(c.id)
+        assert found is not None, (
+            f"by_id({c.id!r}) returned None for a candidate genuinely in "
+            "the store -- clause (a) requires by_id to be TOTAL over every "
+            "id actually present"
+        )
+        assert found is c, (
+            f"by_id({c.id!r}) returned an object that is == but not `is` "
+            "the stored candidate -- clause (b) requires the SAME object, "
+            "which is what distinguishes a real index from one silently "
+            "returning stale copies"
+        )
+        checked += 2
     R.current_pins(s2)
-    _count("P29 duplicate-id readers checked", 3)
+    checked += 1
+
+    # Clause (d): an id that names no candidate is a declared absence, not
+    # a crash and not a refusal -- by_id's own signature is
+    # Optional[Candidate].
+    assert s2.by_id("f_" + "e" * 32) is None, (
+        "by_id must return None for an id that names no candidate -- its "
+        "own signature declares Optional[Candidate], not a raise"
+    )
+    checked += 1
+
+    # Clause (f): a TERMINAL candidate (superseded here) is still a live
+    # member of the id index and still returned BY IDENTITY -- I6/by_id do
+    # not treat "terminal" as "no longer indexed".
+    s3, aa, bb = _pinned_store()
+    R.supersede(s3, aa.id, bb.id, "t9", "better measurement", "op")
+    terminal = s3.by_id(aa.id)
+    assert terminal is not None and terminal.state is R.State.SUPERSEDED, (
+        "a superseded candidate must still resolve through by_id"
+    )
+    ground_truth = next(c for c in s3.all_candidates() if c.id == aa.id)
+    assert terminal is ground_truth, (
+        "a terminal candidate's lookup must return the SAME object the "
+        "store holds, not a copy"
+    )
+    checked += 1
+
+    _count("P29 duplicate-id readers checked", checked)
 
 
 def prop_P30_reserved_field_name_refused_at_every_structural_position() -> None:

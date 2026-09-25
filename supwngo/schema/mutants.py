@@ -529,6 +529,55 @@ def _jsonable_open_isinstance_list(obj: Any) -> Any:
     raise R.SchemaError(f"not canonicalisable at an open position: {t.__name__}")
 
 
+def _jsonable_open_isinstance_bytes(obj: Any) -> Any:
+    """new ``open_domain_isinstance_bytes`` (F3): ``bytes`` dispatch via
+    ``isinstance`` again, so a ``bytes`` subclass is tagged and encoded
+    identically to real ``bytes`` -- the same collision class as the
+    primitive and list mutants above, on the one remaining exact-type arm
+    F3's widened refusal table names but the pre-F3 property never
+    exercised."""
+    if obj is None:
+        return None
+    t = type(obj)
+    if t is bool or t is int or t is str:
+        return obj
+    if isinstance(obj, bytes):                               # <-- the defect
+        return {R._BYTES_TAG: R.base64.b64encode(obj).decode("ascii")}
+    if t is dict:
+        R._refuse_mapping_keys(obj)
+        return {k: _jsonable_open_isinstance_bytes(v) for k, v in sorted(obj.items())}
+    if t is list:
+        return [_jsonable_open_isinstance_bytes(v) for v in obj]
+    raise R.SchemaError(f"not canonicalisable at an open position: {t.__name__}")
+
+
+def _jsonable_open_admits_unregistered_dataclass(obj: Any) -> Any:
+    """new ``open_domain_admits_unregistered_dataclass`` (F3): adds a
+    ``dataclasses.is_dataclass(obj)`` arm to the OPEN encoder, so a plain,
+    schema-unaware dataclass placed in evidence -- something the open
+    domain must never admit, since it is caller-supplied and not
+    schema-fixed -- encodes as a mapping of its fields rather than being
+    refused, indistinguishable from a real ``dict`` carrying the same
+    keys."""
+    if obj is None:
+        return None
+    t = type(obj)
+    if t is bool or t is int or t is str:
+        return obj
+    if t is bytes:
+        return {R._BYTES_TAG: R.base64.b64encode(obj).decode("ascii")}
+    if t is dict:
+        R._refuse_mapping_keys(obj)
+        return {k: _jsonable_open_admits_unregistered_dataclass(v)
+                for k, v in sorted(obj.items())}
+    if t is list:
+        return [_jsonable_open_admits_unregistered_dataclass(v) for v in obj]
+    if dataclasses.is_dataclass(obj):                        # <-- the defect
+        return {f.name: _jsonable_open_admits_unregistered_dataclass(getattr(obj, f.name))
+                for f in dataclasses.fields(obj)}
+    raise R.SchemaError(f"not canonicalisable at an open position: {t.__name__}")
+
+
 def _jsonable_structural_bytes_tag_guards_mappings_only(obj: Any) -> Any:
     """new ``bytes_tag_guards_mappings_only`` (rev 3's original defect,
     re-bound after the positional split): the reserved bytes tag is refused
@@ -737,6 +786,22 @@ def _candidate_id_index_unchecked(store: R.FactStore) -> Dict[str, R.Candidate]:
     return {c.id: c for c in store.all_candidates()}
 
 
+def _candidate_id_index_returns_copies(store: R.FactStore) -> Dict[str, R.Candidate]:
+    """new ``_candidate_id_index_returns_copies`` (F6): keeps I6's duplicate
+    check, but indexes a STALE COPY of each candidate
+    (``dataclasses.replace(c)``) rather than the object itself.  A copy is
+    ``==`` to the original, so an assertion written with ``==`` cannot see
+    this defect at all; only the identity clause (b) -- ``by_id(cid) is
+    stored_candidate`` -- catches an index that silently stopped returning
+    the object the store actually holds."""
+    index: Dict[str, R.Candidate] = {}
+    for c in store.all_candidates():
+        if c.id in index:
+            raise R.SchemaError(f"I6 duplicate candidate id {c.id}")
+        index[c.id] = dataclasses.replace(c)               # <-- the defect
+    return index
+
+
 def _optional_name_type_only(raw: Any, what: str) -> Any:
     """Type-check an optional name but accept ``""`` -- the shipped defect.
 
@@ -912,6 +977,13 @@ MUTANTS: Dict[str, Mutant] = {
                     "their own unchecked id index, so a duplicate id that "
                     "validate_store correctly refused was silently accepted "
                     "by both"),
+        Mutant("candidate_id_index_returns_copies", "F6", "P29",
+               {"_candidate_id_index": _candidate_id_index_returns_copies},
+               note="the index still rejects duplicates but stores a "
+                    "dataclasses.replace(c) copy of each candidate rather "
+                    "than the object itself -- == cannot see this, only "
+                    "the identity clause (by_id(cid) is stored_candidate) "
+                    "can"),
         # Unit 1 (canonicalisation domain closure), §5's mutant table.
         Mutant("canonical_accepts_tuple_as_list", "unit-1 §5", "P21",
                {"_jsonable_open": _jsonable_open_accepts_tuple}),
@@ -931,6 +1003,16 @@ MUTANTS: Dict[str, Mutant] = {
                note="isinstance restored for list: a list subclass "
                     "(EvidenceList in the property) is admitted rather than "
                     "refused"),
+        Mutant("open_domain_isinstance_bytes", "F3", "P21",
+               {"_jsonable_open": _jsonable_open_isinstance_bytes},
+               note="isinstance restored for bytes: a bytes subclass is "
+                    "tagged and encoded identically to real bytes"),
+        Mutant("open_domain_admits_unregistered_dataclass", "F3", "P21",
+               {"_jsonable_open": _jsonable_open_admits_unregistered_dataclass},
+               note="a dataclasses.is_dataclass(obj) arm added to the open "
+                    "encoder: a plain, schema-unaware dataclass placed in "
+                    "evidence encodes as a mapping of its fields instead of "
+                    "being refused"),
         Mutant("bytes_tag_guards_mappings_only", "rev 3, re-bound off P21", "P30",
                {"_jsonable_structural":
                     _jsonable_structural_bytes_tag_guards_mappings_only},

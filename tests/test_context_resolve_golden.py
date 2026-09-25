@@ -243,14 +243,42 @@ def test_golden_canonical_document_small_store():
 # ---------------------------------------------------------------------------
 
 
+#: Leaves for the GENERATED purity domain below: the RETAINED
+#: (root-admissible) types this unit's vectors above also use -- None,
+#: bool, int, str, and bytes (tagged). No tuple/set/frozenset/Enum: those
+#: are refused at canonical()'s root (F1) and have no vector here for the
+#: same reason the module docstring gives.
+_LEAVES = (None, True, False, 0, 1, -5, "", "a", "b64:eA==", b"", b"x", b"\xff\x00")
+
+#: A reduced leaf set for the two itertools.product steps in
+#: _purity_domain: one of the three purity tests below runs
+#: itertools.product(domain, domain), so this generator's own fan-out
+#: directly controls that test's O(N**2) host load -- kept small on
+#: purpose, not because a bigger set would be wrong.
+_PAIR_LEAVES = (None, True, 0, 1, "", "a", b"", b"x")
+
+
 def _purity_domain():
-    """A small generated set of values drawn from the RETAINED (open-domain
-    intersection) types this unit's vectors above also use."""
-    return [
-        None, True, False, 0, 1, -5, "", "a", "b64:eA==", b"", b"x", b"\xff\x00",
-        [], [1, 2], ["a", ["b", 1]], {}, {"a": 1}, {"a": [1, {"b": None}]},
-        {"a": "1", "b": "2"}, {"b": "1", "a": "2"},
-    ]
+    """A GENERATED set of legal, retained-domain values -- built by
+    recursive/product construction, not a hand-written list (F4). C3(i) is
+    a UNIVERSAL claim ("canonical() is pure for every legal value"); a
+    fixed list can only ever be a finite sample of that claim, and can miss
+    exactly the one combination (an unlisted legal nesting, say) that a
+    call-history bug shows on and nothing else does. Two levels of
+    genuine nesting: depth 1 pairs every leaf in _PAIR_LEAVES against
+    every other one, via itertools.product rather than being enumerated by
+    hand; depth 2 nests a deterministic stride of what depth 1 just
+    produced one level further, so the GENERATOR decides what depth 2
+    covers, not a hand-picked subset of it.
+    """
+    domain = list(_LEAVES)
+    pairs = list(itertools.product(_PAIR_LEAVES, repeat=2))
+    domain.extend([a, b] for a, b in pairs)
+    domain.extend({"a": a, "b": b} for a, b in pairs)
+    for v in domain[len(_LEAVES)::16]:
+        domain.append([v])
+        domain.append({"n": v})
+    return domain
 
 
 def test_purity_repeated_calls_agree():
