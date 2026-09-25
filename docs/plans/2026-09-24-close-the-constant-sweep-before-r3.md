@@ -151,7 +151,7 @@ command the function uses.
 | `cmp $0x41` (the byte gate — gcc zero-extended into a register) | **yes** |
 | `cmp $0x1337` | yes |
 | `cmpb $0x0`, `cmpq $0x0` | **no** — suffixed mnemonics cannot match |
-| the 64-bit gate `0x1122334455` | **absent from the disassembly entirely** |
+| the 64-bit gate `0x1122334455` | no — **but see the correction in §0.4, this row was wrong** |
 
 The review's *mechanism* is real and its *example* did not reproduce. The regex is
 `\b(?:cmp|cmpl|cmpq|test)\s+\$0x…`, so `cmpb`/`cmpw` and `testb/w/l/q` cannot match it
@@ -168,6 +168,15 @@ constant with `movabs` into a register and compares registers. So `value <= 0xFF
 find at any filter setting. A recovered-only design has a **structural** blind spot for
 any gate wider than 32 bits, and widening the regex cannot close it.
 
+> **ERRATUM, and it is mine.** The two sentences above overreach and §0.4 refutes them
+> with a measurement. The constant *is* in the disassembly — as a `movabs` immediate — so
+> it is not true that "there is nothing for an immediate-scraping recoverer to find", and
+> not true that the blind spot is **structural** or that widening cannot close it. What
+> survives: the constant is never a *comparison* immediate, so the recoverer as written and
+> as scoped to `cmp`/`test` cannot see it, and the `0xFFFFFFFF` ceiling is not the
+> mechanism. The original text is left standing so the correction is auditable; read §0.4
+> for the measured position.
+
 - CLASS: *an extractor that recognises one instruction encoding of a source-level
   construct, and is described as recognising the construct.*
 - SWEEP: compile a fixture matrix — operand widths {8,16,32,64} × mnemonics
@@ -178,6 +187,65 @@ any gate wider than 32 bits, and widening the regex cannot close it.
   cells are measured; the matrix is not. Stated as owed rather than implied covered.
 
 This is why §2 below no longer claims a missed gate is *observable*.
+
+### 0.4 The fixture matrix, run — and it refutes two of §0.3's own conclusions
+
+§0.3 named this matrix as owed. It has now been run: 4 operand widths × {`cmp`,`test`} ×
+signed/unsigned × {`-O0`,`-O2`} = **32 cells**, each a separate compile, disassembled with
+the exact command `comparison_immediates()` uses, tested against the exact shipped regex.
+
+| | shipped regex | mnemonic-extended regex |
+| --- | --- | --- |
+| cells where the gate constant is recovered | **7 of 32** | **14 of 32** |
+
+**Correction 1 — "absent from the disassembly entirely" was false.** §0.3 said the 64-bit
+gate does not appear at all. It does:
+
+```
+11cf:   movabs $0x1122334455667788,%rdx
+```
+
+It appears as a **`movabs` immediate**, and is never the immediate of any `cmp`/`test`
+(verified: 0 matches against all ten comparison mnemonics). My earlier probe grepped only
+comparison mnemonics and I wrote the result up as absence from the disassembly — an
+absence claim from a search narrower than the claim. **That is the third time this session
+I have made that exact error, and I wrote the rule against it myself** (§6.1b of the review
+protocol: *a refuting instrument must be at least as wide as the claim it tests*). I had
+been applying it to reviewers' rejections and not to my own measurements.
+
+**Correction 2 — so "structurally out of reach, widening the regex cannot close it" is
+also wrong.** A recoverer that scraped `movabs` immediates would find it. The honest
+statement is narrower and less dramatic: *64-bit gates are unreachable by an
+immediate-scraper keyed on comparison mnemonics, and reachable only by also reading
+`movabs`/`mov` immediates, which trades a blind spot for a large increase in noise.* That
+is a design tradeoff, not a wall. The C option in §2 no longer gets to lean on the word
+"structural".
+
+**Three findings the matrix produced that no one had, and the third is the important one:**
+
+1. **Optimisation level flips recoverability.** 8- and 16-bit `cmp` gates are recovered at
+   `-O0` and **not** at `-O2`, because `-O2` emits the suffixed `cmpb`/`cmpw` forms. The
+   same source gate, same constant, different build flags, opposite outcome. So a corpus's
+   build flags partly determine whether this technique can work at all — which makes the
+   R3/R4/R5 build configuration a variable that has to be recorded with the results.
+2. **Extending the mnemonic alternation is worth exactly 7 of 32 cells** (7 → 14), and it
+   is the cheapest change in this plan. But it still leaves 18 cells unrecovered, most of
+   them `test`-form gates, so it is an improvement and not a fix.
+3. **`cmp`, `cmpb` and `cmpq` immediates are present in all 32 cells — including the ones
+   where the gate is not recovered.** They come from libc startup and the `scanf` path, not
+   from the gate. This is the measured form of the round-1 MAJOR-4 finding, and it is worse
+   than the review argued: a status of `CANDIDATES_FOUND` is true for **every binary in the
+   matrix**, whether or not its gate was found. An `is_applicable` predicating on that
+   status would essentially **never** skip. Rev 1's declared-skip design would have fired
+   approximately never, and the "126 deliveries saved" benefit with it. The retraction in
+   §2A′ is therefore not merely honest — it was forced.
+
+**A defect in my own fixture, disclosed rather than dropped.** The two `w8 signed cmp`
+cells report the constant absent as an immediate because `0xA7` = 167 is outside `signed
+char` range, so gcc proves the comparison always false and elides it. That is a bad
+fixture cell, not a tool finding. The matrix is 30 informative cells and 2 degenerate ones;
+the recovery counts above are over all 32, so they understate the shipped regex slightly.
+Rerun those two cells with an in-range constant before quoting 7/32 anywhere else.
 
 ## 1. Does removing the folklore constants cost real credit?
 
@@ -347,17 +415,22 @@ no immediate at all. So this section's scope is now explicitly:
 | gap | closed here? |
 | --- | --- |
 | `value >= 0x100` floor discarding small gates | yes — via partitioned selection |
-| `cmpb`/`cmpw`/`testb`/`testw`/`testl`/`testq` unmatched | yes — extend the mnemonic alternation, gated on the §0.3 fixture matrix |
-| `value <= 0xFFFFFFFF` ceiling | **moot** — see below |
-| gates wider than 32 bits | **NO — structurally out of reach.** Disclosed, not fixed. |
+| `cmpb`/`cmpw`/`testb`/`testw`/`testl`/`testq` unmatched | yes — extend the alternation. **Measured gain: 7 of 32 cells** (§0.4) |
+| `value <= 0xFFFFFFFF` ceiling | **moot**, but not for the reason rev 2 first gave — see below |
+| gates wider than 32 bits | **no** — reachable only by also scraping `movabs`. A tradeoff, not a wall. Disclosed, not fixed. |
 
 The ceiling is moot because a 64-bit constant is materialised by `movabs` and compared
-register-to-register, so it is never an immediate to begin with. Raising the ceiling would
-look like closing that gap while closing nothing — the same shape as rev 1's own §0
-finding about calling `comparison_immediates()` and changing nothing. **The 64-bit case is
-recorded as a known limitation of the recovered-only design, and it is the strongest
-argument for keeping option C on the table** for a future corpus where a fixture can settle
-it.
+register-to-register, so it is never a *comparison* immediate — raising the ceiling alone
+closes nothing, which is the same shape as rev 1's §0 finding about calling
+`comparison_immediates()` and changing nothing.
+
+But §0.4 corrects the stronger claim this section made in its first draft: the constant
+**is** present in the disassembly, as `movabs $0x…`, so 64-bit gates are *not*
+structurally out of reach — they are reachable by widening the scrape to `movabs`/`mov`
+immediates, at the cost of a large increase in noise. That is a design tradeoff to take
+deliberately later, not a limitation to hide behind now. **The honest argument for keeping
+option C on the table is the 18-of-32 unrecovered cells and the `-O2` flip, not an
+imaginary wall.**
 
 **Forward consistency with §1**, which the review flagged: §1 argues `13_off_by_one`'s
 `0xdeadbeef` is not recoverable, and its only comparisons are `$0x0`, `$0x20`, `$0x0`.
@@ -591,9 +664,20 @@ INSTANCE §2C's flip condition
 CLASS    adaptive development against a corpus reserved for cold measurement
 SWEEP    scan this plan and the R5 spec for any other clause conditioning a design
          or parameter choice on a held-out observation
-OTHERS   none found in this plan. NOT swept against the R5 spec yet - that document
-         is not mine to revise in this commit, and the check is recorded as owed
-         rather than reported clean.
+OTHERS   none in this plan. The R5-spec scan is now RUN (it was owed): one match in
+         364 lines, and it is the PROHIBITION, not a violation - "if the pipeline is
+         then tuned against R5 and re-measured on R5, the result is no longer
+         held-out". That spec's Problem 2 already states the single-use policy,
+         recommends measure-once, and lists confirmation of it as an open decision
+         for the maintainer. So rev 1's flip clause did not merely slip - it
+         CONTRADICTED the governing policy in the document it cites as its own
+         blocker, which is worse than a local error and is why it was withdrawn
+         outright rather than qualified.
+         Sweep identity and limit, stated: the scan matched adaptation PHRASINGS
+         (if/after/once R3-R5, then tune/adjust/revisit/switch/flip, retune,
+         iterate on). It cannot see an adaptation expressed without those verbs.
+         It is an aid, not a proof; the binding control is the freeze-and-hash in
+         §2C, which does not depend on having found every such sentence.
 SCOPE    equal and binding: freeze-and-hash the implementation and configuration
          before R3 is unsealed, record the hash with the results, and prohibit any
          policy change, re-run or tuning between or during R3/R4/R5.
@@ -620,6 +704,23 @@ argued in prose.
 
 **Round-1 recurrence check:** this is round 1, so no class can be a recurrence. The
 tripwire for round 2 is any finding whose class appears in §6 — that would mean a sweep
-above was skipped. Three sweeps are explicitly **owed and unrun** (§0.3's fixture matrix,
-M9's scan of the R5 spec, and §4.8's post-change re-run); they are named so that a round-2
-finding landing in one of them reads as *owed*, not as *new*.
+above was skipped.
+
+Of the three sweeps rev 2 first recorded as owed, **two are now run and reported**:
+
+| owed sweep | status |
+| --- | --- |
+| §0.3 encoding fixture matrix | **RUN** — §0.4. Refuted two of §0.3's own conclusions. |
+| M9 scan of the R5 spec | **RUN** — clean, and it reframed M9 as a policy contradiction. |
+| §4.8 post-change sweep re-run | **still owed** — cannot run before the change exists. |
+
+The third is owed by construction rather than by omission, and it is named so a round-2
+finding there reads as *sequenced*, not as *skipped*.
+
+**One class recurred inside this very revision, and it is mine.** §0.4's Correction 1 is
+the third instance this session of *asserting absence from a search narrower than the
+claim* — the rule I wrote into §6.1b of the review protocol. Rev 2 caught it only because
+the matrix was run. Had the matrix stayed "owed", a false "absent from the disassembly
+entirely" would have gone to round 2 as a finished finding. **The lesson for the round
+budget: a sweep recorded as owed is not a mitigated risk, it is an unmeasured claim still
+standing in the document.**
