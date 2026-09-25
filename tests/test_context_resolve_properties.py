@@ -1568,7 +1568,91 @@ def prop_P21_canonicalisation_is_injective() -> None:
             raise AssertionError(
                 f"canonical accepted {hostile!r}; a coerced or spoofable key is "
                 "a digest collision waiting to happen")
+
+    # ---- The open domain (§4a/§4b), exercised end to end through the real
+    # ---- pipeline: Observation.evidence's values, not the encoder called
+    # ---- directly, so a future change to how evidence reaches the encoder
+    # ---- is covered too.  "evidence_value_type" is the dimension this half
+    # ---- varies (test-local only: there is no runtime copy of it).
+    def _evidence_canonical(value: Any) -> str:
+        return R.canonical(R.Observation("t1", (("k", value),)))
+
+    # Negative controls: legal open values that must NOT collide and must
+    # NOT be refused.
+    legal_open_values = [1, True, None, "None", b"x", "b64:eA==", [1, 2],
+                         {"a": 1}, "1", 0]
+    seen_open: Dict[str, Any] = {}
+    for value in legal_open_values:
+        # A legal value must canonicalise cleanly.  Diagnosed here rather
+        # than left to crash: a mutant that widens the gate too far (e.g.
+        # ``evidence_gate_type_only``, which stops tagging bytes) makes a
+        # LEGAL value reach json.dumps unencoded and raise TypeError, which
+        # is a property violation, not an escape.
+        try:
+            enc = _evidence_canonical(value)
+        except Exception as exc:  # noqa: BLE001 - any exception here is the bug
+            raise AssertionError(
+                f"a legal open-domain value {value!r} was not "
+                f"canonicalisable: {type(exc).__name__}: {exc}"
+            ) from exc
+        assert enc not in seen_open, (
+            f"open-domain collision: {value!r} and {seen_open[enc]!r} both "
+            f"encode as {enc}"
+        )
+        seen_open[enc] = value
+
+    # Root AND nested IntEnum/StrEnum (§8 item 8): regression evidence that
+    # the domain is closed, not the mechanism that closes it -- the
+    # mechanism is exact-type dispatch (§4b); this proves the refusal
+    # survived, at the root and one level down inside a list or mapping.
+    class _ProbeIntEnum(R.enum.IntEnum):
+        THREE = 3
+
+    class _ProbeStrEnum(str, R.enum.Enum):
+        HELLO = "hello"
+
+    # A list subclass (§8 item 14's witness) and two hostile container
+    # subclasses, alongside the enum members, tuple, set and frozenset --
+    # every one of them is refused rather than silently encoded as the type
+    # it resembles.
+    class EvidenceList(list):
+        pass
+
+    class _HostileDict(dict):
+        pass
+
+    refused_open_values = [
+        _ProbeIntEnum.THREE,             # collides with plain int 3
+        _ProbeStrEnum.HELLO,             # collides with plain str "hello"
+        [_ProbeIntEnum.THREE],           # nested: same collision, one level down
+        {"n": _ProbeIntEnum.THREE},
+        [_ProbeStrEnum.HELLO],
+        {"s": _ProbeStrEnum.HELLO},
+        (1, 2),                          # collides with the list [1, 2]
+        {1, 2},
+        frozenset({1, 2}),
+        EvidenceList([1, 2]),            # collides with a real list
+        _HostileDict({"a": 1}),          # collides with a real dict
+        3.5,
+    ]
+    for value in refused_open_values:
+        try:
+            _evidence_canonical(value)
+        except R.SchemaError:
+            continue
+        except Exception as exc:  # noqa: BLE001 - the wrong type IS the bug
+            raise AssertionError(
+                f"{value!r} raised {type(exc).__name__} instead of "
+                f"SchemaError at an open position: {exc}"
+            ) from exc
+        raise AssertionError(
+            f"{value!r} reached an open position uncaught -- an enum "
+            "member, a tuple/set, or a builtin subclass can collide "
+            "with the type it resembles"
+        )
     _count("P21 distinct evidence values", len(seen))
+    _count("P21 open-domain values checked",
+          len(seen_open) + len(refused_open_values))
 
 
 def _pinned_store() -> Tuple[R.FactStore, R.Candidate, R.Candidate]:
@@ -2155,6 +2239,61 @@ def prop_P29_candidate_id_index_is_a_bijection() -> None:
     _count("P29 duplicate-id readers checked", 3)
 
 
+def prop_P30_reserved_field_name_refused_at_every_structural_position() -> None:
+    """``bytes_tag_guards_mappings_only`` (rev 3's original defect,
+    re-bound off P21 after the positional split, §8 item 15): a structural
+    dataclass field named the reserved bytes tag is refused, not just a
+    mapping key spelled that way.
+
+    None of the module's real dataclasses carries that name -- C7's
+    mechanical check already measures that -- so a synthetic hostile
+    dataclass is what exercises the runtime backstop for the same rule.
+    """
+    hostile_type = dataclasses.make_dataclass(
+        "_HostileBytesSpoof", [(R._BYTES_TAG, str)], frozen=True)
+    hostile = hostile_type(**{R._BYTES_TAG: "not real bytes"})
+    try:
+        R._jsonable_structural(hostile)
+    except R.SchemaError:
+        pass
+    else:
+        raise AssertionError(
+            "a structural dataclass field named the reserved bytes tag was "
+            "encoded rather than refused; it is indistinguishable from a "
+            "real bytes value once serialised"
+        )
+    # The control: the same field name is still refused as a mapping key,
+    # which is the half of the rule that was never broken.
+    with pytest.raises(R.SchemaError):
+        R._jsonable_structural({R._BYTES_TAG: "spoof"})
+    _count("P30 hostile structural positions checked", 2)
+
+
+def prop_P31_observation_merge_preserves_distinct_values() -> None:
+    """``observation_dedup_ignores_values`` (unit-1 §5): two observations at
+    the SAME timestamp, with the same evidence field name but genuinely
+    different, always-legal values, are two distinct facts and merge must
+    keep both.
+
+    Deliberately independent of whether canonicalisation itself is broken:
+    ``size=8`` and ``size=16`` were never confusable, so the only way to
+    lose one is to dedup observations on something narrower than their full
+    content.
+    """
+    s = R.FactStore()
+    R.merge(s, {**raw(), "observations": [{"at": "t1", "evidence": {"size": 8}}]})
+    R.merge(s, {**raw(), "observations": [{"at": "t1", "evidence": {"size": 16}}]})
+    c = s.active(KEY)[0]
+    assert len(c.observations) == 2, (
+        f"two observations with distinct evidence at the same timestamp "
+        f"collapsed into {len(c.observations)}; dedup must be on full "
+        "content, not on (at, evidence field names) alone"
+    )
+    sizes = {dict(o.evidence).get("size") for o in c.observations}
+    assert sizes == {8, 16}, f"expected size=8 and size=16 to both survive, got {sizes}"
+    _count("P31 observations checked", len(c.observations))
+
+
 PROPERTIES = {
     "P1": prop_P1_merge_totality_and_semantics,
     "P1b": prop_P1b_validation_is_the_only_raiser,
@@ -2187,6 +2326,8 @@ PROPERTIES = {
     "P27": prop_P27_every_invariant_has_a_positive_control,
     "P28": prop_P28_every_context_consumer_validates_it,
     "P29": prop_P29_candidate_id_index_is_a_bijection,
+    "P30": prop_P30_reserved_field_name_refused_at_every_structural_position,
+    "P31": prop_P31_observation_merge_preserves_distinct_values,
 }
 
 
@@ -2582,6 +2723,12 @@ DIMENSIONS: Tuple[str, ...] = (
     # resolve context
     "context_identities", "context_identity_mode", "context_conditions",
     "context_binding",
+    #: unit-1 (canonicalisation domain closure): the TYPE of an evidence
+    #: value at the one open position (§4a) -- int vs IntEnum, str vs
+    #: StrEnum, list vs a list subclass, list vs tuple, and so on.  Test-local
+    #: only: there is no runtime copy of this dimension in resolve.py, it
+    #: exists purely to make P21's open-domain coverage auditable here.
+    "evidence_value_type",
 )
 
 #: ``dimension -> the single property that varies it``, filled in by the breadth
@@ -2660,7 +2807,7 @@ NARROWNESS: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...]]] = {
     "P20": (("generation", "arrival_order", "terminal_sibling", "candidate_id"),
             ("value", "provenance", "scope", "identity", "conditions",
              "fact_key")),
-    "P21": (("evidence",),
+    "P21": (("evidence", "evidence_value_type"),
             ("value", "provenance", "scope", "fact_key")),
     "P22": (("log_record_shape", "state", "fact_key", "candidate_id"),
             ("value", "provenance", "scope", "identity", "conditions",
@@ -2684,6 +2831,11 @@ NARROWNESS: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...]]] = {
              "context_binding"),
             ("value", "provenance", "scope", "store_size", "fact_key")),
     "P29": (("candidate_id", "state", "dedup_collision"),
+            ("value", "provenance", "scope", "identity", "conditions",
+             "fact_key")),
+    "P30": (("evidence_value_type",),
+            ("value", "provenance", "scope", "fact_key")),
+    "P31": (("observation_at", "evidence"),
             ("value", "provenance", "scope", "identity", "conditions",
              "fact_key")),
 }

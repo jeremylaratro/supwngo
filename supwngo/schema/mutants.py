@@ -444,6 +444,141 @@ def _jsonable_coerces_keys(obj: Any) -> Any:
     raise R.SchemaError(f"not canonicalisable: {type(obj).__name__}")
 
 
+# ---------------------------------------------------------------------------
+# Unit 1 (canonicalisation domain closure): the open-domain mutants, all
+# bound to P21, and all sharing one shape -- ``_jsonable_open`` reimplemented
+# with exactly one arm widened back to its pre-split, isinstance-based or
+# unchecked form.  Each is "today's pristine behaviour" for the one arm it
+# touches, per the unit-1 plan's §5 table.
+# ---------------------------------------------------------------------------
+
+
+def _jsonable_open_accepts_tuple(obj: Any) -> Any:
+    """new ``canonical_accepts_tuple_as_list``: admit ``tuple`` and encode it
+    as a list, while every other arm stays exact-type.  One type at a time,
+    so P21 cannot pass by catching a different type."""
+    if obj is None:
+        return None
+    t = type(obj)
+    if t is bool or t is int or t is str:
+        return obj
+    if t is bytes:
+        return {R._BYTES_TAG: R.base64.b64encode(obj).decode("ascii")}
+    if t is dict:
+        R._refuse_mapping_keys(obj)
+        return {k: _jsonable_open_accepts_tuple(v) for k, v in sorted(obj.items())}
+    if t is list or t is tuple:                      # <-- the defect
+        return [_jsonable_open_accepts_tuple(v) for v in obj]
+    raise R.SchemaError(f"not canonicalisable at an open position: {t.__name__}")
+
+
+def _jsonable_open_type_only(obj: Any) -> Any:
+    """``evidence_gate_type_only``, no longer ``breaks=None``: check the
+    value is not a ``float`` and accept anything else, unrecursed.
+
+    Under the old, single-function architecture this was masked -- a second,
+    separately-closed encoder still refused the object downstream, so the
+    property went red for the *other* layer's reason and the mutant proved
+    nothing about the gate.  After the positional split there is exactly one
+    function, used at both the evidence gate and the final encoding, so
+    patching it here changes both: a tuple placed in evidence is no longer
+    refused by anything, and ``json.dumps`` happily serialises it as an
+    array indistinguishable from a real list.
+    """
+    if isinstance(obj, float):
+        raise R.SchemaError("floats are not canonicalisable")
+    return obj
+
+
+def _jsonable_open_isinstance_primitives(obj: Any) -> Any:
+    """The primitive half of §4b's isinstance-restored diagnosis: ``int``/
+    ``bool``/``str`` dispatch via ``isinstance`` again, so an
+    ``IntEnum``/``StrEnum`` member -- itself an int/str subclass -- reaches
+    the primitive arm and collides with the plain value it wraps, both at
+    the root and nested inside a list or mapping value."""
+    if obj is None or isinstance(obj, (bool, int, str)):    # <-- the defect
+        return obj
+    t = type(obj)
+    if t is bytes:
+        return {R._BYTES_TAG: R.base64.b64encode(obj).decode("ascii")}
+    if t is dict:
+        R._refuse_mapping_keys(obj)
+        return {k: _jsonable_open_isinstance_primitives(v)
+                for k, v in sorted(obj.items())}
+    if t is list:
+        return [_jsonable_open_isinstance_primitives(v) for v in obj]
+    raise R.SchemaError(f"not canonicalisable at an open position: {t.__name__}")
+
+
+def _jsonable_open_isinstance_list(obj: Any) -> Any:
+    """The container half (§8 item 14): ``list`` dispatch via ``isinstance``
+    again, so a ``list`` subclass (the witness is ``EvidenceList`` in the
+    property) is silently admitted rather than refused."""
+    if obj is None:
+        return None
+    t = type(obj)
+    if t is bool or t is int or t is str:
+        return obj
+    if t is bytes:
+        return {R._BYTES_TAG: R.base64.b64encode(obj).decode("ascii")}
+    if t is dict:
+        R._refuse_mapping_keys(obj)
+        return {k: _jsonable_open_isinstance_list(v) for k, v in sorted(obj.items())}
+    if isinstance(obj, list):                                # <-- the defect
+        return [_jsonable_open_isinstance_list(v) for v in obj]
+    raise R.SchemaError(f"not canonicalisable at an open position: {t.__name__}")
+
+
+def _jsonable_structural_bytes_tag_guards_mappings_only(obj: Any) -> Any:
+    """new ``bytes_tag_guards_mappings_only`` (rev 3's original defect,
+    re-bound after the positional split): the reserved bytes tag is refused
+    as a *mapping key* but not as a *structural dataclass field name*, so a
+    hostile dataclass can still spoof the shape real ``bytes`` encodes to."""
+    if isinstance(obj, R.enum.Enum):
+        return obj.value
+    if obj is None:
+        return None
+    t = type(obj)
+    if t is bool or t is int or t is str:
+        return obj
+    if t is bytes:
+        return {R._BYTES_TAG: R.base64.b64encode(obj).decode("ascii")}
+    if dataclasses.is_dataclass(obj):
+        open_fields = R._STRUCTURAL_OPEN_FIELDS.get(type(obj), frozenset())
+        result: Dict[str, Any] = {}
+        for f in dataclasses.fields(obj):
+            # <-- the defect: no reserved-tag guard on the field name here
+            value = getattr(obj, f.name)
+            if f.name in open_fields:
+                result[f.name] = R._jsonable_evidence_field(value)
+            else:
+                result[f.name] = _jsonable_structural_bytes_tag_guards_mappings_only(value)
+        return result
+    if t is dict:
+        R._refuse_mapping_keys(obj)
+        return {k: _jsonable_structural_bytes_tag_guards_mappings_only(v)
+                for k, v in sorted(obj.items())}
+    if t is tuple or t is list:
+        return [_jsonable_structural_bytes_tag_guards_mappings_only(v) for v in obj]
+    raise R.SchemaError(f"not canonicalisable at a structural position: {t.__name__}")
+
+
+def _merge_observations_ignores_values(existing: Sequence[R.Observation],
+                                       incoming: Sequence[R.Observation]):
+    """new ``observation_dedup_ignores_values``: dedup on ``(at, evidence
+    field NAMES)`` rather than the full digest, so two observations at the
+    same timestamp with the same field name but genuinely different values
+    -- ``size=8`` and ``size=16``, always legal, never confusable -- collapse
+    into one."""
+    def key(o: R.Observation):
+        return (o.at, frozenset(name for name, _ in o.evidence))
+
+    by_key = {key(o): o for o in existing}
+    for o in incoming:
+        by_key.setdefault(key(o), o)
+    return tuple(sorted(by_key.values(), key=lambda o: (o.at, o.digest())))
+
+
 def _validate_log_shape_only(store: R.FactStore) -> None:
     """Round-3 finding 5: check the *shape* of a log record and nothing else.
 
@@ -699,5 +834,33 @@ MUTANTS: Dict[str, Mutant] = {
                     "their own unchecked id index, so a duplicate id that "
                     "validate_store correctly refused was silently accepted "
                     "by both"),
+        # Unit 1 (canonicalisation domain closure), §5's mutant table.
+        Mutant("canonical_accepts_tuple_as_list", "unit-1 §5", "P21",
+               {"_jsonable_open": _jsonable_open_accepts_tuple}),
+        Mutant("evidence_gate_type_only", "unit-1 §5, rev 6 un-masked", "P21",
+               {"_jsonable_open": _jsonable_open_type_only},
+               note="rev 5 registered this breaks=None because a second, "
+                    "separately-closed layer still caught the object; after "
+                    "the positional split there is one function for both "
+                    "the gate and the encoding, so this is no longer masked"),
+        Mutant("open_domain_isinstance_primitives", "unit-1 §8 item 8", "P21",
+               {"_jsonable_open": _jsonable_open_isinstance_primitives},
+               note="isinstance restored for int/bool/str: an IntEnum/"
+                    "StrEnum member, root or nested, reaches the primitive "
+                    "arm and collides with the plain value it wraps"),
+        Mutant("open_domain_isinstance_list", "unit-1 §8 item 14", "P21",
+               {"_jsonable_open": _jsonable_open_isinstance_list},
+               note="isinstance restored for list: a list subclass "
+                    "(EvidenceList in the property) is admitted rather than "
+                    "refused"),
+        Mutant("bytes_tag_guards_mappings_only", "rev 3, re-bound off P21", "P30",
+               {"_jsonable_structural":
+                    _jsonable_structural_bytes_tag_guards_mappings_only},
+               note="cannot bind to P21 after the positional split -- P21 is "
+                    "now an open-domain property and this is a structural-arm "
+                    "defect -- so it binds to a helper property with a "
+                    "synthetic hostile dataclass"),
+        Mutant("observation_dedup_ignores_values", "unit-1 §5", "P31",
+               {"_merge_observations": _merge_observations_ignores_values}),
     ]
 }
