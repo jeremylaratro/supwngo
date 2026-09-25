@@ -1,30 +1,21 @@
 # Close the folklore-constant sweep before R3
 
 Date: 2026-09-24
-Status: **PLAN, revision 3 — NOT YET APPROVED.** Two independent reviews, both
-NOT-APPROVED:
-- round 1 (of rev 1): 3 BLOCKING, 6 MAJOR, 1 MINOR —
-  `docs/reviews/2026-09-24-close-the-constant-sweep-plan-review-round1-sol.md`
-- round 2 (of rev 2): **9 of 10 round-1 findings returned as RECURRENCE**, plus 11 new —
-  `docs/reviews/2026-09-24-close-the-constant-sweep-plan-review-round2-sol.md`
+Status: **DEFERRED — not blocking anything.** Closed out 2026-09-24 by maintainer
+decision: the provenance/token machinery this plan had grown into is compliance-shaped
+overengineering for a binary-exploitation tool, and the folklore constants stay as they
+are for now. **No code change is being made.**
 
-Rev 3 is **partial**: it corrects the factual and procedural defects round 2 found
-(§0.1's erratum, the held-out scoping control, the round accounting, the stale counts) and
-retains §6's round-1 answers. **It does not yet contain the redesign round 2 requires** —
-recovery-minted, binary-bound candidate tokens through one unavoidable delivery API, in
-place of the value-membership check in §2A′. That section is still the rev-2 text and is
-known-insufficient; see §7.
+**This plan no longer gates R3, R4 or R5.** Those cold measurements are unblocked.
 
-**ROUND ACCOUNTING, corrected.** Rev 2 declared itself "round 1 of a 3-round budget"
-and concluded that no finding could be a recurrence. That was wrong and the round-2
-reviewer was right to call it a control failure rather than a wording slip: rev 1 drew
-round 1, rev 2 drew **round 2**, and round 2 returned **9 of 10 round-1 findings as
-RECURRENCE**. A document that miscounts its own round cannot trip the escalation rule it
-is governed by. **This is revision 3, answering round 2. One round remains; round 4
-escalates to the maintainer rather than proceeding.**
-Blocks: the cold measurement of **R3, R4 and R5** (see
-`2026-09-24-final-round-r5-unseen-corpus.md`, "Both preconditions above govern R3 and
-R4").
+Two reviews were run before the deferral and are preserved, because their *engineering*
+findings are real and worth having if this is ever picked up:
+- `docs/reviews/2026-09-24-close-the-constant-sweep-plan-review-round1-sol.md`
+- `docs/reviews/2026-09-24-close-the-constant-sweep-plan-review-round2-sol.md`
+
+Everything below §9 is the historical working record — the design argument, three rounds of
+self-correction, and the errata. It is kept for the measured facts in it, not as a proposal.
+**Read §9 first; it is the only part with forward value.**
 
 ---
 
@@ -943,3 +934,51 @@ matter; only the first blocks R3/R4/R5.
 
 This inventory does not decide between them. It does make option B's cost fully known and
 option A's cost larger than stated, which is information the §7 decision should have.
+
+
+---
+
+## 9. Deferred. The parts worth keeping, and the one number that makes it safe to defer
+
+**What makes the deferral cheap, measured rather than argued:** `variable_overwrite` has won
+**0 of 17** credited targets across R1 and R2. The folklore list has never once been the
+reason a target counted as solved. So there is no contaminated figure to go back and
+annotate, and no published number changes because of this decision. If that ever stops being
+true — if `variable_overwrite` starts winning targets — that is the signal to reopen, and it
+will show up in the per-technique credit table without anyone looking for it.
+
+**Five real bugs found while investigating this. None is an "integrity control"; all are
+ordinary defects, and they will still be here later.**
+
+1. **`comparison_immediates()`'s docstring is false.** It claims the folklore list is used
+   "when objdump is unavailable or yields nothing usable"; the append loop sits outside the
+   `try/except` and runs **always** (`input_shape_techniques.py:104`). Any future reader
+   trusting the docstring will be wrong about what the function does.
+2. **`proc.returncode` is never checked** (`input_shape_techniques.py:~92`). The function
+   decodes `proc.stdout` regardless, so a failed `objdump` looks exactly like a binary with
+   no comparisons. One-line fix, unrelated to anything in this plan.
+3. **`-O2` silently breaks constant recovery for small gates.** Measured across 32 compiled
+   cells: 8- and 16-bit `cmp` gates are recovered at `-O0` and **not** at `-O2`, which emits
+   the suffixed `cmpb`/`cmpw` forms the regex cannot match. Extending the mnemonic list is
+   worth **7 of 32 cells** and is the cheapest real improvement available here. Reproduce
+   with `benchmark/tools/gate_encoding_matrix.py`.
+4. **64-bit gate constants are invisible to it**, because they are materialised by `movabs`
+   and compared register-to-register, so they are never a comparison immediate at all.
+5. **The `>= 0x100` floor cannot simply be removed**, because selection is
+   `sorted(...)[:24]`: dropping the floor lets `0`, `1` and loop bounds fill the 24 slots and
+   evict the real gate. Floor and truncation have to move together or not at all.
+
+**One structural note for whoever picks this up:** there are **two** live delivery paths, not
+one — `verifier.verify_payload()` on the pipeline (what the benchmark measures) and
+`_test_variable_overwrite()` in `enhanced_auto.py` (live via `cli.py:328`/`:416`, the
+`exploit` command). And `comparison_immediates()` has exactly **one** real caller,
+`NegativeIndexWriteExecutor` at `input_shape_techniques.py:240` — `VariableOverwriteExecutor`
+does not call it at all. Anything done here has to account for both paths or say in writing
+that it does not.
+
+**Process lesson, recorded once and not elaborated.** This plan consumed two review rounds
+and three self-corrections and produced no code. The cause was not the reviews; it was that I
+let a small, measured problem — a technique that guesses from a list and has never won
+anything — grow a contract, a token scheme and a status enum. **The fix was always either
+"delete nine constants" or "leave them."** Next time a plan's remedy section is longer than
+its evidence section, that is the signal to stop and ask rather than revise.
