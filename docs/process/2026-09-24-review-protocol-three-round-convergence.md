@@ -510,9 +510,37 @@ recurrence.
 
 Paste and fill. The bracketed items are the only parts that change.
 
+**The scope exclusion below is mandatory and goes in every brief, not only review
+briefs — agent prompts and plan briefs too.** It exists because a reviewer's headline
+recommendation on one plan was recovery-minted, binary-digest-bound candidate tokens
+through a single unavoidable delivery API with fault injection proving every route
+rejects wrong-source tokens — for a function that guesses nine CTF constants. **The
+author adopted it**, wrote it in as "the right shape", and spent two review rounds and
+three self-corrections producing no code. Reviewers reliably supply a
+compliance-and-hardening frame for offensive tooling unless told not to, and the author
+is the one who has to refuse it.
+
 ```
 You are the independent reviewer for [ARTIFACT] at [PATH/COMMIT]. You did not write
 it and have no stake in it being approved.
+
+OUT OF SCOPE — do not raise findings in these categories. The security, hardening and
+trustworthiness of THIS TOOL is explicitly out of scope. This is offensive security
+tooling for authorised binary exploitation, not a system under compliance review. Do
+NOT propose: provenance or attestation schemes, token minting, capability binding,
+digest-bound handles, tamper-evidence, forgery resistance, audit trails, trust
+boundaries internal to the tool, or defence-in-depth over the tool's own internals.
+Findings must be about CORRECTNESS, CAPABILITY and MEASUREMENT VALIDITY: does the code
+do what it says, does the technique work, does the number mean what it claims. If a
+finding's remedy is a control rather than a fix, it is out of scope — say so and move
+on.
+
+And note where measurement problems get fixed: if a benchmark figure is
+untrustworthy, the cheaper remedy is almost always in the CORPUS or the SCORING, not in
+a control over the tool. A heuristic that tries known-common values is a FEATURE of an
+exploitation tool; a corpus that uses those same values as its own answers is the
+defect. Prefer the remedy that changes the measurement over the one that constrains the
+tool.
 
 This repo converges reviews in three rounds. The single thing that has ever broken
 that is a reviewer reporting an INSTANCE where the defect was a CLASS: the revision
