@@ -279,6 +279,21 @@ Three consequences, all cheap:
   that nobody later writes a gate asserting "dangling entries are skipped" and
   collects a vacuous pass out of code that cannot execute.
 
+**The sweep tool needs the same scrutiny as the code it sweeps**, and the usual failure
+is that it keys on the wrong identity. A consumer-detector looking for a field's *name*
+as a key reported `payload` unread; `to_dict()` emits `payload_len = len(self.payload)`
+— consumed, under a different name, and deliberately a length so that raw payload bytes
+cannot carry the run's secret flag into `report.json`. **A name-keyed detector
+over-reports**, which is the concrete mechanism behind "candidates, not findings": raw
+hits are unreliable because the detector's notion of identity is narrower than the
+code's.
+
+So state, with any sweep: what identity it matches on, and what it therefore cannot see.
+And state its **scope** positively — the same sweep covered engine attributes and was
+explicitly *not* claimed to cover fields on a public library class, where "no internal
+reader" is not by itself a defect. Scope stated is scope auditable; scope implied reads
+as coverage.
+
 **And the symmetric hazard, which is the one that bites the careful reviser: a
 REJECTION is also a candidate until checked.** A reviser came one step from reporting
 a reviewer error, because the script it wrote to refute the finding used a regex
