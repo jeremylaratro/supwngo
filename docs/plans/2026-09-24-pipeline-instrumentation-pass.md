@@ -890,6 +890,33 @@ supports a subset of legs and is silent on the rest, and the erratum above reduc
 subset further: I2's prologue half is unobservable by any run, and I5 leg 1 has no subject
 in R1. A green re-run here means "no regression", nothing more.
 
+## 5.4b R2 re-run result
+
+**R2 re-run `benchmark/results_r2/20260925-000613Z`**, same two fixes, configuration
+asserted like-for-like against the cold baseline (jobs 8, reps 5, timeout 20.0,
+non-strict).
+
+**4/15 credited, reproducing the cold figure exactly: 0 per-target differences**, `VOID`
+empty in both, and the same four winners by the same techniques — `07_static_ret2syscall`
+(srop), `10_ret2csu_execve` (ret2libc_leak), `13_off_by_one_retaddr_lsb` (ret2win),
+`15_ret2win_arg_gate` (ret2libc_leak).
+
+**Divergence: 15 deterministic, 0 DIVERGENT, 0 undetermined** — reproducing the original
+15/15-deterministic finding that ruled out probe truncation as a *flake*. It is reproduced
+post-fix, so that finding survives the two fixes intact.
+
+**What the two re-runs jointly establish.** Neither the poisoned-`pwnlib` import nor the
+shared gadget cache contributed to either published figure: R1 is unchanged at 13/13 and
+R2 is unchanged at 4/15, per target. **The cold 4/15 is therefore not an artefact of either
+bug**, which is the substantive measurement result and is consistent with §5.5's finding
+that a benchmark process is structurally the wrong shape for the import bug.
+
+**I5 leg 1 discharged, and it is R2's subject as the erratum said.** 11 occurrences of the
+sweep-exhaustion `failure_reason`, reading *"exhausted all 14 buffer sizes x 9 magic values
+from the fixed candidate list; no combination was confirmed"* — 11 of R2's 11
+`variable_overwrite` FAILED outcomes, matching the recorded "cause of 11 of 11 R2
+failures". Durations vary: 67 distinct values of 67.
+
 ## 5.4 Pre-registered trigger for the F3 confound arm
 
 **Registered before the re-run, so the decision is not made after seeing which answer is
