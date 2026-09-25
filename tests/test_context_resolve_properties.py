@@ -2412,6 +2412,109 @@ def prop_P32_structural_dataclass_arm_is_exact_type() -> None:
     _count("P32 structural dataclass types checked", checked)
 
 
+def prop_P33_structural_field_types_table_is_complete() -> None:
+    """C7 / F1-F2-F5's enforcement table: every registered structural
+    dataclass's DECLARED (non-open) field must have an entry in
+    ``R._STRUCTURAL_FIELD_TYPES[cls]`` -- the completeness invariant
+    ``_build_structural_field_types`` is supposed to establish once at
+    import. A silently-missing entry does not crash import; it would only
+    surface the next time that exact field is canonicalised (a ``KeyError``
+    deep inside ``_jsonable_structural``), so this checks the table's shape
+    directly against ``dataclasses.fields`` rather than waiting to observe
+    that failure mode.
+    """
+    registry = R._STRUCTURAL_DATACLASSES
+    assert len(registry) >= 5, (
+        f"only {len(registry)} structural dataclass types registered -- a "
+        "shrunk registry would make this property quantify over less than "
+        "the real domain"
+    )
+    checked = 0
+    for cls in sorted(registry, key=lambda c: c.__name__):
+        assert cls in R._STRUCTURAL_FIELD_TYPES, (
+            f"{cls.__name__} is a registered structural dataclass with no "
+            "entry in _STRUCTURAL_FIELD_TYPES at all"
+        )
+        open_fields = R._STRUCTURAL_OPEN_FIELDS.get(cls, frozenset())
+        declared = R._STRUCTURAL_FIELD_TYPES[cls]
+        for f in dataclasses.fields(cls):
+            if f.name in open_fields:
+                continue
+            checked += 1
+            assert f.name in declared, (
+                f"{cls.__name__}.{f.name} is a declared (non-open) field "
+                "with no shape entry in _STRUCTURAL_FIELD_TYPES -- F1/F2/F5's "
+                "per-position enforcement is silently skipped for it"
+            )
+    _count("P33 structural fields checked for a table entry", checked)
+
+
+def prop_P34_declared_type_enforced_at_every_structural_position() -> None:
+    """F2 + F5's shared root cause, closed by one mechanism
+    (``_check_declared_shape``): a structural position that receives a
+    value of the WRONG type -- even one this module itself defines
+    elsewhere -- must be refused, not silently encoded via whatever arm the
+    value's own runtime type happens to match.
+    """
+    checked = 0
+
+    # F2 witness: Observation.at is declared str. A Scope member is a
+    # legitimate value ELSEWHERE in this schema (Candidate.applies_to.scope),
+    # so if admission were decided by the value's own runtime type rather
+    # than the position's declared type, it would reach the enum arm and
+    # encode as its .value -- indistinguishable from the genuine string
+    # "build".
+    bad_at = R.Observation(R.Scope.BUILD, (("k", 1),))
+    with pytest.raises(R.SchemaError):
+        bad_at.digest()
+    checked += 1
+    good_at = R.Observation("build", (("k", 1),))
+    assert good_at.digest()  # a genuinely-typed value still works
+    checked += 1
+
+    # F5 witness: Candidate.applies_to is declared AppliesTo. Reachable only
+    # via a hand-built dataclasses.replace that bypasses validate_candidate
+    # -- exactly how this shipped -- so this checks Candidate.project()'s
+    # own enforcement, since a Candidate is never itself passed to
+    # _jsonable_structural.
+    good = bare()
+    bad = dataclasses.replace(good, applies_to=R.Observation("t1", (("k", 1),)))
+    with pytest.raises(R.SchemaError):
+        R.derive_id(bad)
+    checked += 1
+    assert R.derive_id(good)
+    checked += 1
+
+    _count("P34 declared-position checks", checked)
+
+
+def prop_P35_canonical_root_refuses_ambiguous_types() -> None:
+    """F1: canonical()'s public entry point must refuse a bare
+    tuple/set/frozenset or a bare Enum member AT THE ROOT ONLY -- each is
+    ambiguous with another type this module legitimately admits once
+    JSON-encoded (a tuple/set/frozenset all encode to the same array shape
+    as a list; an Enum member encodes to its own .value, indistinguishable
+    from a genuine primitive carrying that value). A schema-fixed NESTED
+    position is unaffected: AppliesTo.conditions is declared
+    Tuple[Tuple[str, str], ...], so a tuple there is legitimate and must
+    still canonicalise -- proving this is a root-only guard, not a blanket
+    refusal that would make it meaningless.
+    """
+    checked = 0
+    for bad_root in ((1, 2), {1, 2}, frozenset({1, 2}), R.Scope.BUILD):
+        with pytest.raises(R.SchemaError):
+            R.canonical(bad_root)
+        checked += 1
+
+    at = R.AppliesTo("t_main", R.Scope.BUILD, (("fd", "0"),))
+    assert R.canonical(at)
+    checked += 1
+    assert R.canonical([1, 2]) == "[1,2]"
+    checked += 1
+
+    _count("P35 root-admissibility checks", checked)
+
+
 PROPERTIES = {
     "P1": prop_P1_merge_totality_and_semantics,
     "P1b": prop_P1b_validation_is_the_only_raiser,
@@ -2447,6 +2550,9 @@ PROPERTIES = {
     "P30": prop_P30_reserved_field_name_refused_at_every_structural_position,
     "P31": prop_P31_observation_merge_preserves_distinct_values,
     "P32": prop_P32_structural_dataclass_arm_is_exact_type,
+    "P33": prop_P33_structural_field_types_table_is_complete,
+    "P34": prop_P34_declared_type_enforced_at_every_structural_position,
+    "P35": prop_P35_canonical_root_refuses_ambiguous_types,
 }
 
 
@@ -2852,6 +2958,20 @@ DIMENSIONS: Tuple[str, ...] = (
     #: exactly a registered ``_STRUCTURAL_DATACLASSES`` type or a SUBCLASS of
     #: one. Test-local only, same reason as ``evidence_value_type`` above.
     "structural_type_exactness",
+    #: unit-1 review (F1/F2/F5), P33: whether a registered structural
+    #: dataclass's declared (non-open) field has a shape entry in
+    #: ``R._STRUCTURAL_FIELD_TYPES``. Test-local only: it is a property of
+    #: the enforcement TABLE, not of any runtime value.
+    "structural_field_table_completeness",
+    #: unit-1 review (F1/F2/F5), P34: whether a value occupying a structural
+    #: position has the TYPE that position's schema declares, independent of
+    #: whether the value is itself a type this module defines elsewhere.
+    "declared_type_enforcement",
+    #: unit-1 review (F1), P35: whether the object passed to canonical()'s
+    #: ROOT is one of the types ambiguous with another root-admitted type
+    #: once JSON-encoded (tuple/set/frozenset vs list; an Enum member vs its
+    #: own .value) or an unambiguous one.
+    "root_type_ambiguity",
 )
 
 #: ``dimension -> the single property that varies it``, filled in by the breadth
@@ -2962,6 +3082,13 @@ NARROWNESS: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...]]] = {
             ("value", "provenance", "scope", "identity", "conditions",
              "fact_key")),
     "P32": (("structural_type_exactness", "evidence_value_type"),
+            ("value", "provenance", "scope", "identity", "conditions",
+             "fact_key")),
+    "P33": (("structural_field_table_completeness",), ()),
+    "P34": (("declared_type_enforcement",),
+            ("value", "provenance", "scope", "identity", "conditions",
+             "observation_at", "evidence", "fact_key")),
+    "P35": (("root_type_ambiguity",),
             ("value", "provenance", "scope", "identity", "conditions",
              "fact_key")),
 }

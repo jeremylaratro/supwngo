@@ -231,6 +231,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   technique implementations) and the per-target work they imply.
 
 ### Changed
+- **BREAKING (follow-up): every structural position's DECLARED type is now
+  enforced, not merely dispatched on by the value's own runtime type**
+  (`supwngo/schema/resolve.py`). The exact-type registry check and
+  `Candidate.project()` (above) decided whether a value belonged to a KNOWN
+  structural shape, but neither checked whether that shape was the one the
+  *position* actually declares — so a `Scope` member could reach
+  `Observation.at` (declared `str`) and canonicalise as its own `.value`,
+  colliding with the genuine string it names, and a hand-built `Candidate`
+  (e.g. via `dataclasses.replace`, bypassing `validate_candidate`) could
+  carry an `Observation` in `applies_to` (declared `AppliesTo`) and
+  canonicalise without ever being refused. A new
+  `_STRUCTURAL_FIELD_TYPES`/`_CANDIDATE_FIELD_TYPES` table, built once at
+  import from each dataclass's own type hints, is now consulted at every
+  structural position — including the *public* `canonical()` entry point
+  itself, which previously admitted anything its encoder's arms happened to
+  match: a bare `tuple`, `set`, `frozenset`, or `Enum` member at the root
+  now raises `SchemaError` naming the ambiguity, since each would otherwise
+  collide with another type this module legitimately admits once
+  JSON-encoded (a schema-fixed *nested* position, e.g.
+  `AppliesTo.conditions`, is unaffected — this guard runs at the root only).
+  A caller relying on `canonical()` accepting a bare tuple/set/frozenset/Enum
+  member at the root, or on a value of the wrong declared type reaching a
+  structural position without refusal, will now get `SchemaError`.
 - **BREAKING: the canonicalisation domain is now closed per position and per
   exact type** (`supwngo/schema/resolve.py`). `canonical()`/`_jsonable` used to
   accept anything `isinstance`-matched a known shape at *any* position, which is

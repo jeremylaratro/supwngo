@@ -30,7 +30,10 @@ import enum
 import hashlib
 import json
 import re
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
+from typing import (
+    Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple,
+    Union, get_args, get_origin, get_type_hints,
+)
 
 __all__ = [
     "Provenance", "Scope", "State", "Ordering", "MergeDecision", "ConflictClass",
@@ -301,6 +304,222 @@ _STRUCTURAL_OPEN_FIELDS: Dict[type, frozenset] = {}
 _STRUCTURAL_DATACLASSES: set = set()
 
 
+# ---------------------------------------------------------------------------
+# Declared per-structural-field types (post-implementation review, F1/F2/F5):
+# a structural position's declared type used to be ASSUMED -- the dataclass
+# arm below recursed into a field's value unconditionally, so the value's OWN
+# runtime type decided which arm of _jsonable_structural applied, never the
+# field's DECLARED type.  An enum member reaching Observation.at (declared
+# str) was silently encoded as its .value and collided with the genuine
+# string "build" (F2); an Observation reaching Candidate.applies_to (declared
+# AppliesTo) encoded successfully as itself (F5).  This table and the two
+# functions below close that: every non-open field of every registered
+# structural dataclass -- plus Candidate's own fields, checked in
+# .project() rather than here, since Candidate is never itself passed to
+# _jsonable_structural -- is checked against its DECLARED shape before its
+# value is allowed to recurse.
+# ---------------------------------------------------------------------------
+
+
+class _Shape:
+    """A structural field's declared annotation, resolved to something
+    checkable.  Never constructed from untrusted input -- only from
+    ``typing.get_type_hints()`` on this module's own dataclasses, at
+    import.
+
+    Deliberately plain classes, NOT ``@dataclasses.dataclass``: this
+    module's own C7 test discovers "every dataclass defined in
+    ``resolve``" by reflection (``vars(R)`` filtered by
+    ``dataclasses.is_dataclass``) to check that no two structural
+    dataclasses share a field-name set. These ``_Shape`` types are never
+    passed to :func:`_jsonable_structural` -- they are the metadata that
+    decides what MAY be -- so making them dataclasses would put them in
+    that reflection's domain by accident and trip C7's check over an
+    internal representation it was never meant to cover.
+    """
+
+    __slots__ = ()
+
+
+class _BareShape(_Shape):
+    __slots__ = ("cls",)
+
+    def __init__(self, cls: type) -> None:
+        self.cls = cls
+
+    def __repr__(self) -> str:
+        return f"_BareShape({self.cls.__name__})"
+
+
+class _OptionalShape(_Shape):
+    __slots__ = ("inner",)
+
+    def __init__(self, inner: "_Shape") -> None:
+        self.inner = inner
+
+    def __repr__(self) -> str:
+        return f"_OptionalShape({self.inner!r})"
+
+
+class _TupleShape(_Shape):
+    __slots__ = ("inner",)
+
+    def __init__(self, inner: "_Shape") -> None:
+        self.inner = inner
+
+    def __repr__(self) -> str:
+        return f"_TupleShape({self.inner!r})"
+
+
+class _PairTupleShape(_Shape):
+    __slots__ = ("first", "second")
+
+    def __init__(self, first: "_Shape", second: "_Shape") -> None:
+        self.first = first
+        self.second = second
+
+    def __repr__(self) -> str:
+        return f"_PairTupleShape({self.first!r}, {self.second!r})"
+
+
+class _AnyShape(_Shape):
+    """No declared type to enforce -- ``Candidate.value``, whose type is
+    fixed per fact key by ``FACT_KEYS``/I4, not by the dataclass schema."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "_AnyShape()"
+
+
+def _resolve_field_shape(annotation: Any, owner: type, field_name: str) -> _Shape:
+    """Resolve ONE field's ``typing.get_type_hints()`` annotation into a
+    :class:`_Shape`.  Handles EXACTLY: a bare class (``str``, ``int``,
+    ``bool``, an ``Enum`` class, a registered structural dataclass),
+    ``Optional[X]``, ``Tuple[X, ...]``, ``Tuple[Tuple[X, Y], ...]``, and
+    ``Any`` -- the annotation shapes this schema actually uses.  Anything
+    else is a shape this table cannot enforce -- which is exactly how
+    F1/F2/F5 got in -- so it raises at IMPORT rather than silently admitting
+    the field unchecked.
+    """
+    if annotation is Any:
+        return _AnyShape()
+    origin = get_origin(annotation)
+    if origin is None:
+        if isinstance(annotation, type) and (
+            annotation in (str, int, bool)
+            or issubclass(annotation, enum.Enum)
+            or annotation in _STRUCTURAL_DATACLASSES
+        ):
+            return _BareShape(annotation)
+        raise SchemaError(
+            f"{owner.__name__}.{field_name}: _resolve_field_shape does not "
+            f"handle bare annotation {annotation!r}"
+        )
+    args = get_args(annotation)
+    if origin is Union:
+        non_none = [a for a in args if a is not type(None)]
+        if len(args) != 2 or len(non_none) != 1:
+            raise SchemaError(
+                f"{owner.__name__}.{field_name}: _resolve_field_shape only "
+                f"handles Optional[X], not {annotation!r}"
+            )
+        return _OptionalShape(_resolve_field_shape(non_none[0], owner, field_name))
+    if origin is tuple:
+        if len(args) == 2 and args[1] is Ellipsis:
+            inner = args[0]
+            inner_origin = get_origin(inner)
+            if inner_origin is tuple:
+                inner_args = get_args(inner)
+                if len(inner_args) == 2 and inner_args[1] is not Ellipsis:
+                    return _TupleShape(_PairTupleShape(
+                        _resolve_field_shape(inner_args[0], owner, field_name),
+                        _resolve_field_shape(inner_args[1], owner, field_name),
+                    ))
+                raise SchemaError(
+                    f"{owner.__name__}.{field_name}: _resolve_field_shape "
+                    f"only handles Tuple[Tuple[X, Y], ...], not {annotation!r}"
+                )
+            return _TupleShape(_resolve_field_shape(inner, owner, field_name))
+        raise SchemaError(
+            f"{owner.__name__}.{field_name}: _resolve_field_shape only "
+            f"handles Tuple[X, ...], not {annotation!r}"
+        )
+    raise SchemaError(
+        f"{owner.__name__}.{field_name}: _resolve_field_shape does not "
+        f"handle annotation {annotation!r}"
+    )
+
+
+def _check_declared_shape(value: Any, shape: _Shape, owner: type, field_name: str) -> None:
+    """Enforce that VALUE actually has the shape declared for THIS position,
+    before it is allowed to recurse into :func:`_jsonable_structural`.  This
+    is the per-position enforcement F1/F2/F5 named: admission is decided by
+    the POSITION's declared type, never by which arm the value's own
+    runtime type happens to match.
+    """
+    if isinstance(shape, _AnyShape):
+        return
+    if isinstance(shape, _BareShape):
+        if type(value) is not shape.cls:
+            raise SchemaError(
+                f"{owner.__name__}.{field_name}: declared type is "
+                f"{shape.cls.__name__}, got {type(value).__name__}"
+            )
+        return
+    if isinstance(shape, _OptionalShape):
+        if value is None:
+            return
+        _check_declared_shape(value, shape.inner, owner, field_name)
+        return
+    if isinstance(shape, _TupleShape):
+        if type(value) is not tuple:
+            raise SchemaError(
+                f"{owner.__name__}.{field_name}: declared type is a tuple, "
+                f"got {type(value).__name__}"
+            )
+        for element in value:
+            _check_declared_shape(element, shape.inner, owner, field_name)
+        return
+    if isinstance(shape, _PairTupleShape):
+        if type(value) is not tuple or len(value) != 2:
+            raise SchemaError(
+                f"{owner.__name__}.{field_name}: declared type is a pair, "
+                f"got {value!r}"
+            )
+        _check_declared_shape(value[0], shape.first, owner, field_name)
+        _check_declared_shape(value[1], shape.second, owner, field_name)
+        return
+    raise SchemaError(  # pragma: no cover - exhaustive over _Shape subclasses
+        f"{owner.__name__}.{field_name}: unresolved shape {shape!r}"
+    )
+
+
+#: Declared per-field type table (F1/F2/F5): dataclass type -> field name ->
+#: its resolved annotation shape.  Built ONCE at import, by
+#: ``_build_structural_field_types`` -- called only after every
+#: ``_STRUCTURAL_DATACLASSES`` member has registered itself, further down
+#: this module -- from ``typing.get_type_hints()``.  The declared open
+#: fields (``_STRUCTURAL_OPEN_FIELDS``) are the only permitted omissions;
+#: ``prop_P33_structural_field_types_table_is_complete`` in
+#: ``tests/test_context_resolve_properties.py`` checks that mechanically.
+_STRUCTURAL_FIELD_TYPES: Dict[type, Dict[str, _Shape]] = {}
+
+
+def _build_structural_field_types() -> Dict[type, Dict[str, _Shape]]:
+    table: Dict[type, Dict[str, _Shape]] = {}
+    for cls in _STRUCTURAL_DATACLASSES:
+        hints = get_type_hints(cls)
+        open_fields = _STRUCTURAL_OPEN_FIELDS.get(cls, frozenset())
+        per_field: Dict[str, _Shape] = {}
+        for f in dataclasses.fields(cls):
+            if f.name in open_fields:
+                continue
+            per_field[f.name] = _resolve_field_shape(hints[f.name], cls, f.name)
+        table[cls] = per_field
+    return table
+
+
 def _jsonable_evidence_field(value: Any) -> Any:
     """``Observation.evidence``: ``Tuple[Tuple[str, Any], ...]``.
 
@@ -376,6 +595,7 @@ def _jsonable_structural(obj: Any) -> Any:
         # unregistered dataclass -- including a subclass of a registered one
         # -- reaches no arm here and is refused by the final ``raise`` below.
         open_fields = _STRUCTURAL_OPEN_FIELDS.get(type(obj), frozenset())
+        field_shapes = _STRUCTURAL_FIELD_TYPES[type(obj)]
         result: Dict[str, Any] = {}
         for f in dataclasses.fields(obj):
             if f.name == _BYTES_TAG:
@@ -387,6 +607,12 @@ def _jsonable_structural(obj: Any) -> Any:
             if f.name in open_fields:
                 result[f.name] = _jsonable_evidence_field(value)
             else:
+                # F1/F2/F5: the position's DECLARED type is enforced before
+                # the value is allowed to recurse -- never the value's own
+                # runtime type, which is what let a Scope member reach
+                # Observation.at (declared str) and be encoded as its
+                # .value, colliding with a genuine string.
+                _check_declared_shape(value, field_shapes[f.name], type(obj), f.name)
                 result[f.name] = _jsonable_structural(value)
         return result
     if t is dict:
@@ -395,6 +621,35 @@ def _jsonable_structural(obj: Any) -> Any:
     if t is tuple or t is list:
         return [_jsonable_structural(v) for v in obj]
     raise SchemaError(f"not canonicalisable at a structural position: {t.__name__}")
+
+
+#: Refused ONLY at canonical()'s ROOT (F1): these four Python types are
+#: ambiguous with another type this module admits at an undeclared
+#: position -- ``tuple``/``set``/``frozenset`` all encode to the same JSON
+#: array shape as ``list``, and an ``Enum`` member encodes to its own
+#: ``.value``, which collides with a genuine primitive carrying that value.
+#: A SCHEMA-FIXED nested position (``AppliesTo.conditions`` is declared
+#: ``Tuple[Tuple[str, str], ...]``; ``Candidate.provenance`` is declared
+#: ``Provenance``) is unaffected -- distinctness there follows from the
+#: position (C1), so this guard runs at the root only.  Every other type
+#: canonical()'s callers legitimately pass at the root -- a registered
+#: structural dataclass, a projection ``dict``, ``list``, ``None``, exact
+#: ``bool``/``int``/``str``, ``bytes`` -- has no OTHER admitted root type
+#: whose JSON shape it collides with, so nothing else is refused here.
+_ROOT_AMBIGUOUS_TYPES = (tuple, set, frozenset)
+
+
+def _check_root_admissible(obj: Any) -> None:
+    if isinstance(obj, enum.Enum):
+        raise SchemaError(
+            f"not canonicalisable at the root: a bare {type(obj).__name__} "
+            "member would collide with its own .value"
+        )
+    if type(obj) in _ROOT_AMBIGUOUS_TYPES:
+        raise SchemaError(
+            f"not canonicalisable at the root: a bare {type(obj).__name__} "
+            "would collide with the list it resembles once encoded"
+        )
 
 
 def canonical(obj: Any) -> str:
@@ -407,7 +662,14 @@ def canonical(obj: Any) -> str:
     either a schema-fixed value or a value (like an ``Observation``) whose
     only open sub-position is handled internally via
     :data:`_STRUCTURAL_OPEN_FIELDS`.
+
+    An UNDECLARED root has no schema-fixed type (F1), so
+    :func:`_check_root_admissible` refuses exactly the types that are
+    ambiguous with another admitted type at such a position --
+    ``canonical((1, 2))`` no longer equals ``canonical([1, 2])``, and
+    ``canonical(Scope.BUILD)`` no longer equals ``canonical("build")``.
     """
+    _check_root_admissible(obj)
     return json.dumps(_jsonable_structural(obj), sort_keys=True,
                       separators=(",", ":"), ensure_ascii=False)
 
@@ -517,7 +779,20 @@ class Candidate:
     id: str = ""
 
     def project(self, fields: Sequence[str]) -> Dict[str, Any]:
-        return {name: getattr(self, name) for name in fields}
+        """F5: a ``Candidate`` is never itself passed to
+        :func:`_jsonable_structural` -- every canonicalisation of a
+        candidate goes through this projected dict -- so this is the one
+        place a Candidate's own field values are checked against their
+        declared positions (``applies_to`` must be an ``AppliesTo``, not
+        e.g. an ``Observation`` reached via a hand-built
+        ``dataclasses.replace`` that bypassed :func:`validate_candidate`).
+        """
+        result: Dict[str, Any] = {}
+        for name in fields:
+            value = getattr(self, name)
+            _check_declared_shape(value, _CANDIDATE_FIELD_TYPES[name], Candidate, name)
+            result[name] = value
+        return result
 
     @property
     def last_observed_at(self) -> str:
@@ -527,6 +802,23 @@ class Candidate:
     @property
     def first_observed_at(self) -> str:
         return min(o.at for o in self.observations)
+
+
+def _build_candidate_field_types() -> Dict[str, _Shape]:
+    hints = get_type_hints(Candidate)
+    return {f.name: _resolve_field_shape(hints[f.name], Candidate, f.name)
+            for f in dataclasses.fields(Candidate)}
+
+
+#: Candidate's own declared field shapes (F5), built the same way as
+#: _STRUCTURAL_FIELD_TYPES but kept separate: Candidate is deliberately NOT
+#: a _STRUCTURAL_DATACLASSES member (canonicalisation never passes a
+#: Candidate instance itself to _jsonable_structural -- only a dict from
+#: .project()), so it is enforced in project() above rather than in the
+#: dataclass arm.  Buildable immediately: every type Candidate's fields
+#: reference (AppliesTo, Observation, Ref, the enums) is already registered
+#: by this point in the module.
+_CANDIDATE_FIELD_TYPES: Dict[str, _Shape] = _build_candidate_field_types()
 
 
 def derive_id(c: Candidate) -> str:
@@ -1817,6 +2109,10 @@ class PinRecord:
 
 
 _STRUCTURAL_DATACLASSES.add(PinRecord)
+
+#: Built here, only now that every _STRUCTURAL_DATACLASSES member (Observation,
+#: Ref, AppliesTo, Conflict, PinRecord) has registered itself above.
+_STRUCTURAL_FIELD_TYPES.update(_build_structural_field_types())
 
 
 #: The two identity modes.  An unknown mode used to be treated as strict, so a

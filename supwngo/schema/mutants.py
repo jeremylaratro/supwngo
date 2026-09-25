@@ -753,6 +753,42 @@ def _optional_name_type_only(raw: Any, what: str) -> Any:
     return raw
 
 
+def _check_declared_shape_unchecked(value: Any, shape: Any, owner: type,
+                                     field_name: str) -> None:
+    """F2 + F5's shared root cause, restored: a structural position's
+    declared type is assumed, never enforced.  Disables BOTH the dataclass
+    arm's per-field check (F2: a ``Scope`` member reaching
+    ``Observation.at``, declared ``str``) and ``Candidate.project()``'s
+    check (F5: an ``Observation`` reaching ``Candidate.applies_to``,
+    declared ``AppliesTo``) -- both call this one function, which is why one
+    mutant reproduces both findings."""
+    return None
+
+
+def _check_root_admissible_unchecked(obj: Any) -> None:
+    """F1's shipped gap: ``canonical()``'s public entry point never enforced
+    the declared type at the root, so a bare ``tuple``/``set``/``frozenset``
+    canonicalised identically to a ``list``, and a bare ``Enum`` member
+    canonicalised identically to its own ``.value``."""
+    return None
+
+
+def _structural_field_types_missing_scope() -> Dict[type, Dict[str, Any]]:
+    """A completeness regression in ``_STRUCTURAL_FIELD_TYPES`` itself:
+    the same table ``_build_structural_field_types`` produces, except
+    ``AppliesTo``'s ``scope`` entry is missing.  ``_check_declared_shape``
+    trusts the table it is given, so it cannot self-detect this -- only
+    ``prop_P33_structural_field_types_table_is_complete``, which checks the
+    table's shape against ``dataclasses.fields``, can.
+    """
+    table = {cls: dict(fields) for cls, fields in R._STRUCTURAL_FIELD_TYPES.items()}
+    table[R.AppliesTo] = {
+        name: shape for name, shape in table[R.AppliesTo].items()
+        if name != "scope"
+    }
+    return table
+
+
 MUTANTS: Dict[str, Mutant] = {
     m.name: m for m in [
         Mutant("merge_supersedes_on_rank", "v3 defect 1", "P1",
@@ -912,5 +948,31 @@ MUTANTS: Dict[str, Mutant] = {
                     "today's pre-registry behaviour, and the same defect "
                     "class as evidence_gate_type_only but on the structural "
                     "arm's admission test rather than the open arm's"),
+        # Unit 1 review (2026-09-24), F1/F2/F5: a structural position's
+        # declared type was assumed, never enforced.
+        Mutant("structural_field_type_unchecked", "F2 + F5", "P34",
+               {"_check_declared_shape": _check_declared_shape_unchecked},
+               note="the shipped gap: neither the dataclass arm nor "
+                    "Candidate.project() enforced a position's declared "
+                    "type, so a Scope member reached Observation.at "
+                    "(declared str) and an Observation reached "
+                    "Candidate.applies_to (declared AppliesTo), each "
+                    "silently encoded via whichever arm its own runtime "
+                    "type happened to match"),
+        Mutant("canonical_root_accepts_ambiguous", "F1", "P35",
+               {"_check_root_admissible": _check_root_admissible_unchecked},
+               note="the shipped gap: canonical()'s public entry point "
+                    "bypassed the declared type at the root, so a bare "
+                    "tuple canonicalised identically to a list, and a bare "
+                    "Enum member canonicalised identically to its own "
+                    ".value"),
+        Mutant("structural_field_types_missing_a_field",
+               "table-completeness regression", "P33",
+               {"_STRUCTURAL_FIELD_TYPES": _structural_field_types_missing_scope()},
+               note="a hand-edited _STRUCTURAL_FIELD_TYPES entry missing "
+                    "AppliesTo.scope -- reproduces a completeness "
+                    "regression in _build_structural_field_types itself, "
+                    "which _check_declared_shape cannot catch because it "
+                    "trusts the table it is given"),
     ]
 }
