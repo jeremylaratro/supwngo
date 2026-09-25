@@ -872,6 +872,31 @@ def prop_P11_state_machine_totality() -> None:
     _count("P11 (state, event) pairs", n)
 
 
+def test_transition_refuses_a_non_state_first_argument() -> None:
+    """unit-1 §6 follow-up: the branch a `# pragma: no cover - P11 forbids`
+    used to claim was unreachable.
+
+    It is not: P11 above only iterates declared `State` members (plus
+    `None`), so `transition("active", "append")` -- a plain string, not a
+    `State`, not `None` -- was never exercised by that loop. But
+    `_TRANSITIONS`'s keys are typed `Optional[State]`, so `"active"` is
+    never `==` to `R.State.ACTIVE`, and `(state, event) not in _TRANSITIONS`
+    is true for a reason distinct from every case P11 checks: the pair
+    isn't merely a refused transition, it names a first argument outside
+    the declared domain at all. Different paths, different tell -- the
+    same signal that found this gap in the first place (measured directly:
+    `transition("active", "append")` and `transition(State.ACTIVE,
+    "append")` raise different messages).
+    """
+    with pytest.raises(R.StateTransitionError, match="undefined transition"):
+        R.transition("active", "append")  # type: ignore[arg-type]
+    # The control: the same event against the REAL State member takes the
+    # other branch and raises the other message, proving the two inputs
+    # are not accidentally hitting the same check.
+    with pytest.raises(R.StateTransitionError, match="refused: cannot append"):
+        R.transition(R.State.ACTIVE, "append")
+
+
 def prop_P12_absent_is_not_false() -> None:
     with pytest.raises(TypeError):
         bool(R.ABSENT)

@@ -1440,7 +1440,15 @@ def transition(state: Optional[State], event: str) -> State:
     ``derived_from`` digest taken while it was dead."""
     if event not in STATE_EVENTS:
         raise StateTransitionError(f"unknown event {event!r}")
-    if (state, event) not in _TRANSITIONS:  # pragma: no cover - P11 forbids
+    if (state, event) not in _TRANSITIONS:
+        # No pragma here (unit-1 §6 follow-up): this branch IS reachable, by
+        # a plain string state that is not `None` and not a declared `State`
+        # member -- e.g. `transition("active", "append")`. `_TRANSITIONS`'s
+        # keys are typed `Optional[State]`, so a plain string never equals
+        # one, and the branch above only forbids *known* (state, event)
+        # pairs, not arbitrary first arguments. Covered by
+        # `test_transition_refuses_a_non_state_first_argument` in
+        # tests/test_context_resolve_properties.py.
         raise StateTransitionError(f"undefined transition ({state}, {event})")
     nxt = _TRANSITIONS[(state, event)]
     if nxt is None:
