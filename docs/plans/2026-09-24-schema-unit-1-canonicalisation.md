@@ -1602,3 +1602,323 @@ target, suspect the instrument.
   one C9 is careful about — finite examples are regression evidence, not proof — so
   the wording overclaims by the same measure the file elsewhere refuses to. Either
   the word changes or the domain becomes genuinely generated.
+
+
+---
+
+## §13 Code-review remediation record (post-implementation round)
+
+The final round was a **code** review, not a plan review: the plan had returned
+`NEW 0` for three consecutive rounds with every `INTRODUCED` finding a re-created
+instance of an already-named class, so round 4 escalated by changing artifact
+rather than running a fourth prose round. It returned **8 findings, 8 confirmed,
+0 rejected**, four of them HIGH, and is recorded verbatim in
+`docs/reviews/2026-09-24-schema-unit-1-code-review.md`. This section records what
+was done about them. Every fix carries the `SCOPE` line rev 6 requires: the
+diagnosis's extent, the remedy's extent, and why they are the same set.
+
+### R1 — F1, F2, F5: one root, one remedy
+
+**Diagnosis.** A structural position's **declared** type was assumed, never
+enforced. The encoder dispatched on the *value's* runtime type at every arm, so
+nothing compared the value against what the *position* declares. Three instances,
+one cause:
+
+| | witness (measured, pre-fix) |
+| --- | --- |
+| F2 | `Observation(Scope.BUILD) != Observation("build")` yet both canonicalise to `{"at":"build","evidence":[]}`; `_merge_observations` returned length **1**, silently dropping one |
+| F5 | `dataclasses.replace(c, applies_to=Observation(...))` accepted by public `derive_id`, returning `f_69ef452e4651c390767165f1a97278fc` |
+| F1 | `canonical((1,2)) == canonical([1,2]) == "[1,2]"`; `canonical(Scope.BUILD) == canonical("build")` |
+
+**Remedy.** `_STRUCTURAL_FIELD_TYPES` (the dataclass arm) and
+`_CANDIDATE_FIELD_TYPES` (`Candidate.project()`, since a `Candidate` instance is
+never itself passed to the structural encoder), both built once at import from
+each dataclass's own `typing.get_type_hints`, consulted at every position; plus
+`_check_root_admissible`, which refuses at `canonical()`'s root exactly the four
+kinds that are ambiguous *with an admitted type* — `tuple`, `set`, `frozenset`,
+and any `Enum` member.
+
+`_resolve_field_shape` **raises at import** on an annotation shape it does not
+handle. That is the load-bearing choice: an unhandled shape is exactly how this
+defect got in, so the failure mode is a refusal to start rather than a silent
+admission.
+
+> **SCOPE.** Diagnosis extent: every structural position at which a declared type
+> exists and was unchecked — the 5 registered dataclasses' declared fields, plus
+> `Candidate`'s 11 fields via `project()`, plus the root, which has *no* declared
+> type and so needs the ambiguity rule instead of a type check. Remedy extent:
+> the same three sets, by the same mechanism where a declaration exists and by the
+> ambiguity rule where none does. Same set because the enumeration is mechanical,
+> not judged: both tables are **total comprehensions** over `dataclasses.fields`,
+> so the remedy cannot be narrower than the diagnosis without failing at import;
+> and the root is the one position with no declaration, handled by the one rule
+> that does not need one. Not wider: a schema-fixed *nested* position (e.g.
+> `AppliesTo.conditions`, declared `Tuple[...]`) keeps its tuple repertoire — the
+> root guard runs at the root only.
+
+**Note the ordering consequence.** The enum-before-primitive arm is *kept*, and is
+still correct: it is right for a position whose declared type **is** an `Enum`.
+What was wrong was that nothing stopped it applying where `str` is declared. The
+remedy is the per-position check, not a reordering — which is why F2 indicts the
+arm's *scope*, not the arm.
+
+### R2 — F7: the version identifier
+
+C9 requires that a break to the accepted domain move the schema version and ship
+a migration. Tuple/enum/set/float/dataclass evidence that v1 accepted is now
+refused, so `canonical_document` emits **`supwngo.context/v2`**, with a migration
+note in `CHANGELOG.md` under `[Unreleased]`.
+
+**This deliberately moved a committed golden vector**, which is the one thing the
+C9 integrity check exists to detect, so it is recorded as the contract operating
+rather than a vector retrofitted. The v1 bytes are **retained in the file**, not
+overwritten, as `test_golden_canonical_document_small_store_PRE_V2_RECORD` — a
+frozen literal, because `canonical_document()` can no longer produce v1 bytes at
+all. Its hash is unchanged from the pre-change capture
+(`b4b79839ed70096dff4d71f30d7f2a4eddc864eaf620877bb655fbccc1b7e9fe`); the new v2
+vector hashes to `5012c11b6bf95e9889b776b715fd6c5af3e6ef215eb0cbaac37858b2bc3f364c`
+and differs only in the trailing field. The byte-gated
+`docs/reference/context-resolution-tables.md` did **not** move, and I verified the
+reason rather than asserting it: the document contains `schema_version` **0**
+times, and its byte gate was run, not assumed.
+
+> **SCOPE.** Diagnosis extent: one emitted identifier, and the one golden vector
+> that pins bytes containing it. Remedy extent: that identifier, that vector (split
+> rather than overwritten), and the migration note. Same set because the break
+> itself was already shipped and recorded — F7 is about the *label* on it, so the
+> remedy is confined to the label and to the one artifact that pins the label's
+> bytes. Not wider: no behaviour changed in this commit.
+
+### R3 — F3, F4, F6, F8: four gates narrower than their contracts
+
+All four were weak gates over **correct** code, and the distinction is recorded
+because it is the one the class-and-sweep protocol turns on:
+
+- **F3** — P21's refusal table omitted seven families C2 names. I measured that
+  the encoder **already refuses every one**, so these are *regression rows*, not
+  leak fixes. Widened to root **and** nested, and two mutants added so the new
+  rows are not vacuous.
+- **F4** — `_purity_domain()` was a fixed 20-item list described as "generated".
+  Now genuinely generated by recursive/product construction. This was on §12's own
+  outstanding-LOW list before the review returned it, which is why it appears
+  twice in this plan's record.
+- **F6** — P29 asserted `by_id(a.id) == a`. A stale `dataclasses.replace` copy
+  satisfies `==` while violating C8 clause (b). Now `is`, with clauses (a), (d)
+  and (f) asserted directly, and a mutant storing copies to prove the identity
+  assertion non-vacuous.
+- **F8** — P28 hard-coded five function names. Now derived from
+  `__all__ ∩ {callables with a ResolveContext-annotated parameter}`, asserted
+  non-empty and equal to the set actually exercised.
+
+> **SCOPE.** Diagnosis extent: four test-side gates, each asserting less than the
+> contract clause it is named for. Remedy extent: those four gates. Same set
+> because no production behaviour was implicated by any of the four — I measured
+> the encoder against all seven of F3's families and `by_id`'s identity behaviour
+> by hand before deciding — so a production change here would have been *wider*
+> than the diagnosis, which is the mis-scoping class in the direction §4a already
+> cost a round for. `resolve.py` is untouched by this commit.
+
+### R4 — the gap my own re-run found, and the sweep for its class
+
+**A residual gap in R1's own instrument.** `_STRUCTURAL_OPEN_FIELDS` is normative
+data — the contract says there is *exactly one* declared open position — and
+nothing pinned its content. Worse, both new instruments **consume it as a skip**:
+P33 and P34 each begin `if f.name in open_fields: continue`. So the one table that
+is the sole exemption to per-position enforcement was policed only by the two
+properties that apply the exemption. Measured, by widening the set to
+`{"evidence", "at"}` and re-running both properties directly:
+
+```
+P33: PASSED with the open set widened   <-- unpinned
+P34: SchemaError                        <-- a crash, not a detection
+```
+
+Neither is a gate on this drift: one passes, and the other only escapes an
+exception out of its own fixture, which this suite's own meta-test classifies as a
+crash rather than a proof. That is an **enforcement column with nothing behind
+it** — the identical defect §12 records for C6, recurring inside the remedy for
+it. Closed by a property pinning the table's keys and each value set **by
+equality** (a subset assertion would pass against a widened set and reproduce the
+defect a third time), plus a mutant widening it.
+
+> **SCOPE.** Diagnosis extent: the content of one normative table, unpinned in both
+> directions of drift. Remedy extent: one property pinning that table's keys and
+> each value set by equality, plus one mutant proving it fails. Same set: the
+> remedy pins exactly the table that was unpinned, in both directions, and touches
+> neither P33's nor P34's logic — both are correct for what they check; the missing
+> thing was a gate on the data they exempt.
+
+**SWEEP for the class** — *normative module-level data whose content no gate pins*
+— because an instance is not a finding and a fix for one instance is not a fix for
+the class. Ten tables checked; **8 candidates, 7 explained, 1 real gap** (the one
+above):
+
+| table | verdict |
+| --- | --- |
+| `_STRUCTURAL_OPEN_FIELDS` | **the real gap** — fixed above |
+| `_BYTES_TAG` | indirectly equality-pinned: the literal `__bytes_b64__` appears inside a golden byte vector |
+| `_ID_HEX` | indirectly pinned: 15 frozen golden ids are all exactly 32 hex long |
+| `DERIVED_FIELDS` | indirectly pinned in the direction that matters — leaking a derived field into a digest breaks all 15 golden ids |
+| `STORE_INVARIANTS` | **equality-pinned** — `assert controlled == set(R.STORE_INVARIANTS)` |
+| `_STRUCTURAL_DATACLASSES` | both drift directions caught: de-registering `Ref` → 6 properties red (P32, P33 by `AssertionError`); registering a bogus type → P32 and P33 red |
+| `_STRUCTURAL_FIELD_TYPES` | complete by construction (total comprehension) and fail-closed at import; P33 guards the one skip path |
+| `_CANDIDATE_FIELD_TYPES` | same, and never mentioned in tests *because* a missing entry is unconstructable |
+| `CONTENT_FIELDS` / `ID_DIGEST_FIELDS` / `DEP_DIGEST_FIELDS` | equality-pinned by golden projections |
+
+So the class has **no further live instances**. That is the point of running it:
+without the sweep, fixing `_STRUCTURAL_OPEN_FIELDS` would have been an instance
+fix wearing a class fix's clothes.
+
+### ERRATUM — my own sweep instrument was narrower than its claim
+
+My first sweep reported `STORE_INVARIANTS` as **"MENTIONED, NOT PINNED"**. That
+was wrong, and it is wrong in the already-named way: my detector was
+`^.*\bNAME\b.*==.*$`, which only matches a pin where the symbol appears **to the
+left** of `==`. The actual pin reads
+
+```
+assert controlled == set(R.STORE_INVARIANTS), (
+```
+
+— symbol on the right, so my regex could not see it. One more instance of *a
+refuting instrument narrower than the claim it tests*, and mine. It was caught
+only because the script printed the matching lines beneath its own verdict, so the
+output contradicted its own conclusion in the same block; had it printed the
+verdict alone I would have filed a false gap. Recorded unsoftened: this is the
+third session instance of that class (F7's regex, the C10 arity, now this), and
+the erratum stays beside the original because a silently corrected near-miss is
+indistinguishable from never having erred.
+
+### My own measured counts
+
+Reported per §5.1 — **I re-ran every gate myself**; none of these is a delegate's
+number. (The standing reason: an implementer once reported 5 of 9 red when 7 were,
+erring in the safe direction, which a casual check passes.)
+
+```
+                MY OWN MEASUREMENTS -- re-run by me, not a delegate's numbers
+                =============================================================
+
+three schema suites
+  python3 -m pytest tests/test_context_resolve_properties.py \
+      tests/test_context_resolve_golden.py \
+      tests/test_context_resolve_refusal_coverage.py \
+      -q --no-header -p no:cacheprovider
+  -> 120 passed in 81.55s              (was 108 before this round)
+
+repo-wide, excluding the benchmark corpus
+  python3 -m pytest tests/ -q --no-header -p no:cacheprovider \
+      --ignore=tests/test_challenges.py
+  -> 718 passed, 10 skipped, 1 warning in 238.98s   (was 706 passed, 10 skipped)
+  the warning is pre-existing and unrelated: unicorn's pkg_resources deprecation
+
+mutation meta-test
+  python3 -m pytest tests/test_context_resolve_properties.py \
+      -k test_mutant_is_caught -q --no-header -p no:cacheprovider
+  -> 54 passed, 56 deselected
+  54 mutants total: 52 bound to a property, 2 must-pass (provenance_fourth,
+  contradiction_guard_disabled), checked against P9 only.  38 properties,
+  33 dimensions.  Nothing was shrunk: properties 32 -> 38, mutants 45 -> 54.
+
+the seven NEW mutants, applied directly and classified by ME
+  a crash is not a proof: AssertionError / Failed = detection,
+  TypeError / KeyError / ValueError = the patch broke the machinery
+    structural_field_type_unchecked            -> P34  PROOF
+    canonical_root_accepts_ambiguous           -> P35  PROOF
+    structural_field_types_missing_a_field     -> P33  PROOF
+    open_domain_isinstance_bytes               -> P21  PROOF
+    open_domain_admits_unregistered_dataclass  -> P21  PROOF
+    candidate_id_index_returns_copies          -> P29  PROOF
+    open_field_set_widened                     -> P36  PROOF
+  7/7 died by AssertionError/Failed, 0 crashes, 0 escapes, each on the check
+  that names ITS OWN defect rather than a side effect of its patch.  Verbatim:
+    P33: "AppliesTo.scope is a declared (non-open) field with no shape entry
+          in _STRUCTURAL_FIELD_TYPES"
+    P29: "by_id('f_86488b4c...') returned an object that is == but not `is`
+          the stored candidate -- clause (b) requires the SAME object"
+    P36: "Observation's declared open field set is ['at', 'evidence'], not
+          exactly {'evidence'}"
+
+the four review witnesses -- all four must now RAISE
+    canonical((1,2))                      SchemaError: not canonicalisable at
+                                          the root: a bare tuple would collide
+                                          with the list it resembles
+    canonical(Scope.BUILD)                SchemaError: ... a bare Scope member
+                                          would collide with its own .value
+    canonical(Observation(Scope.BUILD))   SchemaError: Observation.at: declared
+                                          type is str, got Scope
+    derive_id(Observation at applies_to)  SchemaError: Candidate.applies_to:
+                                          declared type is AppliesTo, got
+                                          Observation
+  4/4.  And F2's live consequence is closed at the seam, not just the encoder:
+  _merge_observations((Observation(Scope.BUILD),), (Observation("build"),))
+  now REFUSES where it previously returned length 1, silently dropping one.
+
+P36 measured in BOTH states -- a gate red in both states is no gate either
+    live table  {Observation: ['evidence']}          -> GREEN
+    widened     {Observation: ['at', 'evidence']}    -> RED, AssertionError
+    narrowed    {Observation: []}                    -> RED, AssertionError
+  bidirectional, and green on correct code.
+
+refusal-site census -- quoted, not summarised, per the census protocol
+  constructed-exception raise sites:            124
+  bare re-raise sites (exempt):                   4
+  in instrument scope (module error classes):   122
+  out of instrument scope (UN-INSTRUMENTABLE):    2
+      L203   TypeError    -- builtin, __init__ not assignable
+      L2664  SystemExit   -- builtin, __init__ not assignable -- the CLI path
+  NEVER FIRED by the representative subset:      38 / 122
+  fired at least once (positive-control coverage): 84 / 122
+  This round ADDED 11 in-scope refusal sites and 8 of them never fire under the
+  representative subset, so positive-control coverage fell 81/111 (73%) to
+  84/122 (69%).  Recorded as a regression in the ratio, not glossed: the new
+  per-position refusals fire only on a wrong-typed value at one specific field,
+  and the subset does not drive every field individually.  The absolute number
+  of controlled sites rose; the proportion did not.
+
+C9 integrity -- the one check that exists to catch a retrofitted vector
+  The golden file DID move, and deliberately.  The v1 bytes are retained in the
+  file as a frozen literal, hash UNCHANGED from the pre-change capture
+  (b4b79839ed70096dff4d71f30d7f2a4eddc864eaf620877bb655fbccc1b7e9fe); the v2
+  vector hashes 5012c11b6bf95e9889b776b715fd6c5af3e6ef215eb0cbaac37858b2bc3f364c
+  and differs only in the trailing schema_version field.
+  The byte-gated docs/reference/context-resolution-tables.md did NOT move, and I
+  verified WHY rather than asserting it: the document contains "schema_version"
+  0 times, and its byte gate was run, not assumed.
+```
+
+**The red-first question, stated plainly.** The implementer did **not** show
+P33/P34/P35 red against the pre-fix resolver, and said so unprompted rather than
+letting it pass. The substitute is this suite's own established one — each new
+property is bound to a named mutant, and I verified all **7/7** new mutants die by
+`AssertionError`/`Failed`, each on the check that names **its own** defect, not a
+side effect of its patch. The diagnostics are quoted in full above. That is
+weaker than a literal red run in one specific way worth naming: it proves each
+property can fail, but not that it would have failed against the *original* code
+rather than against the mutant's particular patch. For P34 and P35 the four
+witnesses close that gap directly — they are the original defects, measured
+accepting before and refusing now. For P33 no such witness exists, because P33
+guards a table that was complete on the day it was written; it is a regression
+gate by construction, and is labelled one here rather than credited as a
+discovery.
+
+P36 is the exception, and the only new property with a *literal* red-green pair:
+I ran it against the live table (green), the widened table (red), and the
+narrowed table (red), in one process, and the gap it closes was measured before
+the property existed. That is what the other three should have had.
+
+### Commits
+
+| commit | what |
+| --- | --- |
+| `c778698` | `fix(schema)!:` per-position declared-type enforcement — F1, F2, F5 |
+| `1fedba5` | `feat(schema)!:` schema bumped to `supwngo.context/v2` + migration — F7 |
+| `f4a7e98` | `test(schema):` four gates widened to their contracts — F3, F4, F6, F8 |
+| `54f91a1` | `test(schema):` the one declared open position pinned — the residual gap |
+
+Eight findings, eight closed, plus one gap the remediation's own instrument had
+and my re-run found. What carries forward is not the count but the shape: the
+review found four HIGH defects in code that three consecutive `NEW 0` plan rounds
+could not have found, because they were properties of code that did not exist
+when those rounds ran. The escalation from prose to artifact is what produced
+them.
