@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`autopwn --json` now reports I2's prologue timings and the pwntools load state**
+  (`supwngo/cli.py`). Both were already computed with zero readers: I2's three
+  profiling-prologue stage durations (`CanonicalAutopwnEngine.static_analysis_duration_sec`
+  / `dynamic_profile_duration_sec` / `leak_acquisition_duration_sec`,
+  `orchestrator.py:170-172`) and the pwntools load-state fields on `Binary`
+  (`pwntools_load_state` / `pwntools_load_error` / `protections_measured`, commit
+  `3453f09`) -- neither reached the `autopwn --json` payload, so `report.json` could not
+  separate "the prologue ate the budget" from "the route was wrong", nor "pwntools failed
+  to load this ELF" from "this binary genuinely has no symbols". The `result` dict at
+  `cli.py:2508-2526` gains two new keys: `"prologue"` (the three durations, `None`
+  preserved as `null` rather than coerced to `0`) and `"binary_load"` (the load state
+  serialised by `.value`, the error string, and `protections_measured`). No change to
+  `orchestrator.py`, `binary.py`, or `benchmark/run_bench.py` -- the harness already
+  captures the full parsed payload, so the new keys reach `report.json` automatically.
+  Deliberately kept out of `notes`/`failure_reason` (which `templates.py` renders into
+  generated exploit scripts that `rep_divergence.py` hashes per rep) -- new
+  `tests/test_cli_autopwn_json_wiring.py` drives the real `autopwn --json` CLI
+  end to end and asserts on the JSON payload itself (not the underlying `Binary`/engine
+  attributes, which `tests/test_binary_load_state.py` and `tests/test_i2_attempt_duration.py`
+  already cover).
 - **Per-attempt `duration_sec` and profiling-prologue timing** (I2,
   `supwngo/exploit/pipeline/contracts.py`, `orchestrator.py`). `AttemptRecord` gains a
   `duration_sec` field (also added to `to_dict()`, so it reaches
