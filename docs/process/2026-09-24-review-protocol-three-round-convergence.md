@@ -267,6 +267,39 @@ made an entire family of tests fail for a reason unrelated to what they tested, 
 simultaneously **hid a regression somebody introduced on top of it.** Two `fmtstr`
 tests caught a wrong tie-break only *after* the import fix stopped masking them.
 
+> **ERRATUM, same day. The `fmtstr` example above is false and is retracted; the
+> rule below stands on different evidence.** The author reconstructed the exact
+> interim state (conftest without `PWNLIB_NOTERM`, `fmtstr` ranking its rejections,
+> `select_route` keyed on `name`) and ran the ordering pair that induces the
+> poisoning. Both tests **failed with the defect live and failed with it fixed** — so
+> the defect was not hiding them. Measured, not argued.
+>
+> The rule keeps two real instances from the same work: a third test,
+> `test_unreachable_write_target_is_marked_rather_than_offered`, failed *only* with
+> the defect live and is a genuine poisoning victim; and the pre-fix **"791 passed /
+> 14 skipped"** figure was genuinely collected under the live defect and has been
+> **withdrawn — do not cite it.** Everything else was tested for maskability
+> one-file-per-process with the defect re-induced and came back green with zero
+> poison signatures, because only one test file imports `pwn` through a `CliRunner`.
+> So the heap 13/13 and the tie-sweep tables stand rather than being withdrawn.
+>
+> **The actual cause of the missed tie-break is narrowness, and it is the more useful
+> rule:** the mutation table mutated `select_route` and ran only the selector's own
+> two test files — never `test_walkthrough_fmtstr.py`, where the tests encoding
+> *which route `fmtstr` should pick* live. Every mutant died and the table read as
+> thorough, because every test it ran exercised the mechanism rather than the
+> behaviour the mechanism decides. **Mutating a shared component means running the
+> tests of every caller whose behaviour it decides.** Same shape as the schema
+> property-test finding: narrowness reads exactly like correctness. Carried into §6.3.
+>
+> **And a failure of mine, twice in one session, with one shape.** Both this and the
+> refusal-census erratum at `2bc3aba` were an agent's *causal story* written into this
+> document because it was well-told, without the discriminating test having been run
+> by anyone. New standing rule for me: **no causal claim enters a process document
+> until the discriminating experiment exists — either the agent shows it, or I run
+> it.** A plausible mechanism is a hypothesis; only the experiment that could have
+> come out the other way makes it a finding.
+
 So the rule:
 
 > **Once a masking defect is identified, every green result collected while it was
@@ -317,6 +350,20 @@ dataclasses, and its property passed.
 So per bound property: name the subtler mutation of the same rule, and either show it
 also goes red, or record it as a **known blind spot**. An unrecorded blind spot is
 indistinguishable from coverage.
+
+**And the mutant must be run against the right tests — breadth, not only subtlety.**
+A mutation table that mutates a shared component and runs only that component's own
+tests measures the mechanism, never the behaviour the mechanism decides. Measured: a
+tie-break selector was mutated and every mutant died against the selector's two test
+files; the wrong tie-break survived because `test_walkthrough_fmtstr.py` — which
+encodes *which route `fmtstr` must pick* — was never in the run. The table read as
+thorough precisely because it was narrow.
+
+> **Rule: mutating a shared component means running the tests of every caller whose
+> behaviour that component decides.** State the caller set in the table, so a missing
+> caller is visible rather than inferred. This is the §6.1b lesson in the other
+> direction — there, a sweep produced candidates that were not defects; here, a
+> mutation suite produced greens that were not coverage.
 
 ### 6.4 Additive is not inert — check every artifact compared across runs
 
