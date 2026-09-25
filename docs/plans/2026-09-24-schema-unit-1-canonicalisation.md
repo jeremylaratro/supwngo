@@ -1,7 +1,21 @@
 # Schema split, unit 1 of 3: canonicalisation
 
 **Date:** 2026-09-24
-**Status:** PLAN rev 5 — **revision authorized**; round 1 returned NOT-APPROVED, recorded
+**Status:** PLAN rev 5 — **round 2 returned NOT-APPROVED**, recorded verbatim at
+`docs/reviews/2026-09-24-schema-unit-1-review-round2.md`. RECURRENCES 4 / NEW 0 /
+INTRODUCED 5. **Held, not revised:** the counts are reported before the revision.
+**`NEW` is 0 for the third consecutive round.** All nine hits were checked against a
+deliberate-design explanation before being accepted, and all nine confirmed — the
+one I nearly rejected, I rejected with a regex narrower than the claim. One round of
+the three-round budget remains.
+
+The decomposition that matters: **all five INTRODUCED defects are instances of
+classes already named to me** — four by round 1 (two of them the same finding
+number), one by me in rev 3. Rev 5's remediation re-created five named classes; it
+did not surface new ones.
+
+*(Earlier status line, for the audit trail: rev 5 — revision authorized; round 1
+returned NOT-APPROVED, recorded
 verbatim at `docs/plans/2026-09-24-schema-unit-1-review-round1.md`.
 RECURRENCES 5 / NEW 0 / INTRODUCED 3. **Held, not revised:** the standing rule
 is that a recurrence count above zero is reported — with the skipped sweep named
@@ -9,7 +23,7 @@ is that a recurrence count above zero is reported — with the skipped sweep nam
 Round 1 reviewed **rev 1**; §3a and §4a independently found two of its three
 INTRODUCED findings first, and its F5 is a *different* C1–C7 contract break from
 §3a's, so the contract needs **C9** (canonical-byte/candidate-ID stability) as
-well as C8.
+well as C8.)*
 
 **Rev 5 addresses all eight round-1 findings.** Disposition recorded verbatim at
 `docs/plans/2026-09-24-schema-unit-1-round1-authorization.md`; two rounds of the
