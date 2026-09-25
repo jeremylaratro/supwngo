@@ -1577,30 +1577,16 @@ def prop_P21_canonicalisation_is_injective() -> None:
     def _evidence_canonical(value: Any) -> str:
         return R.canonical(R.Observation("t1", (("k", value),)))
 
-    # Negative controls: legal open values that must NOT collide and must
-    # NOT be refused.
-    legal_open_values = [1, True, None, "None", b"x", "b64:eA==", [1, 2],
-                         {"a": 1}, "1", 0]
-    seen_open: Dict[str, Any] = {}
-    for value in legal_open_values:
-        # A legal value must canonicalise cleanly.  Diagnosed here rather
-        # than left to crash: a mutant that widens the gate too far (e.g.
-        # ``evidence_gate_type_only``, which stops tagging bytes) makes a
-        # LEGAL value reach json.dumps unencoded and raise TypeError, which
-        # is a property violation, not an escape.
-        try:
-            enc = _evidence_canonical(value)
-        except Exception as exc:  # noqa: BLE001 - any exception here is the bug
-            raise AssertionError(
-                f"a legal open-domain value {value!r} was not "
-                f"canonicalisable: {type(exc).__name__}: {exc}"
-            ) from exc
-        assert enc not in seen_open, (
-            f"open-domain collision: {value!r} and {seen_open[enc]!r} both "
-            f"encode as {enc}"
-        )
-        seen_open[enc] = value
-
+    # Refused values first (rev 6 follow-up): an over-permissive open-domain
+    # gate must be diagnosed by name here, not downstream in the legal-value
+    # loop below.  ``evidence_gate_type_only`` widens the gate to admit
+    # everything except a bare ``float`` and stops tagging ``bytes`` as a
+    # side effect; with the legal-value loop running first, that mutant used
+    # to die on ``b"x"`` reaching ``json.dumps`` unencoded -- a real failure,
+    # but one that names "a legal value was not canonicalisable" rather than
+    # "an over-permissive gate accepted a refused value", which is the
+    # mutant's actual defect and is what this loop, run first, now names.
+    #
     # Root AND nested IntEnum/StrEnum (§8 item 8): regression evidence that
     # the domain is closed, not the mechanism that closes it -- the
     # mechanism is exact-type dispatch (§4b); this proves the refusal
@@ -1650,6 +1636,30 @@ def prop_P21_canonicalisation_is_injective() -> None:
             "member, a tuple/set, or a builtin subclass can collide "
             "with the type it resembles"
         )
+
+    # Negative controls: legal open values that must NOT collide and must
+    # NOT be refused.
+    legal_open_values = [1, True, None, "None", b"x", "b64:eA==", [1, 2],
+                         {"a": 1}, "1", 0]
+    seen_open: Dict[str, Any] = {}
+    for value in legal_open_values:
+        # A legal value must canonicalise cleanly.  Diagnosed here rather
+        # than left to crash: a mutant that widens the gate too far (e.g.
+        # ``evidence_gate_type_only``, which stops tagging bytes) makes a
+        # LEGAL value reach json.dumps unencoded and raise TypeError, which
+        # is a property violation, not an escape.
+        try:
+            enc = _evidence_canonical(value)
+        except Exception as exc:  # noqa: BLE001 - any exception here is the bug
+            raise AssertionError(
+                f"a legal open-domain value {value!r} was not "
+                f"canonicalisable: {type(exc).__name__}: {exc}"
+            ) from exc
+        assert enc not in seen_open, (
+            f"open-domain collision: {value!r} and {seen_open[enc]!r} both "
+            f"encode as {enc}"
+        )
+        seen_open[enc] = value
     _count("P21 distinct evidence values", len(seen))
     _count("P21 open-domain values checked",
           len(seen_open) + len(refused_open_values))
