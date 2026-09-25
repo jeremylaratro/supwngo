@@ -286,6 +286,20 @@ def _jsonable_open(obj: Any) -> Any:
 #: open position from one place instead of re-deriving it from control flow.
 _STRUCTURAL_OPEN_FIELDS: Dict[type, frozenset] = {}
 
+#: THE explicit, closed registry of dataclass types admitted at a structural
+#: position (C7/§4b): exact-type membership (``type(obj) in ...``), never
+#: ``dataclasses.is_dataclass`` -- the latter also admits any SUBCLASS of a
+#: registered type. A subclass reaching this arm would miss
+#: ``_STRUCTURAL_OPEN_FIELDS``'s exact-type lookup (silently losing the
+#: open-field routing for ``evidence``, so a value that would be refused on a
+#: real ``Observation`` canonicalises through the structural encoder instead)
+#: -- exactly the admission-vs-routing mismatch this unit closes everywhere
+#: else. An unregistered dataclass, subclass or otherwise, reaches no arm and
+#: is refused by the final ``raise`` below, named by its type. Populated
+#: immediately after each admitted type is defined, same pattern as
+#: ``_STRUCTURAL_OPEN_FIELDS`` above.
+_STRUCTURAL_DATACLASSES: set = set()
+
 
 def _jsonable_evidence_field(value: Any) -> Any:
     """``Observation.evidence``: ``Tuple[Tuple[str, Any], ...]``.
@@ -344,13 +358,23 @@ def _jsonable_structural(obj: Any) -> Any:
         return obj
     if t is bytes:
         return {_BYTES_TAG: base64.b64encode(obj).decode("ascii")}
-    if dataclasses.is_dataclass(obj):
+    if type(obj) in _STRUCTURAL_DATACLASSES:
         # C7's second clause, enforced here as well as measured statically:
         # a structural dataclass field named the reserved bytes tag would
         # encode identically to real bytes.  Round 3's own fix reserved the
         # tag in the mapping arm only and left this arm unguarded (§2a); this
         # closes it at the one remaining source rather than trusting every
         # future dataclass to avoid the name.
+        #
+        # Exact-type membership, not ``dataclasses.is_dataclass`` -- the
+        # latter also admits any SUBCLASS of a registered type, which would
+        # pass this test but then miss ``_STRUCTURAL_OPEN_FIELDS``'s own
+        # exact-type lookup below, silently losing the open-field routing for
+        # ``evidence`` and reintroducing the collisions this unit closes (an
+        # ``Observation`` subclass with an ``IntEnum`` evidence value used to
+        # canonicalise identically to the plain int it wraps).  An
+        # unregistered dataclass -- including a subclass of a registered one
+        # -- reaches no arm here and is refused by the final ``raise`` below.
         open_fields = _STRUCTURAL_OPEN_FIELDS.get(type(obj), frozenset())
         result: Dict[str, Any] = {}
         for f in dataclasses.fields(obj):
@@ -414,6 +438,7 @@ class Observation:
 #: structural.  Registered here, immediately after the type it describes, so
 #: the declaration sits next to what it is about.
 _STRUCTURAL_OPEN_FIELDS[Observation] = frozenset({"evidence"})
+_STRUCTURAL_DATACLASSES.add(Observation)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -427,6 +452,9 @@ class Ref:
     digest: str
 
 
+_STRUCTURAL_DATACLASSES.add(Ref)
+
+
 @dataclasses.dataclass(frozen=True)
 class AppliesTo:
     identity: Optional[str]
@@ -437,6 +465,9 @@ class AppliesTo:
 
     def conditions_map(self) -> Dict[str, str]:
         return dict(self.conditions)
+
+
+_STRUCTURAL_DATACLASSES.add(AppliesTo)
 
 
 #: 128 bits.  A 48-bit (12 hex) id permitted feasible birthday collisions, and a
@@ -1740,6 +1771,9 @@ class Conflict:
     candidate_ids: Tuple[str, ...]
 
 
+_STRUCTURAL_DATACLASSES.add(Conflict)
+
+
 @dataclasses.dataclass(frozen=True)
 class Agreement:
     key: str
@@ -1772,6 +1806,9 @@ class PinRecord:
     @property
     def id(self) -> str:
         return _sha(canonical(self))[:_ID_HEX]
+
+
+_STRUCTURAL_DATACLASSES.add(PinRecord)
 
 
 #: The two identity modes.  An unknown mode used to be treated as strict, so a

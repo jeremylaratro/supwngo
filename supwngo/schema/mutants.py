@@ -563,6 +563,48 @@ def _jsonable_structural_bytes_tag_guards_mappings_only(obj: Any) -> Any:
     raise R.SchemaError(f"not canonicalisable at a structural position: {t.__name__}")
 
 
+def _jsonable_structural_dataclass_arm_admits_subclasses(obj: Any) -> Any:
+    """new ``structural_dataclass_arm_admits_subclasses``: restores
+    ``dataclasses.is_dataclass(obj)`` in place of the exact-type
+    ``_STRUCTURAL_DATACLASSES`` registry check. ``is_dataclass`` also admits
+    any SUBCLASS of a registered type, which then misses
+    ``_STRUCTURAL_OPEN_FIELDS``'s own exact-type lookup a few lines below and
+    silently loses the open-field routing for ``evidence`` -- an
+    ``Observation`` subclass with an ``IntEnum`` evidence value used to
+    canonicalise identically to a real ``Observation`` with the plain int."""
+    if isinstance(obj, R.enum.Enum):
+        return obj.value
+    if obj is None:
+        return None
+    t = type(obj)
+    if t is bool or t is int or t is str:
+        return obj
+    if t is bytes:
+        return {R._BYTES_TAG: R.base64.b64encode(obj).decode("ascii")}
+    if dataclasses.is_dataclass(obj):                          # <-- the defect
+        open_fields = R._STRUCTURAL_OPEN_FIELDS.get(type(obj), frozenset())
+        result: Dict[str, Any] = {}
+        for f in dataclasses.fields(obj):
+            if f.name == R._BYTES_TAG:
+                raise R.SchemaError(
+                    f"{type(obj).__name__}.{f.name} is named the reserved "
+                    f"bytes tag {R._BYTES_TAG!r}"
+                )
+            value = getattr(obj, f.name)
+            if f.name in open_fields:
+                result[f.name] = R._jsonable_evidence_field(value)
+            else:
+                result[f.name] = _jsonable_structural_dataclass_arm_admits_subclasses(value)
+        return result
+    if t is dict:
+        R._refuse_mapping_keys(obj)
+        return {k: _jsonable_structural_dataclass_arm_admits_subclasses(v)
+                for k, v in sorted(obj.items())}
+    if t is tuple or t is list:
+        return [_jsonable_structural_dataclass_arm_admits_subclasses(v) for v in obj]
+    raise R.SchemaError(f"not canonicalisable at a structural position: {t.__name__}")
+
+
 def _merge_observations_ignores_values(existing: Sequence[R.Observation],
                                        incoming: Sequence[R.Observation]):
     """new ``observation_dedup_ignores_values``: dedup on ``(at, evidence
@@ -862,5 +904,13 @@ MUTANTS: Dict[str, Mutant] = {
                     "synthetic hostile dataclass"),
         Mutant("observation_dedup_ignores_values", "unit-1 §5", "P31",
                {"_merge_observations": _merge_observations_ignores_values}),
+        Mutant("structural_dataclass_arm_admits_subclasses", "unit-1 follow-up", "P32",
+               {"_jsonable_structural":
+                    _jsonable_structural_dataclass_arm_admits_subclasses},
+               note="dataclasses.is_dataclass(obj) restored in place of the "
+                    "exact-type _STRUCTURAL_DATACLASSES registry check -- "
+                    "today's pre-registry behaviour, and the same defect "
+                    "class as evidence_gate_type_only but on the structural "
+                    "arm's admission test rather than the open arm's"),
     ]
 }

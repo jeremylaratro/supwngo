@@ -2294,6 +2294,89 @@ def prop_P31_observation_merge_preserves_distinct_values() -> None:
     _count("P31 observations checked", len(c.observations))
 
 
+def _minimal_instance(registered_cls: type, constructor: type) -> Any:
+    """One legal, minimal instance of ``constructor``, built with the field
+    values ``registered_cls`` (a ``R._STRUCTURAL_DATACLASSES`` member) needs.
+
+    ``constructor`` may be ``registered_cls`` itself or a subclass of it --
+    the field shape is inherited either way. Not a general dataclass
+    constructor: it knows each of ``R._STRUCTURAL_DATACLASSES``'s five
+    members by name, because there is no schema-driven way to invent valid
+    field values (an ``AppliesTo`` needs a real ``Scope`` member, a
+    ``Conflict`` a real ``ConflictClass`` member) and guessing would be
+    exactly the kind of untyped construction this unit refuses everywhere
+    else.
+    """
+    if registered_cls is R.Observation:
+        return constructor("t1")
+    if registered_cls is R.Ref:
+        return constructor(key="k", id="f_" + "0" * 32, digest="0" * 64)
+    if registered_cls is R.AppliesTo:
+        return constructor(identity=None, scope=R.Scope.HOST)
+    if registered_cls is R.Conflict:
+        return constructor(key="k", cls=R.ConflictClass.INCOMPARABLE, candidate_ids=())
+    if registered_cls is R.PinRecord:
+        return constructor(cls="pin", key="k", candidate_id=None, at="t1", seq=1,
+                            actor="tester")
+    raise AssertionError(
+        f"{registered_cls.__name__} is in R._STRUCTURAL_DATACLASSES but "
+        "_minimal_instance does not know how to build one -- the registry "
+        "and this property have drifted apart"
+    )
+
+
+def prop_P32_structural_dataclass_arm_is_exact_type() -> None:
+    """``structural_dataclass_arm_admits_subclasses``: the structural encoder's
+    dataclass arm must dispatch on exact type, never
+    ``dataclasses.is_dataclass`` -- the latter also admits a SUBCLASS of a
+    registered type, which then misses ``_STRUCTURAL_OPEN_FIELDS``'s own
+    exact-type lookup and loses its open-field routing entirely.
+
+    Quantifies over ``R._STRUCTURAL_DATACLASSES`` -- every registered type,
+    not just ``Observation`` -- because the defect is per-type admission
+    logic and the registry is the whole domain it draws from.
+    """
+    registry = R._STRUCTURAL_DATACLASSES
+    assert len(registry) >= 5, (
+        f"only {len(registry)} structural dataclass types registered; "
+        "expected at least the five reachable via canonical_document "
+        "(Observation, Ref, AppliesTo, Conflict, PinRecord) -- a shrunk "
+        "registry would make this property quantify over less than the "
+        "real domain"
+    )
+    checked = 0
+    for cls in sorted(registry, key=lambda c: c.__name__):
+        sub = type(f"_Sub{cls.__name__}", (cls,), {})
+        instance = _minimal_instance(cls, sub)
+        assert isinstance(instance, cls) and type(instance) is not cls
+        with pytest.raises(R.SchemaError):
+            R.canonical(instance)
+        checked += 1
+
+    # The specific regression this rule closes: an Observation subclass with
+    # an IntEnum evidence value must not canonicalise to the same bytes as a
+    # real Observation carrying the plain int the member wraps -- it must be
+    # refused outright, same as a real Observation with that IntEnum value
+    # already is. Asserting the refusal, not the bytes: two refusals cannot
+    # be compared for equality the way two successful encodings could, so
+    # the meaningful assertion is that BOTH paths refuse.
+    class _Rank(R.enum.IntEnum):
+        THREE = 3
+
+    class _SubObservation(R.Observation):
+        pass
+
+    with pytest.raises(R.SchemaError):
+        R.canonical(R.Observation("t1", (("k", _Rank.THREE),)))
+    with pytest.raises(R.SchemaError):
+        R.canonical(_SubObservation("t1", (("k", _Rank.THREE),)))
+    # The would-be collision, confirmed distinguishable from ordinary int
+    # evidence, which legitimately succeeds:
+    assert R.canonical(R.Observation("t1", (("k", 3),))) == \
+        '{"at":"t1","evidence":[["k",3]]}'
+    _count("P32 structural dataclass types checked", checked)
+
+
 PROPERTIES = {
     "P1": prop_P1_merge_totality_and_semantics,
     "P1b": prop_P1b_validation_is_the_only_raiser,
@@ -2328,6 +2411,7 @@ PROPERTIES = {
     "P29": prop_P29_candidate_id_index_is_a_bijection,
     "P30": prop_P30_reserved_field_name_refused_at_every_structural_position,
     "P31": prop_P31_observation_merge_preserves_distinct_values,
+    "P32": prop_P32_structural_dataclass_arm_is_exact_type,
 }
 
 
@@ -2729,6 +2813,10 @@ DIMENSIONS: Tuple[str, ...] = (
     #: only: there is no runtime copy of this dimension in resolve.py, it
     #: exists purely to make P21's open-domain coverage auditable here.
     "evidence_value_type",
+    #: unit-1 follow-up: whether a value passed to a structural position is
+    #: exactly a registered ``_STRUCTURAL_DATACLASSES`` type or a SUBCLASS of
+    #: one. Test-local only, same reason as ``evidence_value_type`` above.
+    "structural_type_exactness",
 )
 
 #: ``dimension -> the single property that varies it``, filled in by the breadth
@@ -2836,6 +2924,9 @@ NARROWNESS: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...]]] = {
     "P30": (("evidence_value_type",),
             ("value", "provenance", "scope", "fact_key")),
     "P31": (("observation_at", "evidence"),
+            ("value", "provenance", "scope", "identity", "conditions",
+             "fact_key")),
+    "P32": (("structural_type_exactness", "evidence_value_type"),
             ("value", "provenance", "scope", "identity", "conditions",
              "fact_key")),
 }

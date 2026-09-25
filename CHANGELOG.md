@@ -243,20 +243,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by position: schema-fixed *structural* positions (`Candidate.value`,
   `applies_to`, `derived_from`, observations, resolutions, conflicts, and every
   dataclass field that is not itself the one declared open slot) keep today's
-  enum/dataclass/tuple/set/mapping repertoire, but only for the *exact* runtime
+  enum/dataclass/tuple/mapping repertoire, but only for the *exact* runtime
   type declared for that slot — `type(obj) is X`, never `isinstance` — so a
   subclass masquerading as its parent is refused rather than silently accepted.
-  The one remaining open position is `Observation.evidence`'s *values*: caller-
-  supplied evidence is now restricted to `None`, `bool`, `int`, `str`, tagged
-  `bytes`, `list`, and `str`-keyed `Mapping` — an `enum`, `tuple`, `set`,
-  `frozenset`, `float`, or `dataclass` instance placed in evidence is refused
-  with `SchemaError` instead of being silently coerced into whatever JSON shape
-  it happened to resemble. Any caller that was relying on an enum, tuple, set,
-  frozenset, float, or dataclass being accepted at an evidence-value position,
-  or on a builtin-subclass spoofing its parent type at any canonicalised
-  position, will now get `SchemaError` where it previously got a byte string —
-  that byte string was never trustworthy, since it was frequently
-  indistinguishable from a different value's.
+  **Correction:** structural positions have no `set`/`frozenset` arm at all —
+  a `set` there was always refused by the final catch-all, not merely
+  narrowed by this change. The one remaining open position is
+  `Observation.evidence`'s *values*: caller-supplied evidence is now
+  restricted to `None`, `bool`, `int`, `str`, tagged `bytes`, `list`, and
+  `str`-keyed `dict` (**correction:** exactly `dict`, not any `Mapping` —
+  a custom `Mapping` subclass that is not literally `dict` is refused) — an
+  `enum`, `tuple`, `set`, `frozenset`, `float`, or `dataclass` instance placed
+  in evidence is refused with `SchemaError` instead of being silently coerced
+  into whatever JSON shape it happened to resemble. Any caller that was
+  relying on an enum, tuple, set, frozenset, float, or dataclass being
+  accepted at an evidence-value position, or on a builtin-subclass spoofing
+  its parent type at any canonicalised position, will now get `SchemaError`
+  where it previously got a byte string — that byte string was never
+  trustworthy, since it was frequently indistinguishable from a different
+  value's.
+- **BREAKING (follow-up): the structural dataclass arm now dispatches on an
+  explicit, exact-type registry instead of `dataclasses.is_dataclass()`**
+  (`supwngo/schema/resolve.py`). `is_dataclass()` also matches any *subclass*
+  of a registered structural type, and a subclass then missed the open-field
+  lookup that routes `Observation.evidence` through the closed evidence
+  encoder above — so an `Observation` subclass could still smuggle an
+  `IntEnum`, `tuple`, or other refused value through evidence and
+  canonicalise it identically to the plain value it collides with, exactly
+  the class of bug the change above closed for `Observation` itself. A
+  subclass of `Observation`, `Ref`, `AppliesTo`, `Conflict`, or `PinRecord`
+  passed to `canonical()` now gets `SchemaError` naming its type instead of
+  being encoded as its parent.
 
 ### Removed
 - **Phase 5 — two superseded stack executors** (`pipeline/executors/stack_techniques.py`).
