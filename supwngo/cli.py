@@ -2518,6 +2518,26 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output):
                 "has_alarm": engine.context.profile_has_alarm,
                 "leaked_addresses": {k: hex(v) for k, v in engine.context.leaks.items()},
             },
+            # I2: wall-clock seconds spent in each profiling-prologue stage
+            # (`CanonicalAutopwnEngine._run_prologue()`), which precedes the
+            # first technique attempt - `None` until `run()`'s prologue
+            # executes, and NEVER coerced to 0 (that would collapse "never
+            # ran" into "ran in zero seconds", the exact defect this field
+            # exists to let a caller detect).
+            "prologue": {
+                "static_analysis_duration_sec": engine.static_analysis_duration_sec,
+                "dynamic_profile_duration_sec": engine.dynamic_profile_duration_sec,
+                "leak_acquisition_duration_sec": engine.leak_acquisition_duration_sec,
+            },
+            # The pwntools load state (commit 3453f09) - lets a caller tell
+            # "pwntools failed to load this ELF" apart from "this binary
+            # genuinely has no symbols". Enum serialised by `.value` so the
+            # payload stays JSON-clean without relying on `default=str`.
+            "binary_load": {
+                "pwntools_load_state": bin_obj.pwntools_load_state.value,
+                "pwntools_load_error": bin_obj.pwntools_load_error,
+                "protections_measured": bin_obj.protections_measured,
+            },
             # Structured hand-off (Phase 4 of the effectiveness/usability
             # plan) - always present for a stable schema, but only
             # populated beyond `attempts_detail` when `success` is False.

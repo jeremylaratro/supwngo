@@ -97,6 +97,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   has a **positive control** proving it can go red, including the acyclicity
   check, which is fed a hand-built cycle directly because content-derived ids
   make cycles unstorable. 29 properties and 37 mutants.
+- **`autopwn --json` now reports I2's prologue timings and the pwntools load state**
+  (`supwngo/cli.py`). Both were already computed with zero readers: I2's three
+  profiling-prologue stage durations (`CanonicalAutopwnEngine.static_analysis_duration_sec`
+  / `dynamic_profile_duration_sec` / `leak_acquisition_duration_sec`,
+  `orchestrator.py:170-172`) and the pwntools load-state fields on `Binary`
+  (`pwntools_load_state` / `pwntools_load_error` / `protections_measured`, commit
+  `3453f09`) -- neither reached the `autopwn --json` payload, so `report.json` could not
+  separate "the prologue ate the budget" from "the route was wrong", nor "pwntools failed
+  to load this ELF" from "this binary genuinely has no symbols". The `result` dict at
+  `cli.py:2508-2526` gains two new keys: `"prologue"` (the three durations, `None`
+  preserved as `null` rather than coerced to `0`) and `"binary_load"` (the load state
+  serialised by `.value`, the error string, and `protections_measured`). No change to
+  `orchestrator.py`, `binary.py`, or `benchmark/run_bench.py` -- the harness already
+  captures the full parsed payload, so the new keys reach `report.json` automatically.
+  Deliberately kept out of `notes`/`failure_reason` (which `templates.py` renders into
+  generated exploit scripts that `rep_divergence.py` hashes per rep) -- new
+  `tests/test_cli_autopwn_json_wiring.py` drives the real `autopwn --json` CLI
+  end to end and asserts on the JSON payload itself (not the underlying `Binary`/engine
+  attributes, which `tests/test_binary_load_state.py` and `tests/test_i2_attempt_duration.py`
+  already cover).
+- **Per-attempt `duration_sec` and profiling-prologue timing** (I2,
+  `supwngo/exploit/pipeline/contracts.py`, `orchestrator.py`). `AttemptRecord` gains a
+  `duration_sec` field (also added to `to_dict()`, so it reaches
+  `autopwn_json_probe.parsed.attempts` in `report.json`), wall-clocked by the orchestrator
+  strictly around each executor's `attempt()` call -- never inside an executor's own
+  internal loop (e.g. `VariableOverwriteExecutor`'s 126-combination sweep), so the
+  instrument cannot perturb the thing it measures. Separately, `CanonicalAutopwnEngine`
+  now times its three profiling-prologue stages (`run_static_analysis`,
+  `run_dynamic_profile`, `acquire_leaks`) as three distinct attributes
+  (`static_analysis_duration_sec`, `dynamic_profile_duration_sec`,
+  `leak_acquisition_duration_sec`), since those precede the first `attempt()` and so
+  cannot be derived from per-attempt durations alone. `run()`'s per-technique loop and
+  prologue were split into `_attempt_techniques()`/`_run_prologue()` (pure code motion,
+  no behavior change) so each half is independently testable. Deliberately kept out of
+  `notes`/`failure_reason` (which `templates.py` renders into generated exploit scripts
+  that `rep_divergence.py` hashes per rep) -- structured field and `to_dict()`/engine
+  attributes only.
+- **`failure_reason` populated at two previously-silent swallowing sites** (I5,
+  `supwngo/exploit/pipeline/executors/stack_techniques.py`,
+  `supwngo/exploit/pipeline/executors/heap_and_bypass.py`). `VariableOverwriteExecutor`
+  (the recorded cause of 11 of 11 R2 failures) now sets `failure_reason` when its
+  buffer-size x magic-value sweep is exhausted, stating what was tried, instead of only
+  logging it to prose `notes`. `ScanfCanaryBypassExecutor.attempt()` swallowed failure at
+  two distinct sites with no `failure_reason` at all -- an exception anywhere before a
+  verdict, and a real menu-driven probe (`_test_scanf_bypass()`) returning `False` -- both
+  now set one of two fixed, mutually-distinguishable constants
+  (`FAILURE_REASON_EXCEPTION` / `FAILURE_REASON_PROBE_UNCONFIRMED`) rather than converging
+  on the same text or staying blank; the raw exception message itself continues to live
+  only in `record.error` (never rendered by `templates.py`), so an attacker-influenced or
+  otherwise arbitrary string can never reach a generated script. **Behavior/output change:**
+  `failure_reason` is rendered into generated exploit scripts by
+  `templates.py:generate_universal_template` (`attempts_str`), so scripts for these two
+  swallowing sites now contain this new prose where they previously did not -- verified
+  against `run_bench.py`'s `_SCRAPES_BINARY_RE` script-cheat-detection vocabulary (no
+  `strings`/`objdump`/`readelf`/`xxd`) by a repo-wide AST-based literal scan in the new
+  test file, so this cannot trip a cheat verdict. Also pre-declares and tests a precedence
+  change this reachable for `variable_overwrite`: `handoff.py:292`'s
+  `record.failure_reason or record.error or None` now yields the new sweep-exhaustion text
+  instead of falling through to `None`/`record.error`. Note: `scanf_canary_bypass` has no
+  `ExploitApproach` entry in `strategy.py`'s `APPROACH_TO_TECHNIQUE`, so that same
+  `handoff.py:292` code path can never actually select it in practice (SKIPPED on all 12
+  real R1/R2 occurrences) -- covered separately by a test against the precedence
+  expression's shape directly rather than a full end-to-end `handoff.py` call, since no
+  real run reaches it. `scanf_canary_bypass`'s two legs are exercised by a new, genuine
+  (compiled, not mocked) induced fixture at
+  `tests/fixtures/i5_scanf_canary_bypass/scanf_canary_target.c`, following the layout of
+  `tests/fixtures/i3_candidate_provenance/` -- `benchmark/corpus/` and `benchmark/corpus_r2/`
+  are untouched.
+- **Candidate provenance on `AttemptRecord`** (`supwngo/exploit/pipeline/contracts.py`,
+  `VariableOverwriteExecutor` in `supwngo/exploit/pipeline/executors/stack_techniques.py`).
+  A new structured `candidate_provenance` field (also added to `AttemptRecord.to_dict()`,
+  so it reaches `autopwn_json_probe.parsed.attempts` in `report.json`) records which
+  candidate value produced a technique's payload and where it came from --
+  `literal_magic_list` (drawn verbatim from a fixed list, e.g. `MAGIC_VALUES`) versus
+  `recovered_immediate` (decoded from the target's own instruction stream, with the
+  instruction address). `VariableOverwriteExecutor` -- a 126-combination sweep over 9
+  hardcoded "magic" constants with no recovery step -- is the first executor converted,
+  so a credited SUCCESS produced by the sweep is now self-identifying in the record
+  rather than indistinguishable from a genuinely recovered value. Deliberately kept out
+  of `notes`/`failure_reason` (which `templates.py` renders into generated exploit
+  scripts that `rep_divergence.py` hashes per rep) -- structured field and `to_dict()`
+  only.
+- **Benchmark harness — per-invocation `duration_sec` on both pipeline wrappers**
+  (`benchmark/run_bench.py`, `run_one()`). `elapsed_sec` on a target's report spans TWO
+  full `autopwn` invocations (the `--json` self-report probe and the `-o` script-generation
+  run), so it could not answer "how long did the pipeline actually take" versus "how much
+  was harness overhead" without attributing a whole second pipeline run to overhead. Both
+  `autopwn_json_probe` and `autopwn_script_generation` in `report.json` now carry their own
+  additive `duration_sec`, wall-clock around just that invocation. Read-only addition: no
+  verification, attribution, or cheat-detection logic changed.
 - **Phase 5 (reliability hardening) — stdio-safe multi-part payload delivery**
   (`supwngo/exploit/pipeline/delivery.py`). Every native executor previously delivered
   its payload as a *single* write (`subprocess.run(input=blob)` / one `sendline`), which
@@ -786,6 +876,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejecting any `max`/`min`/`sorted` keyed on `.score` inside `families/`, and
   behavioural tests that reverse each family's candidate list and assert the
   answer does not move.
+- **Concurrent benchmark runs shared one non-atomic pwntools gadget cache, so a
+  solvable target could fail for a reason that was not its capability**
+  (`benchmark/run_bench.py`). pwntools keys its ROP gadget cache by the ELF's
+  sha256 under `$XDG_CACHE_HOME/.pwntools-cache-<pyver>/`, writes it with
+  `open(f, 'w+').write(repr(data))` — truncate-in-place, unlocked, non-atomic —
+  and reads it back through an uncaught `eval(open(f).read())`. Two benchmark
+  processes analysing the same corpus binary therefore shared one file, and a
+  reader arriving mid-write raised out of `ROP()`, surfacing as a spurious
+  technique failure — a fabricated *capability* result, which is the one thing
+  this harness must never produce. `run_bench.py` now defaults `XDG_CACHE_HOME`
+  to a per-process directory at module import (so every CLI child inherits it),
+  via `setdefault` so an explicitly chosen root still wins. This race is real and
+  has a demonstrated positive control, but it was **not** the cause of the
+  walkthrough `triage` cluster — that was the poisoned `pwnlib` import fixed
+  below, and the two are deliberately not conflated. No scoring, verification or
+  attribution code is touched.
 - **A first `import pwn` under an in-memory stdout permanently broke pwntools for
   the rest of the process, silently collapsing walkthrough families to `triage`**
   (new root `conftest.py`). `pwnlib/term/text.py` calls `curses.setupterm()` at
@@ -1562,3 +1668,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path (which calls `identify_leaked_value`) repeatedly against a real compiled
   binary during this Phase 3 repair's benchmark spot-check; fixed both call sites
   to use `base_address`.
+- **A failed pwntools ELF load was silently renamed into "this binary has no
+  symbols / no protections"** (`supwngo/core/binary.py`). `_load_with_pwntools()`
+  ended in two broad `except` handlers (`ImportError`, then bare `Exception`)
+  that both only logged a `warning` and let `Binary.load()` continue into
+  `_load_with_pyelftools()`/`_detect_protections()` with `_elf` left `None` — so
+  a corrupt or unloadable ELF read exactly like a real, symbol-less binary, and
+  downstream `rop_chain` would abstain, silently collapsing to `triage`.
+  Separately, `_detect_protections()`'s `if self._elf:` had no `else`, so a
+  failed load left `protections` at its dataclass defaults, indistinguishable
+  from a genuine measurement of an unprotected binary. `Binary` now tracks a
+  new tri-state `pwntools_load_state` field (`PwntoolsLoadState`:
+  `NOT_ATTEMPTED` / `SUCCESS` / `PWNTOOLS_UNAVAILABLE` / `LOAD_FAILED`,
+  initialised to `NOT_ATTEMPTED` — never `SUCCESS` — so a code path that never
+  runs the loader cannot read as success) plus `pwntools_load_error` (the
+  exception text), and both failure arms now log at `error`, not `warning`.
+  `_detect_protections()` gained the missing `else`, setting a new
+  `protections_measured: bool` so "protections were never measured" is
+  distinguishable from "measured and every flag happens to be `False`" — the
+  same value would previously be returned in both cases. Deliberately kept out
+  of `AttemptRecord.notes`/`failure_reason` (`templates.py` renders both into
+  generated exploit scripts that `benchmark/rep_divergence.py` hashes per rep;
+  a value that varies per run would make every target `DIVERGENT`) — these are
+  structured `Binary` fields only. No changes to `benchmark/`, `corpus*`, or any
+  scoring/verification/attribution code.

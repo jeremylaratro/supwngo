@@ -5,12 +5,27 @@ Binary abstraction layer for ELF/PE parsing and analysis.
 import os
 import hashlib
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from supwngo.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+class PwntoolsLoadState(Enum):
+    """How the pwntools ``ELF`` load in :meth:`Binary._load_with_pwntools` went.
+
+    A failed or skipped pwntools load must never be silently indistinguishable
+    from "this binary genuinely has no symbols" -- callers should check this
+    before trusting empty ``symbols``/``plt``/``got`` as a real finding.
+    """
+
+    NOT_ATTEMPTED = "not_attempted"
+    SUCCESS = "success"
+    PWNTOOLS_UNAVAILABLE = "pwntools_unavailable"
+    LOAD_FAILED = "load_failed"
 
 
 @dataclass
@@ -116,6 +131,18 @@ class Binary:
     base_address: int = 0
     protections: Protections = field(default_factory=Protections)
 
+    # How the pwntools load went. Starts at NOT_ATTEMPTED (not SUCCESS) so a
+    # code path that never runs _load_with_pwntools() cannot read as a
+    # successful load. This is what lets a caller distinguish "pwntools
+    # failed to load this ELF" from "this binary genuinely has no symbols".
+    pwntools_load_state: PwntoolsLoadState = PwntoolsLoadState.NOT_ATTEMPTED
+    pwntools_load_error: Optional[str] = None
+
+    # Whether _detect_protections() actually measured protections (the ELF
+    # loaded) as opposed to never running the measurement at all. "Never
+    # measured" must not read the same as "measured and every flag is False".
+    protections_measured: bool = False
+
     # Symbol tables
     symbols: Dict[str, Symbol] = field(default_factory=dict)
     imports: Dict[str, Import] = field(default_factory=dict)
@@ -204,12 +231,17 @@ class Binary:
                     binding="UNKNOWN",
                 )
 
+            self.pwntools_load_state = PwntoolsLoadState.SUCCESS
             logger.debug(f"Loaded binary with pwntools: {self.arch} {self.bits}-bit")
 
-        except ImportError:
-            logger.warning("pwntools not available, skipping pwntools analysis")
+        except ImportError as e:
+            self.pwntools_load_state = PwntoolsLoadState.PWNTOOLS_UNAVAILABLE
+            self.pwntools_load_error = str(e)
+            logger.error(f"pwntools not available, skipping pwntools analysis: {e}")
         except Exception as e:
-            logger.warning(f"Failed to load with pwntools: {e}")
+            self.pwntools_load_state = PwntoolsLoadState.LOAD_FAILED
+            self.pwntools_load_error = str(e)
+            logger.error(f"Failed to load with pwntools: {e}")
 
     def _load_with_pyelftools(self) -> None:
         """Load binary using pyelftools for detailed ELF analysis."""
@@ -318,8 +350,15 @@ class Binary:
                     relro=self._relro_str(self._elf.relro),
                     fortify="_chk" in str(self.symbols.keys()),
                 )
+                self.protections_measured = True
+            else:
+                # No ELF to measure -- leave protections at its dataclass
+                # defaults, but record that this is an unmeasured default,
+                # not a real all-false measurement.
+                self.protections_measured = False
         except Exception as e:
             logger.warning(f"Failed to detect protections: {e}")
+            self.protections_measured = False
 
     def _relro_str(self, relro: bool) -> str:
         """Convert relro boolean to string."""

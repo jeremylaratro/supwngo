@@ -128,6 +128,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import fcntl
 from contextlib import contextmanager
@@ -145,6 +146,27 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from attribution import (  # noqa: E402
     attribution_verdict, strace_available, witness as attribution_witness)
+
+# Give this benchmark process -- and every CLI child that inherits its
+# environment -- a private pwntools cache root.
+#
+# pwntools keys its ROP gadget cache by the ELF's sha256 under
+# `$XDG_CACHE_HOME/.pwntools-cache-<pyver>/`, writes it with
+# `open(f, 'w+').write(repr(data))` (truncate-in-place, unlocked, non-atomic)
+# and reads it back through an uncaught `eval(open(f).read())`. Two benchmark
+# runs analysing the same corpus binary therefore share one file, and a reader
+# arriving mid-write raises out of `ROP()`. That surfaces as a spurious
+# technique failure on a target that is otherwise solvable -- i.e. as a
+# capability result, which is the one thing this harness must never fabricate.
+#
+# This is a real race with a demonstrated positive control; it was NOT the cause
+# of the walkthrough `triage` cluster (that was a poisoned `pwnlib` import, fixed
+# in the root `conftest.py`), and the two must not be conflated. `setdefault` so
+# an explicitly chosen cache root still wins.
+os.environ.setdefault(
+    "XDG_CACHE_HOME",
+    os.path.join(tempfile.gettempdir(), f"supwngo-bench-cache-{os.getpid()}"),
+)
 
 HERE = Path(__file__).resolve().parent          # benchmark/
 REPO_ROOT = HERE.parent                          # worktree root (supwngo/ package lives here)
@@ -913,14 +935,18 @@ def run_one(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
     control = negative_control(corpus, slug, expected_flag, timeout, tmpdir=tmpdir)
 
     # (1) structured self-report
+    t_probe0 = time.time()
     rc1, out1, err1, to1 = run_supwngo(bp, timeout, ["--json"], tmpdir=tmpdir)
+    probe_duration = time.time() - t_probe0
     supwngo_json = parse_json_result(out1) if out1 else None
 
     # (2) the actual generated script (only written in non-JSON mode -- see
     #     module docstring)
     script_path = results_dir / f"{slug}_generated.py"
+    t_scriptgen0 = time.time()
     rc2, out2, err2, to2 = run_supwngo(bp, timeout, ["-o", str(script_path)],
                                        tmpdir=tmpdir)
+    script_generation_duration = time.time() - t_scriptgen0
 
     # (3) genuine independent verification
     script_audit = inspect_generated_script(script_path, expected_flag)
@@ -963,12 +989,14 @@ def run_one(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
         "autopwn_json_probe": {
             "returncode": rc1,
             "wall_timed_out": to1,
+            "duration_sec": round(probe_duration, 3),
             "parsed": supwngo_json,
             "stderr_tail": (err1 or "")[-1500:],
         },
         "autopwn_script_generation": {
             "returncode": rc2,
             "wall_timed_out": to2,
+            "duration_sec": round(script_generation_duration, 3),
             "stderr_tail": (err2 or "")[-1500:],
         },
         "verification": verify,
