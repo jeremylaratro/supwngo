@@ -254,3 +254,8 @@ docs/.obsidian/
 
 # Internal state files
 .implementation_state
+
+# Claude Code agent worktrees (harness scratch; the branches they hold are the
+# real artifact). Only worktrees/ is ignored, so a future .claude/settings.json
+# or .claude/agents/ remains trackable.
+.claude/worktrees/
