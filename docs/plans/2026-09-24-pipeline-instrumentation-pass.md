@@ -917,6 +917,79 @@ from the fixed candidate list; no combination was confirmed"* — 11 of R2's 11
 `variable_overwrite` FAILED outcomes, matching the recorded "cause of 11 of 11 R2
 failures". Durations vary: 67 distinct values of 67.
 
+## 5.4c Decision: WIRE the prologue timings, do not delete them — and before I1
+
+**Decided by the coordinator on the strength of the §5.2 erratum. Recorded here so the
+rationale travels with the code.**
+
+The erratum established that I2's prologue half is write-only: the three attributes have
+zero consumers and reach no artifact. Deleting them would be defensible. **It is the wrong
+call here, for a specific reason: where the time goes inside the prologue is the
+measurement the ordering question needs.** §5.3 measured that the strategy layer fixes the
+attempt position of only **1 of 17** executors while **11** are fixed by `FIRST_TECHNIQUES`,
+and R5's figure is exposed to that ordering under a 360 s wall. Distinguishing *"the
+prologue ate the budget"* from *"the route was wrong"* is the difference between a timeout
+and a genuine miss — and it is the same decomposition the three-bucket primitive-depth
+analysis needs.
+
+**Unread, the three fields are worse than absent: they are a false-provenance trap.**
+Someone greps, sees them assigned, and reports that the project has prologue timing. That
+is the same shape as the defects this pass exists to stop.
+
+### The four binding conditions on the wiring
+
+1. **Structured fields only — never `notes`, never `failure_reason`.** My own injection
+   proof is the reason: a duration reaching `record.notes` propagates through
+   `templates.py:145` into generated scripts and then into `rep_divergence.py`'s cross-rep
+   hash, and made **all 15 targets DIVERGENT**.
+2. **Prove it does not reach the divergence hash.** Adding fields to the run record is
+   exactly the *"additive is not inert wherever the artifact is compared across runs, reps
+   or hosts"* shape. Re-run the divergence check after wiring and show **0 DIVERGENT** —
+   measured, not argued.
+3. **A positive instance plus a wrong-but-present mutation.** A target on which all three
+   stage durations are non-zero *and mutually distinct*, and a mutation pinning them to a
+   constant which must go red. An absence-only mutation would pass against a hardwired
+   value — the failure mode that made 11 recorded instances of this project's signature
+   defect.
+4. **The gate fails when a field is absent on a target whose stage actually ran**, not
+   merely when the attribute is missing everywhere. A gate keyed to global absence is
+   satisfiable by a single assignment anywhere.
+
+### Sequencing, and why this goes first
+
+Both this and I1 touch `orchestrator.py`, so one rebases on the other regardless. The
+prologue wiring is **smaller and purely additive on the output path**, so ordering it first
+lets I1's larger, behaviour-bearing change land on a stable base and keeps I1's review from
+being entangled with it.
+
+## 5.4d M8 + I1 authorized, with one binding condition on the single impure predicate
+
+The §5.3-adjacent survey (16 `is_applicable` definitions; 15 pure; exactly 1 performing
+process I/O; transitive helper path checked rather than inferred from a direct-call grep)
+is accepted as the right scope-matching shape.
+
+**Binding condition.** `LeakedStackShellcodeExecutor._probe_stack_leak`
+(`shellcode_techniques.py:49`) is the only predicate that can change **how many times a
+target is executed**. Every credited result in this project rests on behavioural
+attribution of process executions, so a migration that changes execution counts **can move
+a figure without any technique changing**. Therefore: **prove per-target execution counts
+are unchanged for that executor's targets, before and after, from the traces — not from
+reasoning about the code.** If they cannot be held equal, **leave that one predicate
+unmigrated and record it as out of scope** rather than accept the risk.
+
+**"Pure" is not "equivalent".** The remaining 15 still require M8's semantic reproduction
+check — does `attempt()` reproduce the *full* predicate? The I/O finding does not stand in
+for that check and must not be allowed to.
+
+### Practice adopted: two independent completion predicates, ORed
+
+My R2 wait nearly became a wait-forever: the `find` half was keyed to
+`benchmark/results/` and R2 writes to `benchmark/results_r2/`, so it never matched; the
+PID-existence half is what ended the wait. **A single completion predicate keyed to a path
+silently becomes a wait-forever the moment a path assumption changes.** Two independent
+predicates, ORed, is the cheap general fix — recorded alongside the existing `pgrep -f`
+prohibition.
+
 ## 5.4 Pre-registered trigger for the F3 confound arm
 
 **Registered before the re-run, so the decision is not made after seeing which answer is
