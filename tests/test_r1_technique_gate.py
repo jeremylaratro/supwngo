@@ -16,9 +16,23 @@ failure shape it claims to catch, not just that it passes on good data:
     not incidentally true. 13_off_by_one is VOID but its structured technique field is
     still "ret2win", so a naive "every slug with a technique" filter yields 14 rows.
 
-The archived artifact under test is benchmark/results/20260924-172232Z/report.json,
-treated as read-only (other agents hold corpus_lock and may be running the harness
-concurrently against other artifacts).
+The artifact under test is the archived R1 run
+benchmark/results/20260924-172232Z/report.json, committed as a test fixture at
+tests/fixtures/r1_report_20260924-172232Z.json (the whole report, because the gate's
+CLI entry point parses the report document, not a bare results array).
+
+It is committed **redacted**: every `FLAG{<hex>}` value (130 of them, in the `flag`
+and `secret_flag` fields) is replaced by the literal `FLAG{REDACTED}`. The run
+directory itself is gitignored (benchmark/.gitignore), and the secret flags MUST NOT
+enter the repository -- they are how a solve is verified, so a flag readable from the
+tree would let a component pass by reading the answer instead of exploiting. Redaction
+was shown to be verdict-neutral before committing: `gate()` returns the same 13-row
+observed map on the original and the redacted results, because the gate consumes only
+`slug` and `autopwn_json_probe.parsed.technique`.
+
+Reading the live run directory instead (as this test originally did) makes the suite
+pass only inside the worktree that happened to produce that run: it was 8 failed /
+1 passed in any clean checkout, including on its own source branch.
 """
 from __future__ import annotations
 
@@ -30,7 +44,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GATE = REPO_ROOT / "benchmark" / "r1_technique_gate.py"
-REPORT = REPO_ROOT / "benchmark" / "results" / "20260924-172232Z" / "report.json"
+REPORT = REPO_ROOT / "tests" / "fixtures" / "r1_report_20260924-172232Z.json"
 
 
 def _load_gate():
@@ -48,8 +62,13 @@ gate_mod = _load_gate()
 
 
 def _real_results() -> list[dict]:
-    data = json.loads(REPORT.read_text())
-    return copy.deepcopy(data["results"])
+    results = json.loads(REPORT.read_text())["results"]
+    if not results:
+        raise AssertionError(
+            f"fixture {REPORT} carries an empty results array; the positive "
+            f"control would otherwise pass against nothing"
+        )
+    return copy.deepcopy(results)
 
 
 def _drop(results: list[dict], slug: str) -> list[dict]:
