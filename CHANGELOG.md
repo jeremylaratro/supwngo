@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sigreturn frame, then calling `execve()`. This is the canonical SROP approach
   for minimal static binaries (e.g. HackTheBox "Sick ROP").
 
+- Executor skip reasons for heap techniques: `TcachePoisonGotExecutor`,
+  `UAFExecutor`, `DoubleFreeExecutor`, and `ScanfCanaryBypassExecutor` now
+  report specific precondition failures (PIE, Full RELRO, missing PLT
+  entries, no menu detected) instead of generic "not applicable".
+
 ### Removed
 - Dead packages: `ai`, `api`, `containers`, `distributed`, `embedded`,
   `macos`, `windows` (12,136 lines, 27 files). All 7 packages had zero
