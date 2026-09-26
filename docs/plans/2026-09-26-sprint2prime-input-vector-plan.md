@@ -7,10 +7,15 @@ Phase 5 artifact. Closes **G-2a** (argv/file targets structurally unreachable) a
 **Provenance labels**: `measured` (I ran it this session), `recorded` (prior
 artifact, cited), `inferred` (reasoned, not observed).
 
-**Status: REVISION 2 — round-2 peer review returned NOT-APPROVED with 3 Critical
-findings. I independently verified all three against the source and they are
-correct; finding 4 is correct and *understated*. No code has been written.
-Revision 2 narrows the scope and is re-submitted for round 3 (last of 3).**
+**Status: REVISION 3 (current) — see the REVISION 3 section at the end of this
+document, which supersedes Revision 2's §4 feeder design. Rounds 2 and 3 both
+returned NOT-APPROVED on the same class (the probe's authority), so the 3-round
+cap was reached and the outcome is a design change: the probe becomes advisory and
+the vector becomes operator-declared. No implementation code has been written.**
+
+*The Revision-2 material below is retained rather than edited away, so the
+correction sits beside the original. Where §4 and Revision 3 disagree, Revision 3
+governs.*
 
 > ## Round-2 review disposition (Daybreak Blue, `xhigh`, NOT-APPROVED)
 >
