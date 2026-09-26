@@ -116,6 +116,79 @@ On a target where `variable_overwrite` is the wrong technique this burns the
 wall-clock budget 3.67x harder — the exact failure mode that already prevents
 `sick_rop` from reaching `variable_overwrite` under `--all-strategies`.
 
+### B-2 — `detect_input_sources()` cannot discriminate input vectors; it is inverted on the one case that matters
+`measured`, **pre-existing**, found while verifying Sprint 2′'s premise *before*
+writing code. Sprint 2′ was planned as "thread the existing classification into a
+vector-aware delivery path". That premise is false: the classifier cannot feed it.
+
+Measured, `StaticAnalyzer(Binary.load(t)).detect_input_sources()` over the target set:
+
+| target | reported types |
+|---|---|
+| ancient_interface | `['file input', 'stdin/file']` |
+| auth-or-out | `['file input', 'stdin/file']` |
+| bon-nie-appetit | `['file input', 'stdin/file']` |
+| rocket_blaster_xxx | `['file input', 'stdin/file']` |
+| sabotage | `['environment', 'file input', 'stdin/file']` |
+| **snowscan** (the only real argv/file target) | **`[]`** |
+
+Three independent defects, each `measured`:
+
+1. **Static binaries are invisible.** The classifier only reads `binary.plt`
+   (`static.py:281`, `if func_name in self.binary.plt`). `snowscan` is
+   `ELF 64-bit LSB executable, ... statically linked` and `len(binary.plt) == 0`;
+   `readelf -r` shows no `fopen`/`read`/`fread` relocation. A PLT-import
+   classifier structurally cannot see any input source in it.
+2. **The only argv classification is dead code.** `INPUT_SOURCES["argv"] =
+   "command line"` (`static.py:76`) is looked up with `"argv" in self.binary.plt`.
+   `argv` is never a PLT symbol — it is a `main()` parameter. This entry can
+   never fire on any binary, so the codebase's sole "command line" vector label
+   is unreachable.
+3. **`file input` is non-discriminating.** `has_file_io` ORs over
+   `["fopen", "open", "fread", "read"]` (`static.py:303`). `read` is *the* stdin
+   primitive, so every stdin-reading target is labeled `file input` — 5/5 above.
+
+**Consequence for Sprint 2′.** Feeding this classifier into a vector-aware
+delivery path would be worse than doing nothing: it would leave the file channel
+off for `snowscan` (detected `[]`) while switching all 5 currently-working stdin
+targets to a file channel (`file input`). That is a plausible 5/5 regression in
+exchange for zero gain — the inverse of the intended effect. **The vector signal
+must come from somewhere else.**
+
+**Measured alternative signal — the argv-differential probe.** Match identity:
+run the target twice under its bundled loader (`glibc/ld-*.so --library-path
+glibc`) with stdin at `/dev/null`, once with no argv and once with a single
+throwaway path argument, and compare the first 300 bytes of `stdout+stderr`.
+
+| target | output differs with argv? | evidence |
+|---|---|---|
+| ancient_interface | False | identical `user@host$` shell prompt |
+| auth-or-out | False | identical welcome banner |
+| rocket_blaster_xxx | False | identical ANSI banner |
+| **snowscan** | **True** | `No file provided as an argument.` → `Invalid file extension. Only accepting .bmp files.` |
+| bon-nie-appetit | *inconclusive* | bundled `ld-*.so` is not executable (fixture permissions) |
+| sabotage | *inconclusive* | same |
+
+4/6 measured: **0 false positives, 1 true positive, 2 inconclusive.** The two
+inconclusive rows are a fixture-permission artifact; I did not `chmod` committed
+fixtures to improve a number. This signal is behavioral, so it is immune to
+defects 1–3 (it needs no symbols and works on static binaries), and it is
+target-authored output rather than our inference.
+
+### B-3 — `snowscan` stacks three format gates behind the argv gate
+`measured`. Even with a working argv/file channel, `snowscan` is not solvable by
+an unstructured payload. Its validation ladder, each stage confirmed by running it:
+
+1. filename must end `.bmp` → `ERROR: Invalid file extension. Only accepting .bmp files.`
+2. file must open → `ERROR: Failed to open file.`
+3. contents must carry a valid signature → `Invalid file signature.`
+4. bitmap must be square, 20x20–30x30 → `ERROR: Invalid bitmap size. The acceptaple resolution range is 20x20 to 30x30.`
+
+All four run with `rc=0`, so **exit status carries no signal at all** — only the
+target's stdout discriminates. This means "deliver bytes to a file" and "satisfy a
+structured-format parser" are two different capabilities, and only the first is
+Sprint 2′. Registered separately rather than smuggled into Sprint 2′'s scope.
+
 ## Issues (friction / debt) — pre-existing, NOT caused by this effort
 
 ### I-1 — `test_i2_attempt_duration` fails on `main`
@@ -142,6 +215,8 @@ adjustment with a stated reason.
 | **G-1** | 5 — directly gates T-1; without it `variable_overwrite` cannot solve a target whose constant is not folklore | 2 — one executor, the recovery helper already existed; provenance semantics need care | P0 | none | **P0** | `now` |
 | ~~G-2~~ | — | — | — | **withdrawn**: mis-diagnosed, superseded by G-2′ | — | `closed` |
 | **G-2a** (argv/file) | 5 — a whole target class is structurally unreachable; no technique can ever win it | 3 — new delivery+verifier channel, but additive and testable in isolation | P0 | none | **P0** | `now` |
+| **B-2** (vector classifier inverted) | 5 — it is the *feeder* for G-2a; using it as-is risks a 5/5 regression for zero gain, so G-2a cannot ship without resolving this | 2 — needs a discriminating signal, and the argv-differential probe is already measured to work (0 FP, 1 TP) | P0 | none | **P0** | `now` (rides in Sprint 2′) |
+| **B-3** (format gates) | 3 — it is what stands between a working file channel and `snowscan` actually solving, i.e. between Sprint 2′ and T-1 | 4 — needs a structured-format payload synthesizer (valid BMP header + dimension constraints); unproven | P2 | **push down**: it is strictly downstream of G-2a, and bundling it would make Sprint 2′ untestable in isolation | **P2** | `later` |
 | **G-2b** (command shell) | 4 — unblocks `ancient_interface` | 4 — needs per-target protocol inference; approach unproven | P2 | **spike-first**: infer-the-protocol is the unproven part | **P2** | `later` |
 | **G-2c** (banner/handshake) | 3 — partly handled by existing settle discipline | 2 — extends `deliver_parts()` | P1 | none | **P1** | `later` |
 | **G-2d** (network) | 2 — no target in this set exercises it; `inferred` only | 4 — socket lifecycle, unproven | P3 | none | **P3** | `later` |
@@ -149,6 +224,11 @@ adjustment with a stated reason.
 | **I-1** | 2 — pre-existing, no effect on T-1 | 2 — test-construction fix | P2 | none | **P2** | `later` |
 | **I-2** | 2 — pre-existing, no effect on T-1 | 3 — 90s timeout, cause unknown | P3 | none | **P3** | `later` |
 | **I-3** | 1 — `explain` is not on the T-1 path | 3 — unknown | P3 | none | **P3** | `document-and-move-on` |
+| **I-4** (provenance conflation + dead `instruction_address`) | 2 — describes a win, cannot cause one; measured 0/6 corpus reachability | 3 — one contract change, 2 production consumers + 3 test refs + 1 benchmark tool | P2 | none | **P2** | `later` |
+| **I-5** (`record.offset` reads as minimal but is first-win-under-ordering) | 1 — sole artifact consumer is a docstring note (`templates.py:141`) | 1 — state the rationale at the loop | P3 | none | **P3** | `document-and-move-on` |
+
+I-4 and I-5 were raised by peer-review round 1 and are answered by class in
+`docs/plans/2026-09-26-peer-review-round1-class-answers.md`.
 
 ### Phase 3 — Sprint split (by triage band)
 
@@ -162,10 +242,22 @@ adjustment with a stated reason.
   a false-positive risk that would convert a solvable target into a
   deterministic failure. **Null result, reverted rather than kept.**
 - **Sprint 2′ (P0): input-vector abstraction — argv/file channel** — closes
-  **G-2a**. Give `delivery.py`/`PipelineVerifier` a vector-aware delivery path
-  (stdin | argv | file), fed by the `detect_input_sources()` classification that
-  already exists. Scope held to argv/file: it is the one sub-class with a
-  `measured`, structurally-excluded target (`snowscan`).
+  **G-2a** and **B-2**. Give `delivery.py`/`PipelineVerifier`/`script_builder.py`
+  a vector-aware delivery path (stdin | argv | file), fed by a **behavioral
+  argv-differential probe**. Scope held to argv/file: it is the one sub-class with
+  a `measured`, structurally-excluded target (`snowscan`).
+
+  > **REVISION (26SEP2026).** As first written this sprint said "fed by the
+  > `detect_input_sources()` classification that already exists". Verifying that
+  > premise before coding produced **B-2**: the classifier reports `[]` for
+  > `snowscan` and `file input` for all 5 stdin targets, so it is inverted on the
+  > only discriminating case. B-2 now rides in this sprint and the feeder is the
+  > measured argv-differential probe instead. The original wording is corrected
+  > here rather than only in chat, per Phase 8.
+  >
+  > **This sprint does not advance T-1.** `snowscan` stays unsolved because of
+  > **B-3** (three stacked format gates behind the argv gate). Stated up front so
+  > the Phase-8 claim is about the channel, not about a target count.
 - **Sprint 3 (P2, spike first): SROP verification I/O** — **G-3**. Requires a
   reproduction that isolates where the three-stage script blocks *before* any
   fix is planned. Not started, and correctly not started: it was triaged
