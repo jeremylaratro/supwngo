@@ -30,6 +30,9 @@ class SymbolicConfig:
     exploration_technique: str = "dfs"  # dfs, bfs, or explore
 
 
+DEFAULT_LIBC_VERSION: str = "2.31"
+
+
 @dataclass
 class ExploitConfig:
     """Exploit generation configuration."""
@@ -38,6 +41,7 @@ class ExploitConfig:
     max_rop_chain_length: int = 50
     shellcode_encoder: Optional[str] = None
     target_arch: str = "auto"
+    libc_version: str = DEFAULT_LIBC_VERSION
 
 
 @dataclass

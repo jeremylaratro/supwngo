@@ -50,6 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RestrictedShellcodeConstraints` to eliminate name collision with the
   distinct class in `constrained_shellcode.py`. The public API export name
   is unchanged.
+- Hardcoded `libc_version="2.31"` defaults across 9 callsites (heap techniques,
+  FSOP, off-by-one, tester) now reference `DEFAULT_LIBC_VERSION` from
+  `supwngo.utils.config`. The value is unchanged but lives in one place.
 
 ### Removed
 - Dead packages: `ai`, `api`, `containers`, `distributed`, `embedded`,
@@ -58,6 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TestLLMAnalyzer` was also removed.
 
 ### Fixed
+- `--json` output on all 20 CLI commands no longer mixes Rich console text
+  (progress spinners, status messages, banners) into stdout. Console output
+  is redirected to stderr when `--json` is active; JSON is written directly
+  to stdout via `click.echo()`. This makes `supwngo analyze ./bin --json |
+  jq .` work correctly.
 - `autopwn`, `exploit`, and `solve` commands now exit with code 1 when
   exploitation fails. Previously all 32 non-`report` commands always returned
   exit code 0 regardless of outcome, making scripted usage and CI integration

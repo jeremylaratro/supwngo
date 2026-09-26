@@ -20,6 +20,33 @@ from supwngo import __version__
 console = Console()
 
 
+def _emit_json(data, **kwargs):
+    """Write JSON to stdout regardless of console redirection."""
+    click.echo(json.dumps(data, indent=2, default=str, **kwargs))
+
+
+def _json_mode():
+    """Redirect Rich console and library loggers to keep stdout clean for JSON."""
+    console.file = sys.stderr
+    from supwngo.utils.logging import console as log_console
+    log_console.file = sys.stderr
+    try:
+        from pwnlib.context import context as pwn_context
+        pwn_context.log_level = "error"
+    except Exception:
+        pass
+    import logging
+    for name in ("angr", "cle", "claripy"):
+        logging.getLogger(name).setLevel(logging.CRITICAL)
+
+
+def _reset_console():
+    """Restore Rich console to stdout (undoes _json_mode for test safety)."""
+    console.file = sys.stdout
+    from supwngo.utils.logging import console as log_console
+    log_console.file = sys.stdout
+
+
 def print_banner():
     """Print SupwnGo banner."""
     banner = """
@@ -57,6 +84,10 @@ def cli(ctx, verbose):
 @click.pass_context
 def analyze(ctx, binary, output, json_output):
     """Perform comprehensive binary analysis."""
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.core.binary import Binary
     from supwngo.analysis.static import StaticAnalyzer
     from supwngo.analysis.protections import ProtectionAnalyzer
@@ -85,7 +116,7 @@ def analyze(ctx, binary, output, json_output):
             "dangerous_functions": static_results.get("dangerous_calls", []),
             "input_sources": static_results.get("input_sources", []),
         }
-        console.print_json(json.dumps(results, indent=2))
+        _emit_json(results)
     else:
         # Print checksec report
         console.print(Panel(prot_analyzer.checksec_report(), title="Protections"))
@@ -629,6 +660,10 @@ def pwn(ctx, binary, libc, no_gadgets, json_output):
     the best exploitation strategies based on protections and available
     gadgets. Designed for CTF challenges.
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.core.binary import Binary
     from supwngo.analysis.protections import ProtectionAnalyzer
     from supwngo.analysis.static import StaticAnalyzer
@@ -731,7 +766,7 @@ def pwn(ctx, binary, libc, no_gadgets, json_output):
         report = suggester.analyze()
 
     if json_output:
-        console.print_json(json.dumps(report.to_dict(), indent=2))
+        _emit_json(report.to_dict())
     else:
         # Print warnings
         if report.warnings:
@@ -776,6 +811,10 @@ def offset(ctx, binary, max_length, input_method, json_output):
     Uses cyclic patterns and crash analysis to determine the exact
     offset needed to overwrite the return address.
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.core.binary import Binary
     from supwngo.exploit.offset_finder import OffsetFinder
 
@@ -790,7 +829,7 @@ def offset(ctx, binary, max_length, input_method, json_output):
         result = finder.find_offset(max_length, input_method)
 
     if json_output:
-        console.print_json(json.dumps(result.to_dict(), indent=2))
+        _emit_json(result.to_dict())
     else:
         if result.success:
             console.print(Panel(f"""
@@ -831,6 +870,10 @@ def onegadget(ctx, libc, json_output):
     One-gadgets are single addresses that spawn a shell with
     minimal constraints. Useful for ret2libc attacks.
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.analysis.one_gadget import OneGadgetFinder
 
     console.print(f"\n[bold]Finding one-gadgets in:[/bold] {libc}\n")
@@ -848,7 +891,7 @@ def onegadget(ctx, libc, json_output):
         return
 
     if json_output:
-        console.print_json(json.dumps([g.to_dict() for g in gadgets], indent=2))
+        _emit_json([g.to_dict() for g in gadgets])
     else:
         table = Table(title=f"One-Gadgets in {Path(libc).name}")
         table.add_column("Address", style="green")
@@ -1102,6 +1145,10 @@ def addresses(ctx, binary, json_output):
     - GOT/PLT entries
     - mprotect targets
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.core.binary import Binary
     from supwngo.analysis.addresses import AddressFinder
 
@@ -1114,7 +1161,7 @@ def addresses(ctx, binary, json_output):
         report = finder.find_all()
 
     if json_output:
-        console.print_json(json.dumps(report.to_dict(), indent=2))
+        _emit_json(report.to_dict())
     else:
         # Shell strings
         console.print("[bold cyan]Shell Strings:[/bold cyan]")
@@ -1193,6 +1240,10 @@ def source(ctx, source, tools, output, json_output):
         supwngo source ./src/ -t bearer
         supwngo source ./challenge.c -o report.json --json
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.analysis.source import SourceAnalyzer, Severity
 
     console.print(f"\n[bold]Source Code Analysis:[/bold] {source}\n")
@@ -1215,7 +1266,7 @@ def source(ctx, source, tools, output, json_output):
                 f.write(result)
             console.print(f"[green]Report saved to: {output}[/green]")
         else:
-            console.print_json(result)
+            click.echo(result)
     else:
         # Summary
         summary = f"""
@@ -1312,6 +1363,10 @@ def kernel(ctx, module, kallsyms, vmlinux, leak_func, leak_offset, output, json_
         supwngo kernel ./ttp.ko --leak-func timerfd_tmrproc --leak-offset 0x3370e0
         supwngo kernel ./vuln.ko -o exploit.c
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.kernel.module import KernelModule
     from supwngo.kernel.symbols import KernelSymbols
     from supwngo.kernel.slab import SlabAllocator
@@ -1394,7 +1449,7 @@ def kernel(ctx, module, kallsyms, vmlinux, leak_func, leak_offset, output, json_
                 for v in km.vulnerabilities
             ],
         }
-        console.print_json(json.dumps(result, indent=2))
+        _emit_json(result)
 
 
 @cli.command()
@@ -1442,6 +1497,10 @@ def cfg(ctx, binary, function, loops, complexity, json_output):
     Identifies basic blocks, loops, function relationships,
     and potentially dangerous patterns in the control flow.
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.core.binary import Binary
     from supwngo.analysis.cfg import CFGAnalyzer
 
@@ -1517,7 +1576,7 @@ def cfg(ctx, binary, function, loops, complexity, json_output):
             "loops": len(analyzer.loops) if loops else 0,
             "patterns": patterns[:20],
         }
-        console.print_json(json.dumps(result, indent=2))
+        _emit_json(result)
 
 
 @cli.command()
@@ -1536,6 +1595,10 @@ def dataflow(ctx, binary, function, taint, integer, json_output):
     - Integer overflow opportunities
     - Potential information leaks
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.core.binary import Binary
     from supwngo.analysis.dataflow import DataFlowAnalyzer
 
@@ -1599,7 +1662,7 @@ def dataflow(ctx, binary, function, taint, integer, json_output):
                 console.print(f"      Risk: {op['risk']}")
 
     if json_output:
-        console.print_json(json.dumps(results, indent=2, default=str))
+        _emit_json(results)
 
 
 @cli.command()
@@ -1619,6 +1682,10 @@ def strings_analysis(ctx, binary, format_strings, crypto, encoded, json_output):
     - Encoded/encrypted data
     - Cryptographic constants
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.core.binary import Binary
     from supwngo.analysis.strings import StringAnalyzer, StringCategory
 
@@ -1686,7 +1753,7 @@ def strings_analysis(ctx, binary, format_strings, crypto, encoded, json_output):
                 for s in exploitable
             ],
         }
-        console.print_json(json.dumps(result, indent=2))
+        _emit_json(result)
 
 
 @cli.command()
@@ -1705,6 +1772,10 @@ def diff(ctx, binary1, binary2, security_only, output, json_output):
     - Recovering symbols from debug builds
     - Understanding what changed between versions
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.core.binary import Binary
     from supwngo.analysis.diff import BinaryDiffer
 
@@ -1763,7 +1834,7 @@ def diff(ctx, binary1, binary2, security_only, output, json_output):
         console.print(f"\n[green]Diff saved to {output}[/green]")
 
     if json_output:
-        console.print_json(json.dumps(results, indent=2, default=str))
+        _emit_json(results)
 
 
 @cli.command()
@@ -1863,6 +1934,10 @@ def imports(ctx, binary, dangerous, hooks, json_output):
     - Lazy binding opportunities for GOT overwrite
     - Glibc version requirements
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.core.binary import Binary
     from supwngo.analysis.imports import ImportAnalyzer
 
@@ -1926,7 +2001,7 @@ def imports(ctx, binary, dangerous, hooks, json_output):
     console.print(f"  Hookable targets: {len(exploit_info['hookable_targets'])}")
 
     if json_output:
-        console.print_json(json.dumps(results, indent=2, default=str))
+        _emit_json(results)
 
 
 # ============================================================================
@@ -1950,6 +2025,10 @@ def leaks(ctx, binary, fingerprint, chain, json_output):
     - Heap address disclosure
     - Libc pointer leaks
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.core.binary import Binary
     from supwngo.vulns.leak_finder import LeakFinder
 
@@ -2041,7 +2120,7 @@ def leaks(ctx, binary, fingerprint, chain, json_output):
                 for l in leaks_found[:30]
             ],
         }
-        console.print_json(json.dumps(result, indent=2))
+        _emit_json(result)
 
 
 @cli.command()
@@ -2062,6 +2141,10 @@ def heap_analysis(ctx, binary, tcache, uaf, templates, json_output):
     - Tcache poisoning opportunities
     - Fastbin dup conditions
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.core.binary import Binary
     from supwngo.vulns.heap_advanced import AdvancedHeapAnalyzer, HeapVulnType
 
@@ -2156,7 +2239,7 @@ def heap_analysis(ctx, binary, tcache, uaf, templates, json_output):
                 for v in vulns[:20]
             ],
         }
-        console.print_json(json.dumps(result, indent=2))
+        _emit_json(result)
 
 
 @cli.command()
@@ -2177,6 +2260,10 @@ def integer_analysis(ctx, binary, allocation, chains, templates, json_output):
     - Size calculation before malloc
     - Arithmetic operation chains
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.core.binary import Binary
     from supwngo.vulns.integer_advanced import AdvancedIntegerAnalyzer, IntVulnType, IntContext
 
@@ -2267,7 +2354,7 @@ def integer_analysis(ctx, binary, allocation, chains, templates, json_output):
             "by_type": {k: len(v) for k, v in by_type.items()} if vulns else {},
             "critical": len(critical) if critical else 0,
         }
-        console.print_json(json.dumps(result, indent=2))
+        _emit_json(result)
 
 
 @cli.command()
@@ -2289,6 +2376,10 @@ def race_analysis(ctx, binary, toctou, signals, thread_unsafe, templates, json_o
     - Double-fetch vulnerabilities
     - Missing atomic operations
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.core.binary import Binary
     from supwngo.vulns.race_advanced import AdvancedRaceAnalyzer, AdvancedRaceType
 
@@ -2393,7 +2484,7 @@ def race_analysis(ctx, binary, toctou, signals, thread_unsafe, templates, json_o
             "by_type": {k: len(v) for k, v in by_type.items()} if vulns else {},
             "high_severity": len(analyzer.get_high_severity()),
         }
-        console.print_json(json.dumps(result, indent=2))
+        _emit_json(result)
 
 
 def _render_handoff_report(report) -> None:
@@ -2486,6 +2577,10 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output):
 
     See docs/architecture/2026-09-23-autopwn-pipeline.md for the design.
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.core.binary import Binary
     from supwngo.exploit.pipeline import CanonicalAutopwnEngine
 
@@ -2545,7 +2640,7 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output):
             # See supwngo/exploit/pipeline/handoff.py for the frozen shape.
             "handoff": engine.handoff_report.to_dict(),
         }
-        console.print_json(json.dumps(result, indent=2, default=str))
+        _emit_json(result)
     else:
         console.print(engine.summary())
 
@@ -2796,6 +2891,10 @@ def explain(ctx, binary, output, family, offset, no_probe, libc, remote, markdow
       supwngo explain ./vuln --family syscall
       supwngo explain ./vuln --no-probe --markdown
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     remote_host: Optional[str] = None
     remote_port: Optional[int] = None
     if remote:
@@ -2807,7 +2906,7 @@ def explain(ctx, binary, output, family, offset, no_probe, libc, remote, markdow
         walkthrough, _text = explain_binary(
             binary, offset=offset, probe=not no_probe, libc_path=libc, family=family
         )
-        console.print_json(json.dumps(walkthrough.to_dict(), indent=2, default=str))
+        _emit_json(walkthrough.to_dict())
         return
 
     print_banner()
@@ -2939,6 +3038,10 @@ def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, 
     `autopwn` drives - see docs/architecture/2026-09-23-autopwn-pipeline.md,
     "solve vs autopwn", for why both commands exist.
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     if json_output and interactive:
         raise click.UsageError("--interactive requires a terminal and cannot be combined with --json")
 
@@ -2989,7 +3092,7 @@ def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, 
             )
             result["walkthrough"] = wt.to_dict()
             result["walkthrough_path"] = str(wt_path)
-        console.print_json(json.dumps(result, indent=2, default=str))
+        _emit_json(result)
         return
 
     console.print(engine.summary())
@@ -3110,6 +3213,10 @@ def report(ctx, binary, output, fmt, title, analyst, remote, json_output):
     report records which detectors could not run, and this command exits
     non-zero if none of them ran at all.
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.core.binary import Binary
     from supwngo.reporting.adapter import (
         build_report,
@@ -3173,8 +3280,8 @@ def report(ctx, binary, output, fmt, title, analyst, remote, json_output):
     counts = doc.get_severity_counts()
 
     if json_output:
-        console.print_json(
-            data={
+        _emit_json(
+            {
                 "binary": str(bin_obj.path),
                 "report": str(output_path),
                 "format": fmt,
