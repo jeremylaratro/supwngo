@@ -126,6 +126,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the fix. The load-bearing invariant is unchanged and asserted: the default
   `DeliverySpec()` still returns exactly `[binary_path]` and never raises, so
   every existing spawn site keeps byte-identical argv.
+- `classify_input_vector()` stages 1-3 now probe **one** path through three
+  states (absent -> 32 bytes -> 4096 bytes) instead of three differently-named
+  paths. The old form varied the filename alongside the variable each stage meant
+  to isolate, so a target that merely printed `argv[1]` and never opened it
+  differed at every stage and was reported `file-candidate`. That false-positive
+  class is now gone (measured: the echo-only fixture moved from `file-candidate`
+  to `argv-only-not-opened`), with no change to the three genuine file sinks.
+- `classify_input_vector()` no longer reports a failed launch as a timeout. An
+  `OSError` (e.g. `PermissionError`) carried the same sentinel as
+  `TimeoutExpired`, so `stage3_basis` claimed `"timeout"` for a process that
+  never started; it is now reported as `"launch-error"`. Extension discovery is
+  also timeout-tolerant, matching the documented rule that every stage after the
+  determinism check treats a timeout as behavioral evidence rather than aborting
+  with `inconclusive-launch`.
+- The probe's verdict labels are now documented as naming the common case rather
+  than a demonstrated mechanism: `argv-only-not-opened` does not prove the file
+  was never opened (a target may open, read, and ignore it),
+  `argv-only-config` does not prove configuration use (`stat`/`access`/
+  open-then-close are indistinguishable), and `file-candidate` does not prove a
+  payload sink.
 - `classify_input_vector()` now reports `evidence["stage3_basis"]`
   (`none`/`output`/`returncode`/`timeout`), recording *why* the
   content-volume stage fired. A verdict driven only by the large probe file

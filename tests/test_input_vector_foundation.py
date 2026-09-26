@@ -9,7 +9,7 @@ operator-declared; no wiring into the pipeline happens in this file's scope).
 This covers only the foundation layer:
   - S1: `DeliverySpec` (contracts.py) -- pure, no target needed.
   - S2: `classify_input_vector()` (analysis/vector_probe.py) -- exercised
-    against the nine purpose-built fixtures, compiled at test time.
+    against the twelve purpose-built fixtures, compiled at test time.
   - S7: the dead `"argv"` entry removed from `INPUT_SOURCES`
     (analysis/static.py).
 
@@ -26,6 +26,7 @@ and is NOT duplicated here; see
 from __future__ import annotations
 
 import inspect
+import os
 import subprocess
 from pathlib import Path
 from typing import Dict
@@ -59,6 +60,10 @@ FIXTURE_NAMES = [
     "neg_argc_banner",
     "neg_argv_config_stdin_payload",
     "neg_slow_config_stdin_payload",
+    # REVISION 4 (D1 pathname-confound fix, T4): two adversarial fixtures
+    # copied from the peer review's counterexamples.
+    "neg_argv_echo_no_open",
+    "neg_fast_cfg_stdin_payload",
 ]
 
 #: MEASURED verdicts (per-fixture positive/negative controls proven able to
@@ -94,6 +99,28 @@ EXPECTED_VERDICTS = {
     # never commit a DeliverySpec (Sprint 2' REVISION 3). Pinned here so the
     # limitation stays measured rather than latent.
     "neg_slow_config_stdin_payload": "file-candidate",
+    # REVISION 4 (T4/T5): MEASURED after the D1 pathname-confound fix (one
+    # reused probe_input<ext> path across stages 1-3, instead of three
+    # different basenames). This fixture only ever varied on the BASENAME
+    # (its printf("target=%s\n", argv[1]) never opens the file at all), so
+    # once the basename is held constant across stages, stage 2 sees no
+    # difference and the probe correctly stops at "argv-only-not-opened"
+    # instead of reaching stage 3. BEFORE the D1 fix this was measured
+    # file-candidate/stage3_basis='output' -- a genuine false positive that
+    # the D1 fix resolves. See the fixture's own header comment for both
+    # measurements side by side.
+    "neg_argv_echo_no_open": "argv-only-not-opened",
+    # REVISION 4 (T4/T5): MEASURED file-candidate BOTH before and after the
+    # D1 fix -- this false positive is NOT caused by the pathname confound.
+    # The target genuinely opens argv[1] and its output genuinely depends
+    # on the file's size (a real 'output' basis, not a timeout artifact),
+    # it just uses that file as config rather than as the payload sink
+    # (payload arrives on stdin). Kept in KNOWN_OUTPUT_BASIS_FALSE_POSITIVES
+    # below because it refutes the stronger claim that a strong
+    # (output/returncode) stage3_basis implies a genuine file sink -- it
+    # does not; see the corrected test that replaces
+    # test_stage3_basis_is_trustworthy_only_in_the_strong_direction.
+    "neg_fast_cfg_stdin_payload": "file-candidate",
 }
 
 #: The only fixtures that genuinely are file-vector targets. Kept as its own
@@ -109,10 +136,23 @@ TRUE_FILE_CANDIDATES = {"file_vector_gate", "mech_open_read_argv", "mech_line_te
 #: the gate red. Enumerating the known miss keeps the gate meaningful (a NEW
 #: false positive still fails) instead of either lying or being deleted.
 #:
-#: Every member MUST be distinguishable from a real file sink by its
-#: `stage3_basis` evidence, which the test below asserts mechanically rather
-#: than trusting this comment.
+#: This bucket's members land on stage3_basis == "timeout" specifically. Do
+#: NOT read that basis as a discriminator -- mech_line_text (a genuine file
+#: sink, in TRUE_FILE_CANDIDATES) ALSO lands on "timeout", which is exactly
+#: what the corrected test below (replacing
+#: test_stage3_basis_is_trustworthy_only_in_the_strong_direction) pins.
 KNOWN_TIMEOUT_FALSE_POSITIVES = {"neg_slow_config_stdin_payload"}
+
+#: REVISION 4 (T4/T5) addition, measured: fixtures the probe calls
+#: "file-candidate" on a "output"/"returncode" stage3_basis, even though
+#: they are NOT genuine file sinks. This set is the direct refutation of
+#: this suite's earlier (wrong) claim that a "strong" basis
+#: (output/returncode, as opposed to the ambiguous "timeout" basis above)
+#: could only ever occur for a real sink -- neg_fast_cfg_stdin_payload
+#: proves that claim false: it opens argv[1] purely as size-gated config,
+#: takes its real payload from stdin, and still reports basis='output'.
+#: See the fixture's own header comment and the corrected test below.
+KNOWN_OUTPUT_BASIS_FALSE_POSITIVES = {"neg_fast_cfg_stdin_payload"}
 
 
 @pytest.fixture(scope="module")
@@ -310,13 +350,30 @@ class TestMaterialize:
 
 
 # --------------------------------------------------------------------------
-# T4 / T5: the probe itself, against the four adversarial fixtures
+# T4 / T5: the probe itself, against the adversarial fixtures
 # --------------------------------------------------------------------------
 
 class TestProbeTruePositive:
     def test_file_vector_gate_classifies_file_candidate(self, compiled_fixtures):
         result = classify_input_vector(str(compiled_fixtures["file_vector_gate"]))
         assert result.verdict == "file-candidate"
+
+
+class TestExpectedVerdictsCoversEveryFixture:
+    """T6(a): closes a test-vacuity gap. Before this, a fixture added only to
+    FIXTURE_NAMES (e.g. by a future contributor extending the suite) silently
+    got NO expected-verdict test at all: TestProbeAdversarialNegatives.
+    test_fixture_classifies_as_expected only ever parametrizes over
+    EXPECTED_VERDICTS.items(), so a name present in FIXTURE_NAMES but absent
+    from EXPECTED_VERDICTS would simply never be checked -- a silent gap, not
+    a failure. This test makes that gap loud."""
+
+    def test_every_fixture_name_has_an_expected_verdict_and_vice_versa(self):
+        assert set(EXPECTED_VERDICTS) == set(FIXTURE_NAMES), (
+            f"FIXTURE_NAMES and EXPECTED_VERDICTS have drifted apart -- "
+            f"only in FIXTURE_NAMES: {set(FIXTURE_NAMES) - set(EXPECTED_VERDICTS)}; "
+            f"only in EXPECTED_VERDICTS: {set(EXPECTED_VERDICTS) - set(FIXTURE_NAMES)}"
+        )
 
 
 class TestProbeAdversarialNegatives:
@@ -348,29 +405,38 @@ class TestProbeAdversarialNegatives:
         file_candidates = {
             name for name, v in verdicts.items() if v == "file-candidate"
         }
-        assert file_candidates == TRUE_FILE_CANDIDATES | KNOWN_TIMEOUT_FALSE_POSITIVES, (
+        expected = TRUE_FILE_CANDIDATES | KNOWN_TIMEOUT_FALSE_POSITIVES | KNOWN_OUTPUT_BASIS_FALSE_POSITIVES
+        assert file_candidates == expected, (
             f"unsafe false positive/negative: expected exactly "
-            f"{TRUE_FILE_CANDIDATES | KNOWN_TIMEOUT_FALSE_POSITIVES}, got "
+            f"{expected}, got "
             f"{file_candidates}; full verdicts={verdicts}"
         )
 
-    def test_stage3_basis_is_trustworthy_only_in_the_strong_direction(
+    def test_stage3_basis_is_diagnostic_only_never_a_discriminator(
             self, compiled_fixtures):
-        """What `stage3_basis` can and cannot be used for -- MEASURED, and
-        deliberately weaker than it first appears.
+        """REPLACES test_stage3_basis_is_trustworthy_only_in_the_strong_direction,
+        which asserted a REFUTED claim and has been removed rather than kept
+        green by construction.
 
-        The tempting claim is "a real file sink differs on output/returncode
-        while a merely-slow target only times out", which would make the basis
-        a discriminator. That claim is FALSE and this test pins why:
-        `mech_line_text` is a genuine file sink (proven solvable via its own
-        transport in the fixture-validation suite) and it ALSO lands on
-        basis='timeout', because it blocks on a 4096-byte file with no newline.
-        So basis='timeout' is genuinely ambiguous and must never be read as
-        evidence either way.
+        That earlier test claimed a STRONG stage3_basis ('output' or
+        'returncode', as opposed to the ambiguous 'timeout' basis) could only
+        ever occur for a genuine file sink -- i.e. `strong <= TRUE_FILE_CANDIDATES`.
+        MEASUREMENT refutes this: `neg_fast_cfg_stdin_payload` is not a file
+        sink at all (its payload channel is stdin; argv only ever carries a
+        size-gated config file), yet it reports stage3_basis == 'output', the
+        supposedly-strong basis. (A second candidate counterexample,
+        `neg_argv_echo_no_open`, existed only as an artifact of the D1
+        pathname confound and is resolved by the D1 fix -- it no longer even
+        reaches stage 3, see its own fixture header comment for both
+        measurements.)
 
-        What IS usable is the one-directional property asserted below: a STRONG
-        basis (a real output or returncode difference) only ever occurs for a
-        genuine file sink. That is the half a caller may rely on."""
+        The corrected, honest claim: `stage3_basis` is diagnostic metadata
+        recording WHY stage 3 fired. It is NOT a discriminator in either
+        direction -- neither 'timeout' nor 'output'/'returncode' may be read
+        as evidence for or against a genuine file sink. This test pins that
+        BOTH classes contain both a genuine sink and a non-sink, so a future
+        reader cannot re-derive either the old refuted claim or a new
+        unmeasured one."""
         basis_by_name = {}
         for name, path in compiled_fixtures.items():
             r = classify_input_vector(str(path))
@@ -381,16 +447,17 @@ class TestProbeAdversarialNegatives:
                   if b in ("output", "returncode")}
         weak = {n for n, b in basis_by_name.items() if b == "timeout"}
 
-        assert strong <= TRUE_FILE_CANDIDATES, (
-            f"a STRONG stage-3 basis must imply a genuine file sink, but "
-            f"{sorted(strong - TRUE_FILE_CANDIDATES)} are not real sinks; "
-            f"bases={basis_by_name}")
-        assert strong, (
-            "no file-candidate had a strong basis -- without this the check "
-            "above passes vacuously")
-        # The weak class is ambiguous BY MEASUREMENT: it holds both a real sink
-        # and a non-sink. Asserting both memberships is what stops a future
-        # reader from re-deriving the false "timeout means not-a-sink" rule.
+        # Strong basis: measured to contain BOTH a genuine sink...
+        assert strong & TRUE_FILE_CANDIDATES, (
+            f"expected at least one GENUINE sink on a strong basis (measured: "
+            f"file_vector_gate/mech_open_read_argv); bases={basis_by_name}")
+        # ...and a non-sink -- this is the refutation of the old claim.
+        assert strong & KNOWN_OUTPUT_BASIS_FALSE_POSITIVES, (
+            f"expected at least one NON-sink on a strong basis (measured: "
+            f"neg_fast_cfg_stdin_payload); if this stops holding, re-verify "
+            f"before reintroducing any 'strong basis implies genuine sink' "
+            f"claim; bases={basis_by_name}")
+        # Weak (timeout) basis: already known to be ambiguous the same way.
         assert weak & TRUE_FILE_CANDIDATES, (
             f"expected at least one GENUINE sink on the weak basis (measured: "
             f"mech_line_text); bases={basis_by_name}")
@@ -420,6 +487,45 @@ class TestProbeAdversarialNegatives:
 
 
 # --------------------------------------------------------------------------
+# T3 (D3): a launch error (OSError) past stage 0 must be labelled
+# "launch-error", never conflated with a real subprocess.TimeoutExpired
+# ("timeout"). None of the compiled fixtures naturally produce an OSError
+# (their argv[0] is always executable and present), so this uses a
+# monkeypatch of vector_probe._run to inject a real PermissionError
+# deterministically on the stage-3 (4096-byte) run only -- the exact
+# scenario D3 fixes.
+# --------------------------------------------------------------------------
+
+class TestStage3DistinguishesLaunchErrorFromTimeout:
+    def test_oserror_on_large_run_reports_launch_error_not_timeout(
+            self, compiled_fixtures, monkeypatch):
+        import supwngo.analysis.vector_probe as vp
+
+        binary = str(compiled_fixtures["mech_open_read_argv"])
+        orig_run = vp._run
+
+        def fake_run(argv, timeout, env):
+            probe_path = argv[-1] if len(argv) > 1 else None
+            if (probe_path and os.path.isfile(probe_path)
+                    and os.path.getsize(probe_path) == 4096):
+                raise PermissionError(13, "Permission denied (injected for test)")
+            return orig_run(argv, timeout, env)
+
+        monkeypatch.setattr(vp, "_run", fake_run)
+        r = vp.classify_input_vector(binary, timeout=2.0)
+        assert r.evidence.get("stage3_basis") == "launch-error", (
+            f"an injected OSError on the large-file run must report "
+            f"stage3_basis=='launch-error', not be conflated with a real "
+            f"timeout; got {r.evidence.get('stage3_basis')!r}; "
+            f"evidence={r.evidence}"
+        )
+        assert "LAUNCH ERROR" in r.evidence["large_file_run"]["output"], (
+            "the injected OSError's evidence text must be distinguishable "
+            f"from a timeout; got {r.evidence['large_file_run']!r}"
+        )
+
+
+# --------------------------------------------------------------------------
 # T-advisory: the probe cannot mutate context because it never sees one
 # --------------------------------------------------------------------------
 
@@ -432,12 +538,17 @@ class TestProbeIsAdvisoryOnly:
         assert hasattr(vp, "classify_input_vector")
         assert callable(vp.classify_input_vector)
 
-    def test_classify_input_vector_signature_takes_no_context_parameter(self):
+    def test_classify_input_vector_signature_is_exactly_the_expected_parameter_set(self):
+        """T6(b): closes a test-vacuity gap. The prior form of this test only
+        blocklisted three specific parameter NAMES ("context", "ctx",
+        "exploit_context"). A caller adding, say, `state=None` and quietly
+        mutating through it would keep this gate green forever -- the
+        blocklist can never anticipate every name a future mutation might
+        use. Asserting the full parameter set EQUALS exactly the expected
+        set instead means ANY new parameter -- named anything at all --
+        fails the gate, not just the three names anticipated here."""
         sig = inspect.signature(classify_input_vector)
-        params = set(sig.parameters)
-        assert "context" not in params
-        assert "ctx" not in params
-        assert "exploit_context" not in params
+        assert set(sig.parameters) == {"binary_path", "timeout", "env"}
 
     def test_module_does_not_import_exploit_context_at_runtime(self):
         import supwngo.analysis.vector_probe as vp

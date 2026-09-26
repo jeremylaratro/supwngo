@@ -51,19 +51,46 @@ it is deliberately not "improved" here):
 - **Extension discovery:** search the no-argv output and the output of a
   bogus, nonexistent-path run for a ``\\.([a-z]{2,4})\\b`` token; the first
   match found (e.g. ``.bmp``) is used, else the probe defaults to ``.bin``.
-- **Stage 1 (argv sensitivity):** compare the no-argv output against the
-  output when given a *missing* path bearing the discovered extension. If
-  identical, the target never even looks at argv for this purpose --
-  ``"stdin"``.
-- **Stage 2 (causal file open):** compare the missing-path output against
-  an *existing, readable* path of the same extension (32 bytes of ``b"A"``).
-  If identical, the target counted argv but never opened/read the file --
+- **Stages 1-3 all reuse ONE path**, ``probe_input<ext>``, moved through
+  three states: absent, then 32 bytes, then 4096 bytes. This is load-bearing.
+  Earlier revisions used three *different* basenames
+  (``missing_input``/``existing_small``/``existing_large``), which varied the
+  filename alongside the variable each stage meant to isolate, so a target
+  that merely echoed ``argv[1]`` differed at every stage without ever opening
+  anything and was reported ``file-candidate``. Regression-gated by
+  ``tests/fixtures/input_vector/neg_argv_echo_no_open.c``.
+- **Stage 1 (argv sensitivity):** compare the no-argv run against the run
+  with the path *absent*. If identical, the target's observable behavior does
+  not depend on argv here -- ``"stdin"``.
+- **Stage 2 (causal file open):** compare the absent-path run against the
+  same path holding 32 bytes of ``b"A"``. If identical --
   ``"argv-only-not-opened"``.
-- **Stage 3 (content volume):** compare a 32-byte file against a 4096-byte
-  file of the same extension, comparing both output *and* return code. If
-  they differ, the target's behavior depends on file content, not just its
-  presence -- ``"file-candidate"``. If identical, the file is read but only
-  used as configuration, not as the payload sink -- ``"argv-only-config"``.
+- **Stage 3 (content volume):** compare that 32-byte state against the same
+  path rewritten with 4096 bytes. If they differ, behavior depends on file
+  *content* and not merely its presence -- ``"file-candidate"``. If identical
+  -- ``"argv-only-config"``.
+
+**Each comparison is over the pair ``(returncode, output)``, not output
+alone** -- a target that prints the same text but exits differently takes the
+differing branch.
+
+**What the verdict labels do NOT prove.** They are named for the common case,
+not for a demonstrated mechanism, and every one of them has a benign
+alternative explanation:
+
+- ``"argv-only-not-opened"`` does not prove the file was never opened. A
+  target may open it, read it, and ignore both the success and the data,
+  producing an identical observation.
+- ``"argv-only-config"`` does not prove the file is read and used as
+  configuration. ``stat()``, ``access()``, or an open-then-close produce the
+  same evidence, as does any use whose effect is invisible in the first
+  ``TRUNCATE_BYTES`` of output.
+- ``"file-candidate"`` does not prove a payload sink. Measured
+  counterexample: ``neg_fast_cfg_stdin_payload.c`` reads a config file,
+  prints a size-dependent line, and takes its real payload from stdin.
+
+This imprecision is affordable *only* because the probe is advisory. Nothing
+here may be promoted into a decision.
 
 Every stage's raw evidence (booleans + truncated outputs) is recorded on the
 returned result's ``.evidence`` so a human can audit exactly which
@@ -135,10 +162,19 @@ def _run(argv, timeout: float, env: Optional[Dict[str, str]]):
 
 
 #: Sentinel (returncode, output) pair used by ``_run_tolerant`` when the
-#: process hangs or fails to launch past stage 0. ``None`` is never a real
-#: ``subprocess`` returncode, so it compares unequal to every genuine
-#: ``(rc, text)`` pair -- exactly what a stage-1..3 comparison needs.
-_UNREACHABLE_RC = None
+#: process hangs (a real ``subprocess.TimeoutExpired``) past stage 0.
+#: ``None`` is never a real ``subprocess`` returncode, so it compares
+#: unequal to every genuine ``(rc, text)`` pair -- exactly what a stage-1..3
+#: comparison needs.
+_UNREACHABLE_RC_TIMEOUT = None
+
+#: Sentinel used when launching the process past stage 0 raises ``OSError``
+#: (e.g. ``PermissionError``, ``FileNotFoundError``) rather than timing out.
+#: Kept distinct from ``_UNREACHABLE_RC_TIMEOUT`` (D3 fix) -- both used to
+#: collapse to the same ``None`` sentinel, which made ``stage3_basis`` report
+#: ``"timeout"`` for a launch error that was never actually a timeout. A
+#: string can never collide with a real ``int`` returncode either.
+_UNREACHABLE_RC_LAUNCH_ERROR = "launch-error"
 
 
 def _run_tolerant(argv, timeout: float, env: Optional[Dict[str, str]]):
@@ -159,9 +195,9 @@ def _run_tolerant(argv, timeout: float, env: Optional[Dict[str, str]]):
     try:
         return _run(argv, timeout, env)
     except subprocess.TimeoutExpired:
-        return _UNREACHABLE_RC, "<TIMEOUT: process did not exit within timeout>"
+        return _UNREACHABLE_RC_TIMEOUT, "<TIMEOUT: process did not exit within timeout>"
     except OSError as exc:
-        return _UNREACHABLE_RC, f"<LAUNCH ERROR: {exc!r}>"
+        return _UNREACHABLE_RC_LAUNCH_ERROR, f"<LAUNCH ERROR: {exc!r}>"
 
 
 def classify_input_vector(
@@ -204,17 +240,15 @@ def classify_input_vector(
                 extension=DEFAULT_EXTENSION,
             )
 
-        # --- Extension discovery: a bogus, nonexistent path. ---
+        # --- Extension discovery: a bogus, nonexistent path. This is after
+        # stage 0, so (D2 fix) it uses _run_tolerant like every later stage:
+        # a target that only hangs or fails to launch on this bogus path
+        # must not abort the whole probe with "inconclusive-launch" -- the
+        # timeout/launch-error is itself data, folded harmlessly into the
+        # extension-match search below (which simply finds no token and
+        # falls back to DEFAULT_EXTENSION). ---
         bogus_path = os.path.join(tmpdir, "bogus_nonexistent_probe")
-        try:
-            rc_bogus, out_bogus = _run([binary_path, bogus_path], timeout, env)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            evidence["launch_error"] = repr(exc)
-            return VectorProbeResult(
-                verdict=VERDICT_INCONCLUSIVE_LAUNCH,
-                evidence=evidence,
-                extension=DEFAULT_EXTENSION,
-            )
+        rc_bogus, out_bogus = _run_tolerant([binary_path, bogus_path], timeout, env)
         evidence["bogus_path_run"] = {"rc": rc_bogus, "output": out_bogus}
 
         match = _EXTENSION_RE.search(out1) or _EXTENSION_RE.search(out_bogus)
@@ -222,10 +256,14 @@ def classify_input_vector(
         evidence["extension_match"] = match.group(0) if match else None
         evidence["extension"] = extension
 
-        # --- Stage 1: argv sensitivity -- a missing path with the
-        # discovered extension. ---
-        missing_path = os.path.join(tmpdir, "missing_input" + extension)
-        rc_missing, out_missing = _run_tolerant([binary_path, missing_path], timeout, env)
+        # --- Stages 1-3 share ONE path (D1 fix): only its existence/content
+        # varies between stages, never its basename, so a target that
+        # merely notices a *different filename* cannot be misread as
+        # noticing missing/small/large *content* of the same file. ---
+        probe_path = os.path.join(tmpdir, "probe_input" + extension)
+
+        # --- Stage 1: argv sensitivity -- probe_path does not exist yet. ---
+        rc_missing, out_missing = _run_tolerant([binary_path, probe_path], timeout, env)
         evidence["missing_path_run"] = {"rc": rc_missing, "output": out_missing}
         stage1_argv_sensitive = (rc1, out1) != (rc_missing, out_missing)
         evidence["stage1_argv_sensitive"] = stage1_argv_sensitive
@@ -234,12 +272,11 @@ def classify_input_vector(
                 verdict=VERDICT_STDIN, evidence=evidence, extension=extension,
             )
 
-        # --- Stage 2: causal file open -- existing, readable, same
-        # extension, 32 bytes. ---
-        small_path = os.path.join(tmpdir, "existing_small" + extension)
-        with open(small_path, "wb") as fh:
+        # --- Stage 2: causal file open -- same probe_path now exists,
+        # readable, 32 bytes. ---
+        with open(probe_path, "wb") as fh:
             fh.write(b"A" * 32)
-        rc_small, out_small = _run_tolerant([binary_path, small_path], timeout, env)
+        rc_small, out_small = _run_tolerant([binary_path, probe_path], timeout, env)
         evidence["small_file_run"] = {"rc": rc_small, "output": out_small}
         stage2_opened = (rc_missing, out_missing) != (rc_small, out_small)
         evidence["stage2_opened"] = stage2_opened
@@ -250,12 +287,11 @@ def classify_input_vector(
                 extension=extension,
             )
 
-        # --- Stage 3: content volume -- 32-byte vs 4096-byte, same
-        # extension, comparing output AND return code. ---
-        large_path = os.path.join(tmpdir, "existing_large" + extension)
-        with open(large_path, "wb") as fh:
+        # --- Stage 3: content volume -- same probe_path rewritten to
+        # 4096 bytes, comparing output AND return code. ---
+        with open(probe_path, "wb") as fh:
             fh.write(b"A" * 4096)
-        rc_large, out_large = _run_tolerant([binary_path, large_path], timeout, env)
+        rc_large, out_large = _run_tolerant([binary_path, probe_path], timeout, env)
         evidence["large_file_run"] = {"rc": rc_large, "output": out_large}
         stage3_volume_sensitive = (rc_small, out_small) != (rc_large, out_large)
         evidence["stage3_volume_sensitive"] = stage3_volume_sensitive
@@ -270,18 +306,27 @@ def classify_input_vector(
         # probe is advisory and can never commit a DeliverySpec (see
         # REVISION 3 of the Sprint 2' plan).
         #
-        # MEASURED LIMIT ON HOW FAR THIS HELPS: "timeout" is *ambiguous*, not
-        # a negative signal. A genuine file sink can land in the same class --
-        # tests/fixtures/input_vector/mech_line_text.c reads its payload from
-        # a file and still times out, because it blocks on a 4096-byte probe
-        # file containing no newline. So a caller may NOT read "timeout" as
-        # "not really a file target". Only the converse is usable: an
-        # "output"/"returncode" basis was, across every fixture measured, a
-        # genuine file sink. Pinned by
-        # test_stage3_basis_is_trustworthy_only_in_the_strong_direction.
+        # MEASURED LIMIT: this basis is DIAGNOSTIC ONLY. It is not evidence in
+        # either direction, and two fixtures exist specifically to stop anyone
+        # concluding otherwise:
+        #
+        #   - "timeout" does not mean "not a file target". mech_line_text.c
+        #     reads its payload from a file and still times out, because it
+        #     blocks on a 4096-byte probe file containing no newline.
+        #   - "output" does not mean "is a file target". A stronger claim to
+        #     exactly that effect was written here and then refuted:
+        #     neg_fast_cfg_stdin_payload.c prints a size-dependent line from a
+        #     config file while its payload channel is stdin, and reports
+        #     "output".
+        #
+        # So read this field as "which comparison happened to differ", and
+        # nothing more. Pinned by
+        # test_stage3_basis_is_diagnostic_only_never_a_discriminator.
         if not stage3_volume_sensitive:
             stage3_basis = "none"
-        elif rc_large is _UNREACHABLE_RC or rc_small is _UNREACHABLE_RC:
+        elif rc_large == _UNREACHABLE_RC_LAUNCH_ERROR or rc_small == _UNREACHABLE_RC_LAUNCH_ERROR:
+            stage3_basis = "launch-error"
+        elif rc_large == _UNREACHABLE_RC_TIMEOUT or rc_small == _UNREACHABLE_RC_TIMEOUT:
             stage3_basis = "timeout"
         elif out_small != out_large:
             stage3_basis = "output"

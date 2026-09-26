@@ -273,11 +273,20 @@ class TestStage3BasisIsRecordedSoWeakEvidenceIsDiscountable:
         """Paired positive control: without this, the assertion above could
         pass because *every* verdict is labelled 'timeout'.
 
-        Note what this does NOT claim. `stage3_basis` is not a discriminator --
-        mech_line_text is a genuine file sink that also reports 'timeout'
-        (measured; it blocks on the newline-free 4096-byte probe file). Only
-        the strong direction is usable, and that asymmetry is pinned in
-        tests/test_input_vector_foundation.py."""
+        Note what this does NOT claim. `stage3_basis` is not a discriminator
+        in EITHER direction -- CORRECTED from an earlier, refuted claim that
+        only the "timeout" direction was ambiguous and a strong
+        (output/returncode) basis was reliable. That stronger claim is
+        MEASURED FALSE: tests/test_input_vector_foundation.py's
+        `neg_fast_cfg_stdin_payload` fixture is not a file sink at all (its
+        payload channel is stdin) yet also reports stage3_basis == 'output'.
+        Symmetrically, `mech_line_text` is a genuine file sink that reports
+        'timeout' (measured; it blocks on the newline-free 4096-byte probe
+        file). So NEITHER basis value may be read as evidence for or against
+        a genuine sink -- it is diagnostic metadata only. See
+        `test_stage3_basis_is_diagnostic_only_never_a_discriminator` in
+        tests/test_input_vector_foundation.py, which replaces the earlier
+        (wrong) `test_stage3_basis_is_trustworthy_only_in_the_strong_direction`."""
         from supwngo.analysis.vector_probe import classify_input_vector
 
         r = classify_input_vector(str(built["file_vector_gate"]), timeout=5.0)
