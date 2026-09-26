@@ -712,3 +712,27 @@ through all three states (absent → 32 bytes → 4096 bytes).
   produce the same signature).
 
 `materialize()` was reviewed and found correct.
+
+### New obligation for the wiring layer (S3–S6), created by the `build_argv` hardening
+
+T1 already required that an undeliverable spec **raise** rather than silently drop the
+payload, and that is now implemented for five cases (including an unknown `sink`
+string). The consequence for the wiring layer is new and must be designed for, not
+discovered at runtime:
+
+**A `ValueError` from `build_argv()` must be caught at the central refusal gate in
+`_attempt_techniques` and converted into a recorded `failure_reason` for that
+technique — never allowed to propagate and abort the whole engine run.** An operator
+typo in `--input-vector`/`--input-name` is a user error affecting one technique's
+delivery; it must not lose the results of every other technique already attempted.
+
+This pairs with the existing S8 requirement that the CLI validate its own vector
+argument up front: the CLI check is the friendly path, and the gate's `try/except` is
+the backstop for any spec constructed internally. Both are needed — the CLI cannot
+see a spec built by a future caller, and the gate cannot produce a good error message
+about a flag it never saw.
+
+Test obligation: add to T10 a case where a deliberately malformed spec reaches the
+gate, asserting (a) the run completes, (b) that technique's `failure_reason` names the
+delivery problem, and (c) the other techniques still report their own outcomes. Prove
+it RED by letting the exception propagate.
