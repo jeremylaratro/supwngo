@@ -372,3 +372,98 @@ count — never instance-by-instance.
 Open round-1 classes still owed an answer, carried forward:
 provenance conflating origin with necessity; loop-order side effects on the five
 winning-result fields; M-2/M-3 metric validity and units.
+
+---
+
+# REVISION 3 — the probe becomes advisory; the vector becomes operator-declared
+
+**Round cap reached (3 of 3).** Per the review protocol, a class recurring after
+three rounds is escalated as a *design* change, not patched again. Finding 1
+recurred in all three rounds, so the design changes.
+
+## What killed Revision 2, measured by me before the round-3 review returned
+
+I built the four adversarial fixtures Revision 2's T5 promised
+(`tests/fixtures/input_vector/`) and ran the 3-stage classifier against them.
+Match identity: direct launch, stdin `/dev/null`, first 300 bytes of
+`stdout+stderr`, extension auto-discovered from refusal text.
+
+| fixture | expected | 3-stage result | |
+|---|---|---|---|
+| `file_vector_gate` (payload really is the file) | `SINK_FILE` | `SINK_FILE` | ✔ |
+| `neg_nondeterministic` (prints its PID) | inconclusive | `INCONCLUSIVE(nondet)` | ✔ |
+| `neg_argc_banner` (argc-dependent banner, stdin payload) | `stdin` | `argv-only` | safe mislabel |
+| `neg_argv_config_stdin_payload` (opens an argv config, payload on stdin) | `argv-only` | **`SINK_FILE`** | ✘ **UNSAFE** |
+
+**The unsafe false positive is real and reproducible.** Revision 2 asserted T5
+would "prove the probe is not fooled by it"; the probe *is* fooled. Round 3
+reached the identical conclusion analytically and noted the sharper form: T5(c)
+**cannot** pass under Revision 2's own algorithm, so the plan contained a gate
+that contradicted its specification.
+
+I then added a 4th stage — does the file's *content volume* change behavior
+(32-byte vs 4096-byte file, comparing output and returncode)? That fixed every
+fixture: **0 unsafe false positives, 4/4 as designed.** But it also produced the
+finding that ends this line of design:
+
+> **`snowscan` classifies as `argv-only(config)` under the safe 4-stage probe.**
+> Its signature check rejects a 32-byte and a 4096-byte file with *identical*
+> output, so no content-volume signal escapes. **B-3's format validation masks the
+> very signal needed to classify the vector.**
+
+**This inverts the dependency the whole sprint assumed.** Revision 1 and 2 both
+treated B-3 (format gates) as strictly *downstream* of the channel. It is not: a
+probe cannot safely identify a format-validating target as a payload sink until it
+can already satisfy that target's format. The choice is therefore between a probe
+that is safe but silent on `snowscan`, and a probe that flags `snowscan` but can
+regress a working target. **Neither is acceptable as an automatic decision.**
+
+## Revision 3 design
+
+Both the measurement and round 3's "smallest approvable change" land in the same
+place, from different directions:
+
+1. **The probe is advisory, never authoritative.** A positive result yields
+   `FILE_CANDIDATE` and is *reported* — it never commits `context.delivery_spec`.
+   A heuristic therefore cannot regress a working target, which closes finding 1
+   by removing the probe's authority rather than by improving its accuracy.
+2. **Only an explicit operator option commits the vector**: engine
+   `input_vector="file"` / CLI `--input-vector file --input-name NAME`. The
+   capability is "supwngo can exploit file-input targets **when told the vector**",
+   which is honest, testable, and cannot misfire.
+3. **Refusals are enforced centrally, at the engine, before any executor runs.**
+   Round 3 correctly notes a refusal inside `script_builder` is too late: excluded
+   techniques launch earlier at `input_shape_techniques.py:158`,
+   `stack_techniques.py:308`, `heap_and_bypass.py:249`. One engine-level gate in
+   file mode, parameterized over every excluded executor.
+4. **Exact-replay fidelity is a gate, not an assumption.** Round 3 found a real
+   latent defect: executors verify `payload + b"\n"` but store
+   `record.payload = payload` (`stack_techniques.py:125`), and the raw template
+   recovers the newline via `sendline()` (`templates.py:178`). A file template
+   writing only `PAYLOAD` would **not** reproduce the verified bytes. T6 asserts
+   the artifact's file bytes equal the verified bytes exactly.
+5. **`DeliverySpec` gains an auxiliary-file slot** so `argv-only` targets (config
+   in argv, payload on stdin) are representable rather than coerced.
+
+### Corrections carried in
+
+- **M-7 count corrected again (finding 8, still open in round 3 — reviewer right,
+  I was wrong twice).** §4's direct-launch table is **2 conclusive stdin
+  negatives + 1 file positive + 3 inconclusive-safe = 6**. Revision 2 said "3
+  negatives + 1 positive + 3 inconclusive on 6", which sums to **seven**.
+  `rocket_blaster_xxx` was a conclusive negative only in the earlier
+  *loader-based* sweep, not the direct-launch one. Correct metric:
+  **5/5 non-file targets retain `SINK_STDIN`** (2 conclusive + 3 inconclusive-safe).
+- **M-5 restated:** `snowscan` validation gates passed **0/4 → 2/4**, reached via
+  the **explicit option**, not via the probe — the probe does not and will not
+  flag it while B-3 stands.
+- **B-3 re-triaged from P2 to P1** and marked a *prerequisite of reliable
+  detection*, not a follow-on. Automatic file-vector detection for
+  format-validating targets is blocked until a format synthesizer exists.
+
+### Status
+
+**Not submitted for a 4th round — the cap is reached and the outcome is a design
+change, which is the protocol's prescribed terminal action.** Revision 3 is
+implementable as specified: its capability claim no longer depends on a heuristic
+being right, only on the channel being correct when the operator names it.
