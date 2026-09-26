@@ -69,8 +69,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gate constants before falling back to the hardcoded folklore list. Loop order
   swapped to magic-outer/buffer-inner so recovered values are tried across all
   buffer sizes first. Provenance tracking distinguishes `recovered_immediate`
-  from `literal_magic_list`. Reduces typical solve time from 126 to ~5-15
-  process spawns for binaries with `cmp` immediates.
+  from `literal_magic_list`.
+
+  This makes a gate constant that is *absent from the folklore list* reachable
+  at all — previously such a target was unsolvable by this technique no matter
+  how long it ran (see `tests/fixtures/i3_candidate_provenance/`, fixture B).
+
+  The merged candidate list is capped at `MERGED_CANDIDATE_CAP = 11`, bounding
+  the worst case to 154 attempts (1.22x the previous 126) instead of the 462
+  (3.67x) an uncapped recovered list produced. When the cap truncates the list,
+  the number of untried candidates is reported in `failure_reason`, so a gate
+  constant ranking below the cap is diagnosable rather than a silent miss.
 
 ### Changed
 - `analyze` command is now a thin alias for `pwn --analyze-only`. All analysis
