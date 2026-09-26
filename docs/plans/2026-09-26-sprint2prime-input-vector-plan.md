@@ -472,3 +472,103 @@ place, from different directions:
 change, which is the protocol's prescribed terminal action.** Revision 3 is
 implementable as specified: its capability claim no longer depends on a heuristic
 being right, only on the channel being correct when the operator names it.
+
+---
+
+# REVISION 4 — file input as a general MECHANISM, not a snowscan solution
+
+**Direction from the maintainer:** *"the implementation should not be solely tuned
+to the challenge. Different challenges with different types of file inputs need to
+work — file input as a mechanism, transport for fuzzing ingress and exploit code
+needs to work conceptually."*
+
+Correct, and it exposed two real omissions in Revisions 1–3, one of which I had
+specified *wrongly*.
+
+## What was wrong
+
+1. **I modeled one transport and called it "the file channel".** Revisions 1–3
+   only expressed "payload in a file whose path is `argv[1]`" — the snowscan
+   shape. Three other real transports were absent, and one of my own rules
+   actively rejected a legitimate case (I specified `ValueError` when
+   `argv_template` lacks `{payload_file}`, which forbids **fixed-path** input).
+2. **I was about to duplicate a vocabulary that already exists.** `grep` first, as
+   my own rule says: `supwngo/fuzzing/afl.py:389` already documents
+   `input_method: How binary receives input (stdin, file, argv)` and generates a
+   `fopen(argv[1], "rb")` harness at `:429`; `supwngo/fuzzing/cmplog.py:500`
+   already uses AFL's `@@` file placeholder. The exploit path must converge on
+   that vocabulary so one transport model serves **both fuzz ingress and exploit
+   delivery** — which is precisely the maintainer's point.
+
+## The mechanism taxonomy (implemented now)
+
+| transport | constant | meaning |
+|---|---|---|
+| stdin | `SINK_STDIN` | bytes to fd 0 (today's only behavior) |
+| argv | `SINK_ARGV` | the payload bytes **are** an argv token (`./vuln $(payload)`) |
+| file via argv | `SINK_FILE_ARGV` | payload in a file whose **path** is passed in argv — at any position, bare or behind a flag |
+| file at a fixed path | `SINK_FILE_FIXED` | payload in a file the target opens **itself**, no argv involved |
+| socket | *(reserved)* | G-2d, P3, unimplemented |
+
+`argv_template` accepts `{payload_file}` **and `@@` as an alias**, because `@@` is
+AFL's convention and already appears in this repo. Position and flags are
+expressible: `("-f", "@@")`, `("--input", "{payload_file}")`, `("mode", "@@")`.
+A separate `{payload_arg}` placeholder marks the `SINK_ARGV` token, so the two are
+never conflated. `stdin` and `argv` are **orthogonal** — a target may need an
+unrelated config argument while its payload still arrives on stdin.
+
+A reserved `container` field is the hook for a **pluggable format envelope**
+(wrap payload bytes so a format-validating parser accepts them). It is deliberately
+unimplemented here. The general answer to B-3 is a *registry* of format
+containers — BMP, PNG, WAV, ZIP, PCAP — with BMP merely the first entry, **not** a
+BMP-shaped special case. Same envelope serves fuzz seed generation.
+
+## Measured mechanism matrix
+
+Six fixtures in `tests/fixtures/input_vector/`, each with the gate a struct-pinned
+64 bytes from its buffer so `VariableOverwriteExecutor`'s sweep can reach it. Every
+row `measured`; each "solves" verified against a wrong-value negative control.
+
+| fixture | mechanism | solves via its transport | probe verdict |
+|---|---|---|---|
+| `file_vector_gate` | `fopen`/`fread`, bare argv | ✔ | `file-candidate` ✔ |
+| `mech_open_read_argv` | raw `open`/`read`, bare argv | ✔ | `file-candidate` ✔ |
+| `mech_line_text` | `fgets` line-based **text** file | ✔ | `file-candidate` ✔ |
+| `mech_flag_style` | file behind `-f FILE` | ✔ | **`stdin`** ✘ false negative |
+| `mech_fixed_path` | fixed `input.dat` in cwd, no argv | ✔ | **`stdin`** ✘ false negative |
+| `mech_argv_payload` | payload **is** `argv[1]` | ✔ | `argv-only-not-opened` |
+
+### Two findings that change the design's framing
+
+**The probe detects 3 of 6 mechanisms.** It keys on a bare path in argv, so
+flag-style and fixed-path are invisible to it, and argv-payload is not a file at
+all. **Every miss routes to `SINK_STDIN`** — today's behavior — so the Revision 3
+safety rule holds and nothing regresses. But the conclusion is stronger than
+Revision 3 stated: **the operator option is the primary interface for half the
+mechanism space, not a fallback for when the heuristic is unsure.** Auto-detection
+is a convenience on one shape.
+
+**`SINK_ARGV` must pass raw bytes, never `str`.** Measured: the identical payload
+passed as a latin-1-decoded `str` **silently fails** (target prints `nope`) because
+the high bytes are re-encoded as multi-byte UTF-8, while the same payload passed as
+`bytes` wins. A `str` argv path would produce unreproducible SUCCESSes. This is a
+required implementation constraint with its own gate, not a stylistic note.
+
+## Consequences for scope
+
+- §2's narrowed scope is **unchanged in spirit** — single-shot payload techniques
+  only, `{variable_overwrite, ret2win}`, everything else refuses centrally — but it
+  now covers **four transports** rather than one. The wiring is shared, so the
+  incremental cost is the spec plus per-transport gates; the transports were never
+  the expensive part.
+- **M-4 generalizes** from "fixture targets solved: 0/1 → 1/1" to
+  **"input mechanisms solved: 0/6 → 6/6"**, each with its own negative control. That
+  is a materially stronger claim than the single-fixture version and it directly
+  answers "does this work as a mechanism".
+- **B-3 is re-framed** from "write a BMP header" to "add the first entry to a
+  container registry". Its sprint must demonstrate the registry with **two**
+  formats, not one, or the generality is unproven.
+- `detect_input_sources()`'s existing `"file"`/`"stdin/file"`/`"command line"`
+  labels stay untouched (B-2 says they are not a vector oracle), but the new
+  transport vocabulary deliberately matches `afl.py`'s `stdin|file|argv` so the
+  fuzzing and exploit paths can later share one resolver.
