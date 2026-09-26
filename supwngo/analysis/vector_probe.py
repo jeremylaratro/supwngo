@@ -222,7 +222,15 @@ def classify_input_vector(
             rc1, out1 = _run([binary_path], timeout, env)
             rc2, out2 = _run([binary_path], timeout, env)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            evidence["launch_error"] = repr(exc)
+            # Both causes give the SAME verdict here -- stage 0 cannot attribute
+            # any later difference either way -- but they must not be recorded
+            # under the same label. Writing a timeout into "launch_error" says
+            # the process never started when it did, which is the same mislabel
+            # class that made stage 3 report "timeout" for a PermissionError.
+            # The verdict is deliberately shared; only the audit record splits.
+            timed_out = isinstance(exc, subprocess.TimeoutExpired)
+            evidence["stage0_failure_cause"] = "timeout" if timed_out else "launch-error"
+            evidence["launch_error" if not timed_out else "timeout_error"] = repr(exc)
             return VectorProbeResult(
                 verdict=VERDICT_INCONCLUSIVE_LAUNCH,
                 evidence=evidence,

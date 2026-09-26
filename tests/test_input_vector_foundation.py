@@ -343,10 +343,22 @@ class TestMaterialize:
     def test_materialize_single_part(self):
         assert DeliverySpec().materialize([b"solo"]) == b"solo"
 
-    def test_materialize_does_not_insert_a_trailing_newline(self):
-        joined = DeliverySpec().materialize([b"a", b"b"])
-        assert joined == b"ab"
-        assert not joined.endswith(b"\n")
+    def test_materialize_preserves_a_newline_that_is_part_of_the_payload(self):
+        """Replaces an earlier `assert joined == b"ab"` followed by
+        `assert not joined.endswith(b"\\n")`, which was TAUTOLOGICAL -- the
+        equality already settled the suffix, so the second assertion could
+        never fail independently and added no coverage.
+
+        This case is not subsumed by the join tests above: it distinguishes an
+        implementation that *preserves* payload bytes from one that strips or
+        normalizes trailing whitespace. That matters because delivery must be
+        byte-exact -- a stripped newline changes the offset of everything after
+        it."""
+        assert DeliverySpec().materialize([b"a\n"]) == b"a\n"
+        assert DeliverySpec().materialize([b"a\n", b"\nb"]) == b"a\n\nb"
+
+    def test_materialize_of_no_parts_is_empty_not_an_error(self):
+        assert DeliverySpec().materialize([]) == b""
 
 
 # --------------------------------------------------------------------------
@@ -569,3 +581,38 @@ class TestInputSourcesDeadEntryRemoved:
         having only the dead entry removed."""
         assert len(INPUT_SOURCES) > 0
         assert "gets" in INPUT_SOURCES
+
+
+class TestStage0RecordsWhichFailureCauseItSaw:
+    """Found by a sweep answering the review's sentinel-conflation class, not by
+    the review itself: stage 0 returns `inconclusive-launch` for BOTH a launch
+    failure and a timeout, which is correct -- neither lets a later difference
+    be attributed -- but it recorded both under an `evidence["launch_error"]`
+    key, asserting a process never started when it may have started and hung.
+    Same mislabel class as stage 3 reporting a PermissionError as "timeout".
+    The shared verdict is deliberate; only the audit record is split."""
+
+    def _probe(self, monkeypatch, exc):
+        import supwngo.analysis.vector_probe as vp
+
+        def boom(argv, timeout, env):
+            raise exc
+        monkeypatch.setattr(vp, "_run", boom)
+        return vp.classify_input_vector("/bin/true")
+
+    def test_a_launch_failure_is_recorded_as_a_launch_error(self, monkeypatch):
+        r = self._probe(monkeypatch, PermissionError(13, "denied"))
+        assert r.verdict == "inconclusive-launch"
+        assert r.evidence["stage0_failure_cause"] == "launch-error"
+        assert "launch_error" in r.evidence
+
+    def test_a_timeout_is_not_recorded_as_a_launch_error(self, monkeypatch):
+        r = self._probe(
+            monkeypatch, subprocess.TimeoutExpired(cmd="/bin/true", timeout=5.0))
+        assert r.verdict == "inconclusive-launch", (
+            "the VERDICT must stay shared -- splitting it would change "
+            "classification behavior, which is not what this fixes")
+        assert r.evidence["stage0_failure_cause"] == "timeout"
+        assert "launch_error" not in r.evidence, (
+            "a timeout must not be filed as a launch error -- the process did "
+            "start")
