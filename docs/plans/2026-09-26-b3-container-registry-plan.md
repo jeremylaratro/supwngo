@@ -36,12 +36,19 @@ mentions it. Only `20×20/8bpp` is confirmed accepted.
 
 - `20×20/8bpp` is **fully accepted** — `[01] : PASS` … `[20] : PASS`, `rc=0`. So a
   valid envelope exists and is small.
-- **8 KB appended after the pixel array is ignored.** The parser does not require the
+- ~~**8 KB appended after the pixel array is ignored.** The parser does not require the
   file length to match the declared image size, so there is payload room that costs
-  nothing structurally.
+  nothing structurally.~~ **← WRONG; see R1.1.** Re-measured: an 8 KB trailer
+  **segfaults** the target in 8/20 reps while a 0-byte trailer never does. The trailer
+  is read and overflows something. This is *better* for the sprint than the original
+  claim — the payload room exists *and* reaches memory-unsafe code — but the original
+  wording would have led to a gate that could not detect whether anything was reached.
 
-And one fact bounds the exploit surface: the scan loop emits one line per row, so the
-**per-row scan loop is the write primitive**, not the header parse.
+~~And one fact bounds the exploit surface: the scan loop emits one line per row, so the
+**per-row scan loop is the write primitive**, not the header parse.~~
+**← downgraded to `inferred`.** One line per row proves a row loop runs; it does not
+prove that loop performs the vulnerable write, and the trailer evidence points
+elsewhere. This sprint makes **no claim** about where the vulnerable write lives.
 
 ## 2. Scope
 
