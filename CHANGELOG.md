@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-25
+
+First tagged release. The project had carried the version `1.0.0` in its metadata
+since before the rename from `autopwn`, but was never tagged or published, so
+everything below is the accumulated history to this point rather than a delta over
+a shipped 1.0.0. The major bump is driven by five breaking changes — four in the
+context schema and one in licensing — and by the wish that downstream tooling
+*notice* the license change rather than silently upgrade into terms it no longer
+qualifies for.
+
 ### Changed
 - **BREAKING (licensing): the repository is now licensed under PolyForm Strict 1.0.0**,
   resolving a three-way conflict in which `LICENSE` said CC BY-NC-SA 4.0, `README.md`

@@ -21,7 +21,7 @@ else:
 
 setup(
     name="supwngo",
-    version="1.0.0",
+    version="2.0.0",
     author="SupwnGo Contributors",
     author_email="supwngo@example.com",
     description="SupwnGo - Automated binary exploitation framework",

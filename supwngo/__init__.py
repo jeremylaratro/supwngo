@@ -17,7 +17,7 @@ Key Features:
 - Libc identification from leaked addresses
 """
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __author__ = "SupwnGo Team"
 
 from supwngo.core.binary import Binary

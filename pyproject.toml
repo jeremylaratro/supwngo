@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "supwngo"
-version = "1.0.0"
+version = "2.0.0"
 description = "SupwnGo - Automated binary exploitation framework"
 readme = "README.md"
 license = {file = "LICENSE"}

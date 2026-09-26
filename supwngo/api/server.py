@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from supwngo import __version__
 from supwngo.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -149,7 +150,7 @@ def create_app(config: Optional[APIConfig] = None) -> Any:
     app = FastAPI(
         title="supwngo API",
         description="Binary exploitation framework API",
-        version="1.0.0",
+        version=__version__,
         docs_url="/docs",
         redoc_url="/redoc",
     )
@@ -169,7 +170,7 @@ def create_app(config: Optional[APIConfig] = None) -> Any:
         """Health check endpoint."""
         return HealthResponse(
             status="healthy",
-            version="1.0.0",
+            version=__version__,
             uptime=time.time() - start_time,
             jobs_processed=jobs_processed,
             jobs_pending=sum(1 for j in job_manager.jobs.values() if j.state == "pending"),
