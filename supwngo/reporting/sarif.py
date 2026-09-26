@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import hashlib
 
+from supwngo import __version__
 from supwngo.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -59,10 +60,9 @@ class SARIFExporter:
     Azure DevOps, and many security tools.
 
     Example:
-        exporter = SARIFExporter(
-            tool_name="supwngo",
-            tool_version="1.0.0"
-        )
+        # tool_version defaults to supwngo.__version__; don't pass a literal,
+        # or the SARIF a consumer ingests will drift from the package version.
+        exporter = SARIFExporter(tool_name="supwngo")
 
         # Add rules
         exporter.add_rule(SARIFRule(
@@ -184,8 +184,8 @@ class SARIFExporter:
     def __init__(
         self,
         tool_name: str = "supwngo",
-        tool_version: str = "1.0.0",
-        tool_uri: str = "https://github.com/supwngo/supwngo",
+        tool_version: str = __version__,
+        tool_uri: str = "https://github.com/jeremylaratro/supwngo",
     ):
         """
         Initialize SARIF exporter.

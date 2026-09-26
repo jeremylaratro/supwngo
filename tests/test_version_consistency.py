@@ -80,10 +80,18 @@ def test_cli_version_flag_reports_the_package_version():
     )
 
 
-@pytest.mark.parametrize("relpath", ["supwngo/api/server.py"])
-def test_api_server_does_not_hardcode_a_version_literal(relpath):
-    """Regression guard: these two sites each carried their own "1.0.0" and
-    silently disagreed with the package. They now read __version__."""
+@pytest.mark.parametrize(
+    "relpath", ["supwngo/api/server.py", "supwngo/reporting/sarif.py"]
+)
+def test_module_does_not_hardcode_a_version_literal(relpath):
+    """Regression guard: each of these sites carried its own "1.0.0" and
+    silently disagreed with the package. They now read __version__.
+
+    reporting/sarif.py matters beyond cosmetics: its default stamped the tool
+    version into every exported SARIF document, so a CI system ingesting the
+    report was told supwngo 1.0.0 had produced it. The SARIF *schema* version
+    ("version": "2.1.0") is a different field and uses a colon, so it is not
+    matched here."""
     text = (REPO_ROOT / relpath).read_text()
     hardcoded = re.findall(r"version\s*=\s*\"\d+\.\d+\.\d+\"", text)
     assert not hardcoded, (

@@ -1,0 +1,436 @@
+# HTB cold measurement + comprehensive gap analysis — 25SEP2026
+
+Scope: cold out-of-sample measurement of supwngo autopwn against 8 official HackTheBox
+pwn challenges, followed by a comprehensive gap analysis across bugs, missing
+capabilities, code health, and CLI surface. This document supersedes the earlier
+`2026-09-25-capability-gap-analysis.md` by incorporating real held-out measurement data.
+
+Every claim is labelled **measured** (instrument ran), **recorded** (read from an
+artefact), or **inferred** (reasoned from the above).
+
+---
+
+## 0. Executive summary
+
+**0 of 6 autopwn-applicable HTB challenges solved. 2 Easy challenges that supwngo has
+the techniques to solve were missed due to specific bugs in technique gating and
+pipeline orchestration.**
+
+| Metric | Value |
+| --- | --- |
+| Total challenges | 8 |
+| Autopwn-applicable (userspace ELF) | 6 |
+| Solved | **0** |
+| Should-have-solved (technique exists) | **2** (Sick ROP, Rocket Blaster XXX) |
+| Stretch-solvable (capability exists but immature) | **1** (Bon-nie-appetit) |
+| Beyond current scope | **3** (Device Control, Sabotage, Auth-or-out) |
+| Non-applicable (kernel .ko, PHP .so) | 2 (knote, superfast) |
+
+The in-sample benchmark is 13/13. The held-out score is **0/6**. The gap is not missing
+techniques — it is bugs in the gating, orchestration, and failure-handling code that
+prevent existing techniques from being applied.
+
+---
+
+## 1. Per-challenge results
+
+### 1.1 Sick ROP (Easy) — FAILED
+
+- **Binary:** 4,832 bytes, static, No PIE, No Canary, NX
+- **rc=0, elapsed=160s, verdict=FAILED**
+- **Intended technique:** SROP (sigreturn → mprotect → shellcode)
+- **What supwngo did:** All 17 executors skipped ("not applicable"). Only
+  `variable_overwrite` attempted — brute-forced 14 × 9 candidates for 158s on a binary
+  with no symbols, no canary, no PIE.
+- **Root cause:** `SropExecutor.is_applicable()` requires `/bin/sh` in the binary
+  (`self._binsh(context) is not None`). `sick_rop` has zero `/bin/sh` strings — it's a
+  canonical SROP target designed to not have that string. The gate is inverted: SROP
+  exists precisely for targets lacking convenient strings.
+- **Secondary:** `blocking_unknowns: []` and `strategy_warnings: []` on a total failure.
+  No technique name appears in the log — every skip says "not applicable to this target"
+  with no reason.
+- **Fix complexity:** Medium — widen SropExecutor gate to allow targets with writable
+  sections where `/bin/sh` can be planted via a chained `read()` call.
+
+### 1.2 Rocket Blaster XXX (Easy) — FAILED
+
+- **Binary:** amd64, No Canary, NX, No PIE, Full RELRO, RUNPATH='./glibc/'
+- **rc=0, elapsed=93s, verdict=FAILED**
+- **Intended technique:** ret2win with 3 arguments (`pop rdi/rsi/rdx` → `fill_ammo`)
+- **What supwngo did:** All 17 executors produced attempts with status `None`. No
+  technique reached DELIVERY. `blocking_unknowns: []`, `strategy_warnings: []`.
+- **Root cause (inferred):** The binary has a non-standard win function (`fill_ammo`)
+  requiring 3 specific magic-value arguments (`0xdeadbeef`, `0xdeadbabe`, `0xdead1337`).
+  supwngo's `ret2win` executor likely did not detect or parameterize this function. The
+  RUNPATH glibc may have compounded offset resolution issues.
+- **Fix complexity:** Medium — ret2win needs argument discovery (cross-reference binary
+  constants with function parameters).
+
+### 1.3 Device Control (Medium) — FAILED (correctly diagnosed)
+
+- **Binary:** amd64, Full RELRO, Canary, NX, PIE — all protections
+- **rc=0, elapsed=7s, verdict=FAILED**
+- **Intended technique:** Format string leak → one_gadget via RBP overwrite (ncurses I/O)
+- **What supwngo did:** Fast, correct failure — 16 SKIPPED, 1 FAILED
+  (`variable_overwrite`), correct diagnosis: "PIE base not leaked", "Stack canary
+  enabled - need canary leak". Best output of any target.
+- **Capability gap:** ncurses I/O interaction, brute-force ASLR byte, one_gadget
+  constraint satisfaction. These are beyond current automated scope.
+- **Fix complexity:** High — requires ncurses interaction engine (out of scope for
+  near-term).
+
+### 1.4 Bon-nie-appetit (Medium) — TIMEOUT
+
+- **Binary:** amd64, Full RELRO, Canary, NX, PIE, ships glibc 2.27
+- **rc=124, elapsed=900s, verdict=TIMEOUT, zero JSON output**
+- **Intended technique:** Heap off-by-one → tcache poisoning → `__free_hook` → system
+- **What supwngo did:** 160 target launches, 14 gadgets cached, ran full 900s timeout.
+  No JSON output produced — the "always generates a fallback template" guarantee failed
+  under wall-clock exhaustion.
+- **Capability gap:** Tcache poisoning with off-by-one overflow. The heap library
+  (`exploit/heap/`) has the primitives but they're unreachable from the pipeline.
+- **Fix complexity:** High — needs new heap executor wired into pipeline + libc path
+  threading for glibc 2.27.
+
+### 1.5 Ancient Interface / Sabotage (Medium) — TIMEOUT
+
+- **Binary:** amd64, Full RELRO, Canary, NX, PIE
+- **rc=124, elapsed=900s, verdict=TIMEOUT, zero JSON output**
+- **Intended technique:** Integer overflow in custom Malloc → heap overflow → env var
+  corruption → PATH hijack → `system("panel")`
+- **Capability gap:** Environment variable corruption via heap overflow is not a standard
+  exploitation technique. Not in supwngo's technique space.
+- **Fix complexity:** N/A — out of scope for automated pipeline.
+
+### 1.6 Auth-or-out (Medium) — TIMEOUT (killed at 805s)
+
+- **Binary:** amd64, Full RELRO, Canary, NX, PIE, custom heap allocator
+- **rc=143, elapsed=805s, verdict=KILLED (stale process)**
+- **Intended technique:** UAF in custom allocator → heap overflow → function pointer
+  overwrite → system
+- **Capability gap:** Custom allocator reversal. Not automatable without RE of
+  non-standard allocator internals.
+- **Fix complexity:** N/A — out of scope for automated pipeline.
+
+---
+
+## 2. Category 1 — Bugs, gaps, and performance problems
+
+### 2.1 Exit code always 0 (measured)
+
+**32 of 33 CLI commands always return exit code 0** regardless of success or failure.
+Only `report` has `ctx.exit(1)`. This means:
+- Shell scripts cannot tell if autopwn succeeded or failed
+- CI/CD integration is impossible
+- The test harness had to parse JSON to detect failure
+
+### 2.2 Timeout produces zero output (measured)
+
+When autopwn hits the wall-clock timeout (rc=124), it produces **no JSON output at
+all**. The "always generates a fallback template" guarantee fails under timeout. Two of
+six targets produced zero bytes of output — a complete instrument failure.
+
+### 2.3 SROP gate inverted (measured)
+
+`SropExecutor.is_applicable()` at `rop_techniques.py` requires `/bin/sh` to already
+exist in the binary. This is backwards — SROP's primary use case is targets lacking
+convenient strings, where the attack plants `/bin/sh` via a chained `read()` into `.bss`.
+The gate makes SROP inapplicable to canonical SROP targets.
+
+### 2.4 No strategy-level progress reporting (measured)
+
+During 900s runs, the only log output is pwntools `Starting local process` / `Stopped
+process`. No technique names, no stage indicators, no progress. An operator watching
+the tool run cannot tell what it's trying.
+
+### 2.5 Diagnostic fields empty on total failure (measured)
+
+`blocking_unknowns: []` and `strategy_warnings: []` on targets where everything failed.
+`device_control` was the exception — it correctly reported "PIE base not leaked". The
+other failures produced empty diagnostic fields, which is worse than no field.
+
+### 2.6 Skip reasons are non-specific (measured)
+
+Every skipped executor emits "not applicable to this target" with no reason. There are
+16 different executors with 16 different gates, and they all produce the same message.
+The information about which precondition failed exists at the gate but is discarded.
+
+### 2.7 No installed console script (measured)
+
+`which supwngo` → not found. Running from outside the repo root requires
+`PYTHONPATH=/srv/share/dev/supwngo python3 -m supwngo.cli`. This caused a void first
+run in the test harness (all targets failed in <1s with `ModuleNotFoundError`).
+
+### 2.8 Hardcoded libc version (recorded)
+
+`libc_version="2.31"` hardcoded at `fsop.py:214` and `off_by_one.py:396`. These
+constants will produce wrong offsets on any other libc version.
+
+### 2.9 No loader threading (measured)
+
+Zero mentions of `patchelf`, `LD_LIBRARY_PATH`, `--library-path` in the codebase.
+Targets shipping their own glibc (3 of 6 HTB targets) cannot have offsets correctly
+resolved. The tool computes offsets from one libc but executes against another.
+
+### 2.10 ret2win argument discovery missing (inferred)
+
+`Rocket Blaster XXX` requires calling `fill_ammo(0xdeadbeef, 0xdeadbabe, 0xdead1337)`.
+supwngo's ret2win executor does not discover required arguments from the binary's
+constant references. This is a textbook-easy challenge that should be solvable.
+
+---
+
+## 3. Category 2 — Feature gaps that would enable solves
+
+### 3.1 SROP without `/bin/sh` (would solve: Sick ROP)
+
+Add an SROP strategy that writes `/bin/sh` to a writable section (`.bss` or `mmap`'d
+page) via a chained `read()` sigreturn frame, then calls `execve`. This is the standard
+SROP technique.
+
+### 3.2 ret2win with argument matching (would solve: Rocket Blaster XXX)
+
+Detect win functions by binary analysis (functions that call `open`/`read`/`write` on
+flag patterns, or `system`/`execve`), extract required argument values from comparison
+constants in the function, and build the ROP chain to satisfy them.
+
+### 3.3 Heap technique pipeline integration (would improve: Bon-nie-appetit)
+
+The heap library (`exploit/heap/`, 4,341 lines) is unreachable from the pipeline.
+`build_default_registry()` registers 17 executors, none of which are house-of-*,
+tcache poisoning, or fastbin dup orchestration. Wiring these requires new executors
+plus corpus targets per technique.
+
+### 3.4 Libc path threading + mismatch detection
+
+`--libc-path` option that runs the target against the specified glibc via `patchelf` or
+`LD_LIBRARY_PATH`. Detect when the libc used for offset computation differs from the
+one loaded at runtime. Retire the hardcoded `libc_version="2.31"`.
+
+### 3.5 Custom I/O interaction models
+
+Device Control uses ncurses. Other challenges use menu-driven I/O. supwngo currently
+assumes stdin/stdout line-oriented I/O. A pluggable interaction model would expand
+target coverage.
+
+### 3.6 Input format diversity
+
+The challenge set includes a BMP-based challenge concept. supwngo has no capability to
+craft structured file inputs (BMP, PNG, ELF, etc.) as attack vectors. File format
+fuzzing with structure-aware mutators would expand coverage.
+
+---
+
+## 4. Category 3 — Code health and tool surface
+
+### 4.1 Unreachable modules (measured: 48 of 198, 24%)
+
+| Package | Unreachable modules | Lines |
+| --- | --- | --- |
+| `exploit/heap` | 11 | 4,341 |
+| `ai` | 5 | 2,977 |
+| `distributed` | 5 | 2,690 |
+| `windows` | 5 | 2,205 |
+| `reporting` | 5 | 2,077 |
+| `embedded` | 4 | 1,521 |
+| `containers` | 3 | 1,317 |
+| `api` | 3 | 858 |
+| `macos` | 2 | 568 |
+| `payloads` | 2 | 319 |
+
+### 4.2 ai/ and distributed/ (5,667 lines, 0 tests, 0 CLI surface)
+
+Complete-looking subsystems with no way to reach them. `ai/` has LLM analyzer, vuln
+predictor, pattern learner, advisor. `distributed/` has coordinator, worker, seed
+sharing, coverage merge. Either surface and test them or remove them from the shipped
+package.
+
+### 4.3 README overclaims (measured)
+
+README claims "Heap exploitation techniques (tcache poisoning, fastbin dup, House of *)"
+under Exploit Generation. House-of-* has no CLI and no pipeline surface.
+`build_default_registry()` registers 17 executors, none of which are house-of-* variants.
+
+### 4.4 Option inconsistency (measured)
+
+`--libc` exists on 7 of 33 commands: exploit, rop, pwn, template, autopwn, explain,
+solve. A user who learns the flag on `exploit` finds it missing on `checksec`, `analyze`,
+`heap-analysis`, `leaks`, etc.
+
+### 4.5 33 commands, 22 have --json, 11 do not (measured)
+
+Commands WITHOUT `--json`: fuzz, triage, exploit, rop, symbolic, libc-id, checksec,
+cyclic, cyclic-find, batch, template, decompile, version. Inconsistent output format
+support.
+
+### 4.6 Stale local branches (measured: 8)
+
+8 local branches beyond main, plus 5 locked worktrees in `.claude/worktrees/`. These
+should be cleaned up.
+
+### 4.7 exploit/heap/ vs exploit/pipeline/executors/heap_techniques.py (recorded)
+
+Two separate heap code paths: the library (4,341 lines, unreachable) and the pipeline
+executor (370 lines, inline reimplementation). They are complementary but disconnected.
+
+### 4.8 Massive code duplication (measured)
+
+The codebase has significant redundant implementations:
+
+| Concept | Copies | Files |
+| --- | --- | --- |
+| Shellcode generator | **3** | `shellcode.py`, `constrained_shellcode.py`, `restricted_shellcode.py` |
+| Exploit verifier | **2** | `verify.py`, `verification.py` (duplicate class names) |
+| Seccomp analyzer | **2** | `seccomp.py`, `seccomp_advanced.py` (duplicate enum names) |
+| Auto-exploiter | **2** | `auto.py` (2,942 lines), `enhanced_auto.py` (1,432 lines) |
+| Canary bypass | **2** | `exploit/canary_bypass.py`, `vulns/canary_bypass.py` |
+| HeapLayout class | **2** | `exploit/heap/layout.py`, `vulns/heap_advanced.py` |
+| verify_shell() | **3** | `auto.py` (×2), `verification.py`, `pipeline/verifier.py` |
+| cyclic/offset | **3** | `utils/helpers.py`, `exploit/offset_finder.py`, scattered |
+| base/advanced vuln detector | **3 pairs** | `heap.py`/`heap_advanced.py`, `integer.py`/`integer_advanced.py`, `race.py`/`race_advanced.py` |
+
+### 4.9 Hardcoded libc offsets and paths (measured)
+
+Beyond the already-known `libc_version="2.31"` at `fsop.py:214` and `off_by_one.py:396`:
+
+- `exploit/heap/tcache.py:415-416` — `__malloc_hook` at `0x3ebc30`, `__free_hook` at
+  `0x3ed8e8` (libc 2.27/2.31 specific)
+- `exploit/heap/house_of_modern.py:79-81` — hardcoded IO jumps offsets
+- `exploit/auto.py:2669-2675` — commented-out puts/system/binsh offsets
+- `kernel/modprobe.py:535` — `DEFAULT_CORE_PATTERN_OFFSET = 0x1a90e40`
+- `exploit/enhanced_auto.py:1234` — `offset = 72  # CHANGE THIS`
+- Hardcoded libc search paths duplicated at `auto.py:1232-1234`, `auto.py:1454-1456`,
+  and `pipeline/executors/_shared.py:222`
+
+### 4.10 Zero test coverage for ~15,000+ lines (measured)
+
+12 packages/sub-packages have **zero** test coverage: `ai/`, `api/`, `containers/`,
+`distributed/`, `embedded/`, `macos/`, `windows/`, `payloads/`, `remote/`, most of
+`fuzzing/`, all of `symbolic/`, and `utils/`. Additionally, `exploit/auto.py` (2,942
+lines) and `exploit/enhanced_auto.py` (1,432 lines) have no dedicated tests.
+
+### 4.11 48+ module-level `def exploit()` functions (measured)
+
+Scattered across the codebase are 48+ functions named `exploit()` defined at module
+scope — these are code-as-string templates embedded as actual Python, creating name
+collision risk and maintenance confusion.
+
+---
+
+## 5. Sprint roadmap
+
+### Sprint 0 — Housekeeping (commit pending work, clean branches)
+
+**Goal:** Clean slate. Commit the pending `report` command feature, clean up stale
+branches and worktrees, delete the earlier gap analysis (superseded by this document).
+
+- [ ] Commit feature 1 (`report` command) on `feat/report-command` branch, PR, merge
+- [ ] Delete stale local branches that have been merged or superseded
+- [ ] Clean locked worktrees
+- [ ] Run full test suite to establish green baseline
+
+### Sprint 1 — Exit codes and failure reporting
+
+**Goal:** Every CLI command signals failure correctly. Operators and scripts can
+distinguish success from failure.
+
+- [ ] Add `ctx.exit(1)` to all 32 commands that currently always return 0
+- [ ] Implement timeout fallback: when autopwn is killed by timeout, produce a JSON
+  summary of what was attempted before death (signal handler or periodic checkpoint)
+- [ ] Add specific skip reasons to every executor gate (replace "not applicable to this
+  target" with the actual precondition that failed)
+- [ ] Add strategy-level progress logging (technique name, stage, attempt count)
+- [ ] Populate `blocking_unknowns` and `strategy_warnings` on total failure
+- [ ] Tests for exit code behavior
+
+### Sprint 2 — SROP gate fix + ret2win argument discovery
+
+**Goal:** Solve the two Easy HTB challenges that supwngo should already handle.
+
+- [ ] Widen `SropExecutor.is_applicable()` to allow targets without `/bin/sh` when
+  writable sections exist for planting the string
+- [ ] Implement the two-stage SROP strategy: `read()` → plant `/bin/sh` in `.bss`,
+  then `execve` sigreturn frame
+- [ ] Add ret2win argument discovery: scan win function for comparison constants,
+  build ROP chain with matching arguments
+- [ ] Add `sick_rop` and `rocket_blaster_xxx` as regression test targets
+- [ ] Re-run autopwn against both to verify fixes
+
+### Sprint 3 — Libc path threading + console script
+
+**Goal:** Targets shipping custom glibc work correctly. Tool installable as a command.
+
+- [ ] Implement `--libc-path` option: use `patchelf --set-interpreter` or
+  `LD_LIBRARY_PATH` to run target against specified glibc
+- [ ] Thread `--libc-path` through all 7 commands that already have `--libc`
+- [ ] Add mismatch detector: warn when offset-libc differs from loaded-libc
+- [ ] Retire hardcoded `libc_version="2.31"` at `fsop.py:214` and `off_by_one.py:396`
+- [ ] Add `console_scripts` entry point to `setup.py`/`pyproject.toml` so `pip install -e .`
+  creates a `supwngo` command
+- [ ] Re-run autopwn against `rocket_blaster_xxx` (which ships glibc) to verify
+
+### Sprint 4 — CLI option consistency + --json parity
+
+**Goal:** Uniform CLI surface. Every command that can use `--libc` does. Every command
+that produces structured output has `--json`.
+
+- [ ] Add `--libc` to all analysis commands where it's meaningful (analyze, checksec,
+  heap-analysis, leaks, imports, etc.)
+- [ ] Add `--json` to the 11 commands currently missing it
+- [ ] Audit and standardize option naming (short flags, help text)
+- [ ] Add CLI integration tests for option consistency
+
+### Sprint 5 — Heap executor pipeline integration
+
+**Goal:** Wire the existing heap library into the autopwn pipeline.
+
+- [ ] Create new pipeline executors for: tcache poisoning, fastbin dup, house-of-force,
+  house-of-spirit (from `exploit/heap/` library)
+- [ ] Register them in `build_default_registry()`
+- [ ] Add corpus targets for each technique to validate
+- [ ] Correct README's house-of-* claim (either accurate after wiring, or removed)
+
+### Sprint 6 — Dead code audit + module pruning
+
+**Goal:** Every shipped module is either reachable+tested or removed.
+
+- [ ] Decision: surface or remove `ai/` (2,977 lines)
+- [ ] Decision: surface or remove `distributed/` (2,690 lines)
+- [ ] Decision: surface or remove `windows/` (2,205 lines), `macos/` (568 lines),
+  `embedded/` (1,521 lines), `containers/` (1,317 lines)
+- [ ] Add reachability regression test (assert unreachable set does not grow)
+- [ ] Remove or wire any remaining dead code
+- [ ] Update module count claims in README
+
+### Sprint 7 — CI + containerized execution
+
+**Goal:** Tests enforced on every push. Results reproducible in a container.
+
+- [ ] Add `.github/workflows/ci.yml` running pytest + reachability check
+- [ ] Create Dockerfile with pinned libc, patchelf, and all tool dependencies
+- [ ] Document container-based usage
+
+### Sprint 8 — Re-measurement + documentation
+
+**Goal:** Re-run the HTB cold measurement with all fixes applied. Update gap analysis
+with new results.
+
+- [ ] Re-run autopwn against all 6 applicable HTB targets
+- [ ] Compare pre/post results
+- [ ] Update this document with post-fix measurements
+- [ ] Tag `v2.1.0` with the improvements
+
+---
+
+## 6. HTB challenge writeup summary (for reference)
+
+| Challenge | Difficulty | Vuln Type | Required Technique | In supwngo's scope? |
+| --- | --- | --- | --- | --- |
+| Sick ROP | Easy | Stack BOF | SROP + mprotect + shellcode | YES (bug prevents) |
+| Rocket Blaster XXX | Easy | Stack BOF | ret2win with 3 args | YES (missing feature) |
+| Device Control | Medium | Format string + BOF | fmtstr leak + one_gadget (ncurses) | PARTIAL |
+| Bon-nie-appetit | Medium | Heap off-by-one | tcache poison → __free_hook | STRETCH |
+| Sabotage | Medium | Integer overflow | heap overflow → env corruption → PATH hijack | NO |
+| Auth-or-out | Medium | UAF (custom allocator) | UAF → func ptr overwrite | NO |
+| knote | N/A | Kernel module | kernel exploitation | N/A (not userspace) |
+| superfast | N/A | PHP extension | PHP-specific | N/A (not an ELF executable) |
