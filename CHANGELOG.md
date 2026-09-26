@@ -46,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   report specific precondition failures (PIE, Full RELRO, missing PLT
   entries, no menu detected) instead of generic "not applicable".
 
+- Legacy engine fallback in `solve` and `autopwn` commands. When the canonical
+  `CanonicalAutopwnEngine` pipeline fails, both commands now automatically try
+  the legacy `EnhancedAutoExploiter` before giving up. The legacy engine uses
+  more aggressive heuristics and solved 3/7 HTB targets where the canonical
+  pipeline solved 0/7. The winning technique is prefixed with `legacy:` in
+  the output (e.g. `legacy:variable_overwrite`).
+
 ### Fixed
 - Win function detection in canonical pipeline now uses `WinFunctionFinder`
   (expanded name list + call-graph + file-ops detection) as fallback when the
