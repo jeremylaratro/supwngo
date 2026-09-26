@@ -167,10 +167,13 @@ def analyze(ctx, binary, output, json_output):
 @click.option("-j", "--cores", default=4, help="Number of fuzzing cores")
 @click.option("-Q", "--qemu", is_flag=True, help="Use QEMU mode")
 @click.option("--afl/--honggfuzz", default=True, help="Fuzzer to use")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def fuzz(ctx, binary, input_dir, output_dir, timeout, cores, qemu, afl):
+def fuzz(ctx, binary, input_dir, output_dir, timeout, cores, qemu, afl, json_output):
     """Launch fuzzing campaign with crash collection."""
-    console.print(f"\n[bold]Fuzzing:[/bold] {binary}\n")
+    _reset_console()
+    if json_output:
+        _json_mode()
 
     from supwngo.core.binary import Binary
     from supwngo.fuzzing.afl import AFLFuzzer, AFLConfig
@@ -189,20 +192,26 @@ def fuzz(ctx, binary, input_dir, output_dir, timeout, cores, qemu, afl):
         fuzzer = AFLFuzzer(bin_obj, config)
         fuzzer.setup(input_dir, output_dir, timeout=1000, qemu_mode=qemu)
 
-        console.print(f"[cyan]Starting AFL++ fuzzing for {timeout}s...[/cyan]")
+        if not json_output:
+            console.print(f"\n[bold]Fuzzing:[/bold] {binary}\n")
+            console.print(f"[cyan]Starting AFL++ fuzzing for {timeout}s...[/cyan]")
 
         def progress_callback(stats):
-            console.print(
-                f"  Execs: {stats.execs_done:,} | "
-                f"Crashes: {stats.crashes_total} | "
-                f"Coverage: {stats.bitmap_cvg}%",
-                end="\r",
-            )
+            if not json_output:
+                console.print(
+                    f"  Execs: {stats.execs_done:,} | "
+                    f"Crashes: {stats.crashes_total} | "
+                    f"Coverage: {stats.bitmap_cvg}%",
+                    end="\r",
+                )
 
         results = fuzzer.run_campaign(timeout, progress_callback)
 
-        console.print("\n")
-        console.print(Panel(f"""
+        if json_output:
+            _emit_json(results)
+        else:
+            console.print("\n")
+            console.print(Panel(f"""
 Fuzzing Complete
 ================
 Duration: {results['duration']:.1f}s
@@ -212,12 +221,15 @@ Paths: {results['paths_found']}
 Coverage: {results['coverage']}%
 """, title="Results"))
 
-        if results["crash_files"]:
-            console.print("\n[bold red]Crashes found:[/bold red]")
-            for crash in results["crash_files"][:10]:
-                console.print(f"  - {crash}")
+            if results["crash_files"]:
+                console.print("\n[bold red]Crashes found:[/bold red]")
+                for crash in results["crash_files"][:10]:
+                    console.print(f"  - {crash}")
     else:
-        console.print("[yellow]Honggfuzz support coming soon[/yellow]")
+        if json_output:
+            _emit_json({"error": "Honggfuzz not yet supported"})
+        else:
+            console.print("[yellow]Honggfuzz support coming soon[/yellow]")
 
 
 @cli.command()
@@ -274,9 +286,14 @@ def triage(ctx, crash_dir, binary, output, minimize):
 @click.option("-l", "--libc", type=click.Path(exists=True), help="Target libc")
 @click.option("-o", "--output", default="./exploit.py", help="Output exploit script")
 @click.option("--auto", is_flag=True, help="Attempt automatic exploitation")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def exploit(ctx, binary, crash, remote, libc, output, auto):
+def exploit(ctx, binary, crash, remote, libc, output, auto, json_output):
     """Generate exploit for vulnerable binary."""
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     console.print(f"\n[bold]Generating exploit for:[/bold] {binary}\n")
 
     from supwngo.core.binary import Binary
@@ -365,11 +382,9 @@ def exploit(ctx, binary, crash, remote, libc, output, auto):
             console.print(f"\n[bold green]SUCCESS![/bold green] Technique: {exploiter.technique_used}")
             console.print(f"Payload length: {len(exploiter.final_payload)} bytes")
 
-            # Show flag if captured
             if exploiter._captured_flag:
                 console.print(f"\n[bold magenta]FLAG: {exploiter._captured_flag}[/bold magenta]")
 
-            # Show verification status
             if exploiter.verification_level:
                 from supwngo.exploit.verification import VerificationLevel
                 if exploiter.verification_level == VerificationLevel.FLAG_CAPTURED:
@@ -377,20 +392,23 @@ def exploit(ctx, binary, crash, remote, libc, output, auto):
                 elif exploiter.verification_level.value >= VerificationLevel.SHELL_ACCESS.value:
                     console.print("[bold green]Shell access verified[/bold green]")
 
-            # Save exploit script
             with open(output, "w") as f:
                 f.write(exploiter.exploit_script if exploiter.exploit_script else exploiter.exploit_template)
-
             Path(output).chmod(0o755)
             console.print(f"\n[green]Exploit saved to {output}[/green]")
+
+            if json_output:
+                _emit_json({"success": True, "technique": exploiter.technique_used, "payload_length": len(exploiter.final_payload), "output": output, "flag": exploiter._captured_flag})
         else:
             console.print("[red]No exploitable vulnerability found[/red]")
             console.print("[yellow]Saving template for manual analysis...[/yellow]")
 
-            # Save template anyway
             with open(output, "w") as f:
                 f.write(exploiter.exploit_template)
             console.print(f"[yellow]Template saved to {output}[/yellow]")
+
+            if json_output:
+                _emit_json({"success": False, "output": output, "note": "Template saved for manual analysis"})
         return
 
     # Generate exploit
@@ -407,15 +425,15 @@ def exploit(ctx, binary, crash, remote, libc, output, auto):
             console.print(f"  Technique: scanf canary bypass")
             console.print(f"  Script generated: {len(report.exploit_script)} bytes")
 
-            # Save exploit script
             with open(output, "w") as f:
                 f.write(report.exploit_script)
-
             Path(output).chmod(0o755)
             console.print(f"\n[green]Exploit saved to {output}[/green]")
 
             if report.successful:
                 console.print("[green bold]Exploit verified working![/green bold]")
+            if json_output:
+                _emit_json({"success": report.successful, "technique": "scanf_canary_bypass", "output": output})
             return
         else:
             console.print("[yellow]Canary bypass detected but exploit generation failed[/yellow]")
@@ -428,24 +446,21 @@ def exploit(ctx, binary, crash, remote, libc, output, auto):
         console.print(f"  Technique: {exploit_obj.technique.name}")
         console.print(f"  Payload size: {len(exploit_obj.payload)} bytes")
 
-        # Save exploit script
         with open(output, "w") as f:
             f.write(exploit_obj.script)
-
         Path(output).chmod(0o755)
-
         console.print(f"\n[green]Exploit saved to {output}[/green]")
 
-        # Also save raw payload
         payload_file = Path(output).with_suffix(".bin")
         payload_file.write_bytes(exploit_obj.payload)
         console.print(f"[green]Payload saved to {payload_file}[/green]")
+
+        if json_output:
+            _emit_json({"success": True, "technique": exploit_obj.technique.name, "payload_size": len(exploit_obj.payload), "output": output, "payload_file": str(payload_file)})
     else:
         console.print("[yellow]Standard exploit generation failed, trying enhanced auto-exploit...[/yellow]")
 
-        # Fall back to enhanced auto-exploiter
         from supwngo.exploit.enhanced_auto import EnhancedAutoExploiter
-
         exploiter = EnhancedAutoExploiter(bin_obj, libc_path=libc)
         exploiter.run()
 
@@ -453,11 +468,9 @@ def exploit(ctx, binary, crash, remote, libc, output, auto):
             console.print(f"\n[bold green]SUCCESS![/bold green] Technique: {exploiter.technique_used}")
             console.print(f"Payload length: {len(exploiter.final_payload)} bytes")
 
-            # Show flag if captured
             if exploiter._captured_flag:
                 console.print(f"\n[bold magenta]FLAG: {exploiter._captured_flag}[/bold magenta]")
 
-            # Show verification status
             if exploiter.verification_level:
                 from supwngo.exploit.verification import VerificationLevel
                 if exploiter.verification_level == VerificationLevel.FLAG_CAPTURED:
@@ -465,20 +478,23 @@ def exploit(ctx, binary, crash, remote, libc, output, auto):
                 elif exploiter.verification_level.value >= VerificationLevel.SHELL_ACCESS.value:
                     console.print("[bold green]Shell access verified[/bold green]")
 
-            # Save exploit script
             with open(output, "w") as f:
                 f.write(exploiter.exploit_script if exploiter.exploit_script else exploiter.exploit_template)
-
             Path(output).chmod(0o755)
             console.print(f"\n[green]Exploit saved to {output}[/green]")
+
+            if json_output:
+                _emit_json({"success": True, "technique": exploiter.technique_used, "payload_length": len(exploiter.final_payload), "output": output, "flag": exploiter._captured_flag})
         else:
             console.print("[red]All exploit generation methods failed[/red]")
             console.print("[yellow]Saving template for manual completion...[/yellow]")
 
-            # Save template anyway
             with open(output, "w") as f:
                 f.write(exploiter.exploit_template)
             console.print(f"[yellow]Template saved to {output}[/yellow]")
+
+            if json_output:
+                _emit_json({"success": False, "output": output, "note": "Template saved for manual completion"})
             ctx.exit(1)
 
 
@@ -487,10 +503,13 @@ def exploit(ctx, binary, crash, remote, libc, output, auto):
 @click.option("-l", "--libc", type=click.Path(exists=True), help="Libc for ret2libc")
 @click.option("--chain", type=click.Choice(["shell", "execve", "mprotect"]), default="shell")
 @click.option("-o", "--output", help="Output file for ROP chain")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def rop(ctx, binary, libc, chain, output):
+def rop(ctx, binary, libc, chain, output, json_output):
     """Find ROP gadgets and generate common chains."""
-    console.print(f"\n[bold]ROP Analysis:[/bold] {binary}\n")
+    _reset_console()
+    if json_output:
+        _json_mode()
 
     from supwngo.core.binary import Binary
     from supwngo.exploit.rop.gadgets import GadgetFinder
@@ -499,17 +518,11 @@ def rop(ctx, binary, libc, chain, output):
     bin_obj = Binary.load(binary)
 
     # Find gadgets
-    console.print("[cyan]Finding gadgets...[/cyan]")
+    if not json_output:
+        console.print(f"\n[bold]ROP Analysis:[/bold] {binary}\n")
+        console.print("[cyan]Finding gadgets...[/cyan]")
     finder = GadgetFinder(bin_obj)
     gadgets = finder.find_gadgets()
-
-    console.print(f"  Found {len(gadgets)} gadgets")
-
-    # Print useful gadgets
-    table = Table(title="Useful Gadgets")
-    table.add_column("Type", style="cyan")
-    table.add_column("Address", style="green")
-    table.add_column("Instructions", style="white")
 
     useful = [
         ("pop rdi", finder.find_pop_reg("rdi")),
@@ -521,43 +534,77 @@ def rop(ctx, binary, libc, chain, output):
         ("leave; ret", finder.find_leave_ret()),
     ]
 
-    for name, gadget in useful:
-        if gadget:
-            table.add_row(name, f"0x{gadget.address:x}", gadget.instructions)
+    if json_output:
+        result = {
+            "binary": str(binary),
+            "total_gadgets": len(gadgets),
+            "useful_gadgets": {
+                name: {"address": f"0x{g.address:x}", "instructions": g.instructions}
+                for name, g in useful if g
+            },
+        }
 
-    console.print(table)
+        # Build chain
+        if chain:
+            builder = ROPChainBuilder(bin_obj, libc)
+            chain_bytes = None
+            if chain == "shell" and libc:
+                chain_bytes = builder.build_ret2libc_chain()
+            elif chain == "execve":
+                chain_bytes = builder.build_execve_chain()
+            elif chain == "mprotect":
+                chain_bytes = builder.build_mprotect_chain(0x400000, 0x1000)
+            if chain_bytes:
+                result["chain"] = {"type": chain, "length": len(chain_bytes), "hex": chain_bytes.hex()}
 
-    # Build chain
-    if chain:
-        console.print(f"\n[cyan]Building {chain} chain...[/cyan]")
-        builder = ROPChainBuilder(bin_obj, libc)
+        _emit_json(result)
+    else:
+        console.print(f"  Found {len(gadgets)} gadgets")
 
-        chain_bytes = None
-        if chain == "shell" and libc:
-            chain_bytes = builder.build_ret2libc_chain()
-        elif chain == "execve":
-            chain_bytes = builder.build_execve_chain()
-        elif chain == "mprotect":
-            chain_bytes = builder.build_mprotect_chain(0x400000, 0x1000)
+        table = Table(title="Useful Gadgets")
+        table.add_column("Type", style="cyan")
+        table.add_column("Address", style="green")
+        table.add_column("Instructions", style="white")
 
-        if chain_bytes:
-            console.print(f"  Chain length: {len(chain_bytes)} bytes")
+        for name, gadget in useful:
+            if gadget:
+                table.add_row(name, f"0x{gadget.address:x}", gadget.instructions)
 
-            if output:
-                Path(output).write_bytes(chain_bytes)
-                console.print(f"  [green]Saved to {output}[/green]")
-            else:
-                console.print(f"  Hex: {chain_bytes.hex()}")
+        console.print(table)
+
+        if chain:
+            console.print(f"\n[cyan]Building {chain} chain...[/cyan]")
+            builder = ROPChainBuilder(bin_obj, libc)
+
+            chain_bytes = None
+            if chain == "shell" and libc:
+                chain_bytes = builder.build_ret2libc_chain()
+            elif chain == "execve":
+                chain_bytes = builder.build_execve_chain()
+            elif chain == "mprotect":
+                chain_bytes = builder.build_mprotect_chain(0x400000, 0x1000)
+
+            if chain_bytes:
+                console.print(f"  Chain length: {len(chain_bytes)} bytes")
+
+                if output:
+                    Path(output).write_bytes(chain_bytes)
+                    console.print(f"  [green]Saved to {output}[/green]")
+                else:
+                    console.print(f"  Hex: {chain_bytes.hex()}")
 
 
 @cli.command()
 @click.argument("binary", type=click.Path(exists=True))
 @click.option("-t", "--timeout", default=300, help="Exploration timeout")
 @click.option("--find-crashes", is_flag=True, help="Find crash paths")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def symbolic(ctx, binary, timeout, find_crashes):
+def symbolic(ctx, binary, timeout, find_crashes, json_output):
     """Run symbolic execution analysis."""
-    console.print(f"\n[bold]Symbolic Execution:[/bold] {binary}\n")
+    _reset_console()
+    if json_output:
+        _json_mode()
 
     from supwngo.core.binary import Binary
     from supwngo.symbolic.angr_engine import AngrEngine
@@ -565,40 +612,56 @@ def symbolic(ctx, binary, timeout, find_crashes):
 
     bin_obj = Binary.load(binary)
 
-    console.print("[cyan]Initializing angr...[/cyan]")
+    if not json_output:
+        console.print(f"\n[bold]Symbolic Execution:[/bold] {binary}\n")
+        console.print("[cyan]Initializing angr...[/cyan]")
+
     engine = AngrEngine(bin_obj)
 
     if find_crashes:
-        console.print("[cyan]Finding unconstrained states...[/cyan]")
+        if not json_output:
+            console.print("[cyan]Finding unconstrained states...[/cyan]")
         finder = PathFinder(bin_obj, engine)
 
         with console.status("Exploring..."):
             states = finder.find_unconstrained_states(timeout=timeout)
 
-        if states:
+        if json_output:
+            state_list = []
+            for state in (states or [])[:5]:
+                entry = {"controlled_registers": state.controlled_regs}
+                if state.state:
+                    input_data = engine.concretize_state(state.state)
+                    if input_data:
+                        entry["input_hex"] = input_data[:200].hex()
+                state_list.append(entry)
+            _emit_json({"binary": str(binary), "timeout": timeout, "states_found": len(states or []), "states": state_list})
+        elif states:
             console.print(f"\n[green]Found {len(states)} unconstrained states![/green]")
-
             for i, state in enumerate(states[:5]):
                 console.print(f"\n  State {i + 1}:")
                 console.print(f"    Controlled registers: {state.controlled_regs}")
-
-                # Try to generate input
                 if state.state:
                     input_data = engine.concretize_state(state.state)
                     if input_data:
                         console.print(f"    Input: {input_data[:50].hex()}...")
         else:
             console.print("[yellow]No unconstrained states found[/yellow]")
+    elif json_output:
+        _emit_json({"binary": str(binary), "timeout": timeout, "note": "Use --find-crashes to search for exploitable states"})
 
 
 @cli.command()
 @click.option("--puts", type=str, help="Leaked puts address (hex)")
 @click.option("--printf", type=str, help="Leaked printf address (hex)")
 @click.option("--system", type=str, help="Leaked system address (hex)")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def libc_id(ctx, puts, printf, system):
+def libc_id(ctx, puts, printf, system, json_output):
     """Identify remote libc from leaked addresses."""
-    console.print("\n[bold]Libc Identification[/bold]\n")
+    _reset_console()
+    if json_output:
+        _json_mode()
 
     from supwngo.remote.libc_db import LibcDatabase
 
@@ -614,17 +677,35 @@ def libc_id(ctx, puts, printf, system):
         symbols["system"] = int(system, 16) & 0xFFF
 
     if not symbols:
-        console.print("[red]Provide at least one leaked address[/red]")
+        if json_output:
+            _emit_json({"error": "No leaked addresses provided", "matches": []})
+        else:
+            console.print("[red]Provide at least one leaked address[/red]")
         return
 
-    console.print(f"[cyan]Searching with:[/cyan]")
-    for name, offset in symbols.items():
-        console.print(f"  {name}: 0x{offset:03x}")
+    if not json_output:
+        console.print("\n[bold]Libc Identification[/bold]\n")
+        console.print(f"[cyan]Searching with:[/cyan]")
+        for name, offset in symbols.items():
+            console.print(f"  {name}: 0x{offset:03x}")
 
     with console.status("Querying libc database..."):
         matches = db.identify(symbols)
 
-    if matches:
+    if json_output:
+        _emit_json({
+            "query": {k: f"0x{v:03x}" for k, v in symbols.items()},
+            "matches": [
+                {
+                    "id": m.id,
+                    "version": m.version,
+                    "symbols": {k: f"0x{v:x}" for k, v in m.symbols.items()},
+                    "download_url": m.download_url,
+                }
+                for m in (matches or [])[:10]
+            ],
+        })
+    elif matches:
         console.print(f"\n[green]Found {len(matches)} matches:[/green]")
 
         table = Table()
@@ -913,9 +994,14 @@ def onegadget(ctx, libc, json_output):
 
 @cli.command()
 @click.argument("binary", type=click.Path(exists=True))
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def checksec(ctx, binary):
+def checksec(ctx, binary, json_output):
     """Quick security features check (like checksec.sh)."""
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.core.binary import Binary
     from supwngo.analysis.protections import ProtectionAnalyzer
 
@@ -923,25 +1009,51 @@ def checksec(ctx, binary):
     analyzer = ProtectionAnalyzer(bin_obj)
     prots = analyzer.analyze()
 
-    console.print(analyzer.checksec_report())
+    if json_output:
+        _emit_json({
+            "binary": str(binary),
+            "relro": str(prots.relro) if hasattr(prots, 'relro') else None,
+            "canary": prots.canary,
+            "nx": prots.nx,
+            "pie": prots.pie,
+            "rpath": getattr(prots, 'rpath', None),
+            "runpath": getattr(prots, 'runpath', None),
+            "fortify": getattr(prots, 'fortify', None),
+        })
+    else:
+        console.print(analyzer.checksec_report())
 
 
 @cli.command()
 @click.argument("length", type=int)
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def cyclic(ctx, length):
+def cyclic(ctx, length, json_output):
     """Generate cyclic pattern for offset discovery."""
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.exploit.offset_finder import cyclic as gen_cyclic
 
     pattern = gen_cyclic(length)
-    console.print(pattern.decode('latin-1'))
+
+    if json_output:
+        _emit_json({"length": length, "pattern": pattern.hex()})
+    else:
+        console.print(pattern.decode('latin-1'))
 
 
 @cli.command()
 @click.argument("value")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def cyclic_find(ctx, value):
+def cyclic_find(ctx, value, json_output):
     """Find offset in cyclic pattern (hex value or string)."""
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.exploit.offset_finder import cyclic_find as find_cyclic
 
     # Try to parse as hex
@@ -955,7 +1067,9 @@ def cyclic_find(ctx, value):
 
     offset = find_cyclic(val)
 
-    if offset >= 0:
+    if json_output:
+        _emit_json({"value": value, "offset": offset if offset >= 0 else None, "found": offset >= 0})
+    elif offset >= 0:
         console.print(f"[green]Found at offset: {offset} (0x{offset:x})[/green]")
     else:
         console.print("[red]Pattern not found[/red]")
@@ -1054,8 +1168,9 @@ def batch(ctx, directory, output):
 @click.option("--offset", type=int, help="Known buffer offset")
 @click.option("-l", "--libc", type=click.Path(exists=True), help="Custom libc file")
 @click.option("-o", "--output", type=click.Path(), help="Output file (default: exploit.py)")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def template(ctx, binary, technique, offset, libc, output):
+def template(ctx, binary, technique, offset, libc, output, json_output):
     """
     Generate pwntools exploit script tailored to binary.
 
@@ -1067,17 +1182,19 @@ def template(ctx, binary, technique, offset, libc, output):
         supwngo template ./vuln_binary -t ret2libc -o exploit.py
         supwngo template ./vuln_binary --offset 72
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.core.binary import Binary
     from supwngo.exploit.auto import generate_exploit_script
     from supwngo.exploit.strategy import StrategySuggester
 
     console.print(f"\n[bold]Generating exploit template for:[/bold] {binary}\n")
 
-    # Load binary
     with console.status("Analyzing binary..."):
         bin_obj = Binary.load(binary)
 
-        # Get strategy suggestion for auto mode
         if technique == "auto":
             suggester = StrategySuggester(bin_obj)
             report = suggester.analyze()
@@ -1092,43 +1209,38 @@ def template(ctx, binary, technique, offset, libc, output):
                 technique = tech_map.get(report.recommended.approach.name, "ret2system")
                 console.print(f"[cyan]Auto-detected technique: {technique}[/cyan]")
 
-    # Map technique names
     if technique == "ret2libc":
         technique = "ret2system"
     if technique == "leak":
-        technique = "ret2system"  # Will generate leak template
+        technique = "ret2system"
 
-    # Pass libc to script generator if provided
     if libc:
         console.print(f"[cyan]Using custom libc: {libc}[/cyan]")
 
-    # Generate script
     with console.status("Generating exploit script..."):
         script = generate_exploit_script(bin_obj, technique, offset, libc_path=libc)
 
-    # Determine output file
     if not output:
         output = f"exploit_{Path(binary).stem}.py"
 
-    # Save script
     with open(output, "w") as f:
         f.write(script)
 
-    console.print(f"[green]Exploit script saved to: {output}[/green]")
-
-    # Show preview
-    console.print("\n[bold]Script Preview:[/bold]")
-    preview_lines = script.split('\n')[:30]
-    console.print(Panel(
-        '\n'.join(preview_lines) + "\n...",
-        title=output,
-        border_style="cyan"
-    ))
-
-    console.print(f"\n[bold]Next steps:[/bold]")
-    console.print(f"  1. Review and customize the script")
-    console.print(f"  2. Fill in TODO items (offset, addresses)")
-    console.print(f"  3. Run: python {output}")
+    if json_output:
+        _emit_json({"technique": technique, "output": output, "script_length": len(script)})
+    else:
+        console.print(f"[green]Exploit script saved to: {output}[/green]")
+        console.print("\n[bold]Script Preview:[/bold]")
+        preview_lines = script.split('\n')[:30]
+        console.print(Panel(
+            '\n'.join(preview_lines) + "\n...",
+            title=output,
+            border_style="cyan"
+        ))
+        console.print(f"\n[bold]Next steps:[/bold]")
+        console.print(f"  1. Review and customize the script")
+        console.print(f"  2. Fill in TODO items (offset, addresses)")
+        console.print(f"  3. Run: python {output}")
 
 
 @cli.command()
@@ -1453,15 +1565,14 @@ def kernel(ctx, module, kallsyms, vmlinux, leak_func, leak_offset, output, json_
 
 
 @cli.command()
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def version(ctx):
+def version(ctx, json_output):
     """Show version information."""
-    print_banner()
-    console.print(f"\nVersion: {__version__}")
-    console.print("Python: " + sys.version.split()[0])
+    _reset_console()
+    if json_output:
+        _json_mode()
 
-    # Check dependencies
-    console.print("\n[bold]Dependencies:[/bold]")
     deps = [
         ("pwntools", "pwn"),
         ("angr", "angr"),
@@ -1471,12 +1582,30 @@ def version(ctx):
         ("lief", "lief"),
     ]
 
+    dep_status = {}
     for name, module in deps:
         try:
             __import__(module)
-            console.print(f"  [green]✓[/green] {name}")
+            dep_status[name] = True
         except ImportError:
-            console.print(f"  [red]✗[/red] {name}")
+            dep_status[name] = False
+
+    if json_output:
+        _emit_json({
+            "version": __version__,
+            "python": sys.version.split()[0],
+            "dependencies": dep_status,
+        })
+    else:
+        print_banner()
+        console.print(f"\nVersion: {__version__}")
+        console.print("Python: " + sys.version.split()[0])
+        console.print("\n[bold]Dependencies:[/bold]")
+        for name, available in dep_status.items():
+            if available:
+                console.print(f"  [green]✓[/green] {name}")
+            else:
+                console.print(f"  [red]✗[/red] {name}")
 
 
 # ============================================================================
@@ -1842,14 +1971,19 @@ def diff(ctx, binary1, binary2, security_only, output, json_output):
 @click.option("-f", "--function", help="Function to decompile")
 @click.option("--ghidra/--angr", default=True, help="Decompiler to use")
 @click.option("-o", "--output", type=click.Path(), help="Save decompiled code")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def decompile(ctx, binary, function, ghidra, output):
+def decompile(ctx, binary, function, ghidra, output, json_output):
     """
     Decompile binary to pseudo-C code.
 
     Integrates with Ghidra (if available) or falls back to angr.
     Extracts variables, function calls, and control flow.
     """
+    _reset_console()
+    if json_output:
+        _json_mode()
+
     from supwngo.core.binary import Binary
     from supwngo.analysis.decompile import Decompiler
 
@@ -1858,11 +1992,9 @@ def decompile(ctx, binary, function, ghidra, output):
     bin_obj = Binary.load(binary)
     decomp = Decompiler(bin_obj)
 
-    # Show available decompilers
     available = decomp.get_available_decompilers()
     console.print(f"[cyan]Available decompilers: {', '.join(available) or 'None'}[/cyan]")
 
-    # Determine function to decompile
     func_addr = None
     func_name = function
 
@@ -1885,35 +2017,49 @@ def decompile(ctx, binary, function, ghidra, output):
         result = decomp.decompile(func_name=func_name, func_addr=func_addr, use_ghidra=ghidra)
 
     if result:
-        console.print(f"\n[bold green]Decompiled: {result.name}[/bold green]")
-        console.print(f"Address: 0x{result.address:x}")
-        console.print(f"Return type: {result.return_type}")
+        if json_output:
+            decomp.decompiled_functions[result.name] = result
+            vulns = decomp.find_vulnerabilities_in_decompiled()
+            _emit_json({
+                "function": result.name,
+                "address": f"0x{result.address:x}",
+                "return_type": result.return_type,
+                "parameters": [{"type": p.type_str, "name": p.name} for p in (result.parameters or [])],
+                "calls": result.calls[:20] if result.calls else [],
+                "code": result.code,
+                "vulnerabilities": vulns or [],
+            })
+        else:
+            console.print(f"\n[bold green]Decompiled: {result.name}[/bold green]")
+            console.print(f"Address: 0x{result.address:x}")
+            console.print(f"Return type: {result.return_type}")
 
-        if result.parameters:
-            console.print(f"Parameters: {len(result.parameters)}")
-            for p in result.parameters:
-                console.print(f"  {p.type_str} {p.name}")
+            if result.parameters:
+                console.print(f"Parameters: {len(result.parameters)}")
+                for p in result.parameters:
+                    console.print(f"  {p.type_str} {p.name}")
 
-        if result.calls:
-            console.print(f"Calls: {', '.join(result.calls[:10])}")
+            if result.calls:
+                console.print(f"Calls: {', '.join(result.calls[:10])}")
 
-        console.print("\n[bold]Decompiled Code:[/bold]")
-        console.print(Panel(result.code[:3000], title=result.name, border_style="cyan"))
+            console.print("\n[bold]Decompiled Code:[/bold]")
+            console.print(Panel(result.code[:3000], title=result.name, border_style="cyan"))
 
-        if output:
-            with open(output, "w") as f:
-                f.write(f"// Decompiled: {result.name}\n")
-                f.write(f"// Address: 0x{result.address:x}\n\n")
-                f.write(result.code)
-            console.print(f"\n[green]Saved to {output}[/green]")
+            if output:
+                with open(output, "w") as f:
+                    f.write(f"// Decompiled: {result.name}\n")
+                    f.write(f"// Address: 0x{result.address:x}\n\n")
+                    f.write(result.code)
+                console.print(f"\n[green]Saved to {output}[/green]")
 
-        # Check for vulnerabilities
-        decomp.decompiled_functions[result.name] = result
-        vulns = decomp.find_vulnerabilities_in_decompiled()
-        if vulns:
-            console.print("\n[bold red]Potential Vulnerabilities in Decompiled Code:[/bold red]")
-            for v in vulns:
-                console.print(f"  [{v['severity']}] {v['description']}")
+            decomp.decompiled_functions[result.name] = result
+            vulns = decomp.find_vulnerabilities_in_decompiled()
+            if vulns:
+                console.print("\n[bold red]Potential Vulnerabilities in Decompiled Code:[/bold red]")
+                for v in vulns:
+                    console.print(f"  [{v['severity']}] {v['description']}")
+    elif json_output:
+        _emit_json({"error": "Decompilation failed"})
     else:
         console.print("[red]Decompilation failed[/red]")
 
