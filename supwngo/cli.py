@@ -2704,8 +2704,16 @@ def _render_handoff_report(report) -> None:
 @click.option("--offset", type=int, help="Known buffer offset (skips offset discovery)")
 @click.option("--libc", type=click.Path(exists=True), help="Path to libc for ret2libc")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.option(
+    "--strategy", type=str, default=None,
+    help="Attempt only the named technique, bypassing applicability gates",
+)
+@click.option(
+    "--all-strategies", "all_strategies", is_flag=True,
+    help="Attempt every registered technique, bypassing applicability gates",
+)
 @click.pass_context
-def autopwn(ctx, binary, output, timeout, offset, libc, json_output):
+def autopwn(ctx, binary, output, timeout, offset, libc, json_output, strategy, all_strategies):
     """
     Automatic exploitation - try multiple techniques automatically.
 
@@ -2727,12 +2735,28 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output):
     if json_output:
         _json_mode()
 
+    if strategy and all_strategies:
+        raise click.UsageError("--strategy and --all-strategies are mutually exclusive")
+
+    if strategy:
+        from supwngo.exploit.pipeline.executors import build_default_registry
+        valid = build_default_registry().names()
+        if strategy not in valid:
+            raise click.UsageError(
+                f"Unknown technique: {strategy!r}\nAvailable: {', '.join(valid)}"
+            )
+
     import signal
 
     from supwngo.core.binary import Binary
     from supwngo.exploit.pipeline import CanonicalAutopwnEngine
 
     console.print(f"\n[bold]Auto-Exploit:[/bold] {binary}\n")
+
+    if strategy:
+        console.print(f"[cyan]Forcing single strategy: {strategy}[/cyan]")
+    elif all_strategies:
+        console.print("[cyan]Attempting all strategies (applicability gates bypassed)[/cyan]")
 
     with console.status("Loading binary..."):
         bin_obj = Binary.load(binary)
@@ -2749,6 +2773,8 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output):
             bin_obj,
             timeout=timeout,
             libc_path=libc,
+            strategy=strategy,
+            force_all=all_strategies,
         )
         if offset:
             engine.context.offset = offset
@@ -3189,8 +3215,16 @@ def _guided_fallback(engine, binary: str, libc: Optional[str], timeout: float):
          "informed by what this run already tried. Most useful when the run "
          "FAILS: it replaces the placeholder template with a followable strategy.",
 )
+@click.option(
+    "--strategy", type=str, default=None,
+    help="Attempt only the named technique, bypassing applicability gates",
+)
+@click.option(
+    "--all-strategies", "all_strategies", is_flag=True,
+    help="Attempt every registered technique, bypassing applicability gates",
+)
 @click.pass_context
-def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, walkthrough):
+def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, walkthrough, strategy, all_strategies):
     """
     One command: binary in, working exploit (or a clear explanation why
     not) out.
@@ -3224,8 +3258,22 @@ def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, 
 
     output_path = Path(output) if output else _default_solve_output_path(binary)
 
+    if strategy and all_strategies:
+        raise click.UsageError("--strategy and --all-strategies are mutually exclusive")
+
     from supwngo.core.binary import Binary
     from supwngo.exploit.pipeline import CanonicalAutopwnEngine
+
+    if strategy:
+        from supwngo.exploit.pipeline.executors import build_default_registry
+        valid = build_default_registry().names()
+        if strategy not in valid:
+            raise click.UsageError(
+                f"Unknown technique: {strategy!r}\nAvailable: {', '.join(valid)}"
+            )
+        console.print(f"[cyan]Forcing single strategy: {strategy}[/cyan]")
+    elif all_strategies:
+        console.print("[cyan]Attempting all strategies (applicability gates bypassed)[/cyan]")
 
     console.print(f"\n[bold]solve:[/bold] {binary}\n")
 
@@ -3242,7 +3290,10 @@ def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, 
     _prev = _sig.signal(_sig.SIGTERM, _solve_sigterm)
 
     with console.status("Running canonical auto-exploitation pipeline..."):
-        engine = CanonicalAutopwnEngine(bin_obj, timeout=timeout, libc_path=libc)
+        engine = CanonicalAutopwnEngine(
+            bin_obj, timeout=timeout, libc_path=libc,
+            strategy=strategy, force_all=all_strategies,
+        )
         try:
             engine.run()
         except (KeyboardInterrupt, SystemExit):
