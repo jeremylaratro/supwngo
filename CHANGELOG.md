@@ -121,12 +121,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to its input size produces the same signal (measured: a config parser at
   0.43 s for 32 bytes and 20.00 s for 4096 bytes is reported as
   `file-candidate` while its real payload channel is stdin). The label is
-  **not** a discriminator and must not be read as one: a genuine file sink
-  can share it (measured: a line-based reader blocks on a newline-free probe
-  file). Only the strong direction is usable — an `output`/`returncode`
-  basis implied a real file sink in every case measured. This cannot affect
-  exploitation outcomes, because the probe remains advisory and cannot
-  commit a `DeliverySpec`.
+  **not** evidence in either direction and must not be read as one. A
+  genuine file sink can report `timeout` (measured: a line-based reader
+  blocks on a newline-free probe file), and a target that never opens a file
+  at all can report `output` (measured: a target that only prints `argv[1]`).
+  It records *why* the stage fired and nothing more. None of this can affect
+  exploitation outcomes, because the probe remains advisory and cannot commit
+  a `DeliverySpec`.
 
 ### Changed
 - `analyze` command is now a thin alias for `pwn --analyze-only`. All analysis

@@ -649,3 +649,66 @@ protection, the second is the defect.
   class answers). Unchanged by this revision.
 - No change to M-4, M-5, or M-6. The probe is not on any metric's critical path —
   the operator-declared vector is, which is the point of REVISION 3.
+
+### Correction 4 — REVISION 5's own Correction 2 was ALSO an over-claim
+
+Appended after the Phase-6 implementation-diff review
+(`docs/plans/2026-09-26-foundation-diff-review-daybreak.md`, verdict NOT-APPROVED).
+
+Correction 2 above concluded that although `stage3_basis` is not a discriminator,
+**"a `output`/`returncode` basis implied a genuine file sink in every case measured"**
+and that this was "the half a caller may rely on". The reviewer challenged the
+implication as unsupported by a fixture corpus. I built the counterexamples and
+**the challenge is correct.** `MEASURED`:
+
+| target | opens a file? | payload channel | verdict | `stage3_basis` |
+|---|---|---|---|---|
+| `neg_argv_echo_no_open` | **never** — only `printf`s `argv[1]` | stdin | `file-candidate` | `output` |
+| `neg_fast_cfg_stdin_payload` | yes, a config only | stdin | `file-candidate` | `output` |
+
+So a *strong* basis does not imply a file sink either. **`stage3_basis` has no
+trustworthy direction in either sense.** It records only *why* stage 3 fired; it is
+diagnostic metadata, not evidence. Both counterexamples are promoted to permanent
+fixtures, and the test asserting the strong implication is replaced rather than
+narrowed.
+
+Note the pattern, because it is the third instance in this sprint: a property was
+verified across the fixtures that happened to exist, then stated as a general
+implication. The fixtures were the *sample*, not the *domain*. The two earlier
+instances were the always-green measurement harness and the
+`file-candidate`-set-by-omission gate (Correction 3). The lesson that generalizes:
+**a claim of the form "X implies Y" cannot be established by a corpus that was built
+to exhibit X** — it needs a deliberate attempt to construct `X ∧ ¬Y`, which is what
+finally refuted it here.
+
+### Root cause behind two of these — the pathname confound
+
+The reviewer also identified *why* such false positives are so easy to produce, and it
+is a defect rather than an inherent limit. Stages 1-3 used three **different** paths
+(`missing_input<ext>`, `existing_small<ext>`, `existing_large<ext>`), so every stage
+varied the file's *basename* alongside the variable it meant to isolate. A target that
+merely echoes `argv[1]` therefore differs at every stage without ever opening
+anything — which is exactly `neg_argv_echo_no_open`. The fix is to probe **one** path
+through all three states (absent → 32 bytes → 4096 bytes).
+
+### Also accepted from that review
+
+- **`DeliverySpec.build_argv()` silently accepted undeliverable specs** (HIGH). All
+  five reported combinations reproduced. The worst is an unknown/typoed `sink`, which
+  falls through every branch and is treated as stdin, **silently dropping the payload** —
+  the same silent-failure class for which §3 rejected Method B, re-entering through the
+  sink string rather than through `isinstance`. Accepted for loud validation; the
+  fix is in progress at the time this section was written, not yet landed.
+- **Two test-vacuity gaps** (MEDIUM): `EXPECTED_VERDICTS`'s keys were never asserted
+  equal to `FIXTURE_NAMES`, so a fixture added to one list only would silently get no
+  verdict test — the same shape as Correction 3. And `TestProbeIsAdvisoryOnly` checked
+  a *blocklist* of three parameter names, so adding a `state=None` parameter and
+  mutating it would have kept the gate green; it now asserts the parameter set exactly.
+- **`OSError` was reported as `"timeout"`** (MEDIUM) and extension discovery was not
+  timeout-tolerant (MEDIUM), contradicting the module's documented post-stage-0 rule.
+- **Docstring accuracy** (LOW): stages 1 and 2 are documented as comparing output but
+  compare `(returncode, output)`; "never opened" and "used only as configuration" are
+  stronger than the evidence (a target may open, read, and ignore; `stat`/`access`
+  produce the same signature).
+
+`materialize()` was reviewed and found correct.
