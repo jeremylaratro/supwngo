@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`supwngo report`** — generates a vulnerability report from static analysis in
+  SARIF, HTML, Markdown, JSON or plain text. The `reporting/` package (SARIF
+  exporter, CVSS v3.1 calculator, HTML/Markdown writers) was fully implemented but
+  unreachable from the CLI; nothing converted the `Vulnerability` objects the
+  detectors emit into the `VulnerabilityReport` the writers consume. SARIF output
+  is consumable by CI and code-scanning tools.
+- `supwngo.reporting.adapter` — the missing conversion layer, with two properties
+  that keep a generated report from overstating what was measured: a detector that
+  raises is recorded as a failure (and named in the report summary and metadata)
+  rather than silently contributing zero findings, and protections that were never
+  measured are omitted rather than rendered as `false`, since "we did not check"
+  and "the protection is off" are different claims. `report` exits non-zero and
+  writes nothing when every detector fails, or when neither pwntools nor
+  pyelftools could parse the target, rather than emitting a document that asserts
+  a clean binary on no evidence — running it against a text file previously
+  produced "0 findings, risk Informational, complete: true". Reports carry
+  `binary_parsed` and `complete` in their metadata and in `--json` output.
+
+### Fixed
+- Exported SARIF documents stamped `"version": "1.0.0"` for the supwngo tool
+  driver regardless of the installed version, because `SARIFExporter.__init__`
+  defaulted `tool_version` to a literal. It now defaults to `supwngo.__version__`,
+  and the version-consistency guard covers `reporting/sarif.py` alongside
+  `api/server.py`. The SARIF *schema* version (2.1.0) is a separate field and is
+  unchanged.
+- `SARIFExporter`'s default `tool_uri` pointed at the non-existent
+  `github.com/supwngo/supwngo`; it now points at the actual repository.
+
 ## [2.0.0] - 2026-09-25
 
 First tagged release. The project had carried the version `1.0.0` in its metadata

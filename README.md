@@ -32,6 +32,9 @@ supwngo rop ./challenge --find "pop rdi"
 
 # Fuzz for crashes
 supwngo fuzz ./challenge --timeout 3600
+
+# Write a SARIF report for CI to ingest (also html/markdown/json/text)
+supwngo report ./challenge -o findings.sarif
 ```
 
 ## Features
@@ -52,6 +55,13 @@ supwngo fuzz ./challenge --timeout 3600
 - Heap exploitation techniques (tcache poisoning, fastbin dup, House of *)
 - Shellcode generation with encoder support
 - Protection bypass strategies
+
+### Reporting
+- SARIF v2.1.0 export for CI and code-scanning tools
+- CVSS v3.1 scoring per finding
+- HTML / Markdown / JSON / text reports
+- Reports state what could *not* be measured: a detector that failed is named,
+  and an unparsed target is refused rather than reported as having no findings
 
 ### Fuzzing Integration
 - AFL++ / Honggfuzz / LibFuzzer wrappers

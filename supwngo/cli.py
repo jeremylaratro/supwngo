@@ -3036,6 +3036,181 @@ def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, 
         )
 
 
+DEFAULT_REPORT_OUTPUT_DIR = "./report_output"
+
+# Extension per report format, for the default output path.
+_REPORT_EXTENSIONS = {
+    "sarif": ".sarif",
+    "html": ".html",
+    "markdown": ".md",
+    "json": ".json",
+    "text": ".txt",
+}
+
+
+def _report_output_path(binary: str, output: Optional[str], fmt: str) -> Path:
+    """Where the report goes when ``--output`` is omitted."""
+    if output:
+        return Path(output)
+    ext = _REPORT_EXTENSIONS.get(fmt, ".txt")
+    return Path(DEFAULT_REPORT_OUTPUT_DIR) / f"{Path(binary).name}_report{ext}"
+
+
+def _report_format_from_extension(output: Optional[str]) -> Optional[str]:
+    """Infer the format from an explicit ``--output`` extension, or None."""
+    if not output:
+        return None
+    suffix = Path(output).suffix.lower()
+    for name, ext in _REPORT_EXTENSIONS.items():
+        if suffix == ext:
+            return name
+    if suffix in (".htm",):
+        return "html"
+    return None
+
+
+@cli.command()
+@click.argument("binary", type=click.Path(exists=True))
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help=f"Output path (default: {DEFAULT_REPORT_OUTPUT_DIR}/<binary-name>_report.<ext>)",
+)
+@click.option(
+    "--format",
+    "-f",
+    "fmt",
+    type=click.Choice(sorted(_REPORT_EXTENSIONS), case_sensitive=False),
+    default=None,
+    help="Report format (default: inferred from --output, else sarif)",
+)
+@click.option("--title", default=None, help="Report title")
+@click.option("--analyst", default="", help="Analyst name recorded in the report")
+@click.option(
+    "--remote",
+    is_flag=True,
+    help="Score CVSS with a Network attack vector (target reached over the network)",
+)
+@click.option("--json", "json_output", is_flag=True, help="Print a JSON summary to stdout")
+@click.pass_context
+def report(ctx, binary, output, fmt, title, analyst, remote, json_output):
+    """Generate a vulnerability report from static analysis.
+
+    Runs the static detectors over BINARY and writes a report. SARIF output is
+    consumable by CI and code-scanning tools; html/markdown/json/text are for
+    humans.
+
+    A detector that fails is reported as a failure, not as a clean result: the
+    report records which detectors could not run, and this command exits
+    non-zero if none of them ran at all.
+    """
+    from supwngo.core.binary import Binary
+    from supwngo.reporting.adapter import (
+        build_report,
+        detect_all,
+        parse_failure_reason,
+        static_detectors,
+    )
+    from supwngo.reporting.generator import ReportConfig, ReportFormat, ReportGenerator
+
+    fmt = (fmt or _report_format_from_extension(output) or "sarif").lower()
+    output_path = _report_output_path(binary, output, fmt)
+
+    bin_obj = Binary.load(binary)
+
+    # A file neither loader could parse yields an empty Binary. The detectors
+    # then run happily and find nothing, which would render as a clean report
+    # for a target that was never read. Refuse rather than publish that.
+    parse_failure = parse_failure_reason(bin_obj)
+    if parse_failure:
+        console.print(f"[red]Cannot analyse this file: {parse_failure}.[/red]")
+        console.print(
+            "[yellow]No report was written. A zero-finding report here would "
+            "describe a file that was never parsed, not a clean binary.[/yellow]"
+        )
+        ctx.exit(1)
+
+    with console.status("Running detectors..."):
+        vulns, failures = detect_all(bin_obj)
+
+    attempted = len(static_detectors())
+    if failures and len(failures) == attempted:
+        console.print(
+            f"[red]Every detector failed ({attempted}/{attempted}); no analysis was "
+            f"performed, so no report was written.[/red]"
+        )
+        for failure in failures:
+            console.print(f"  [red]{failure.detector}[/red]: {failure.error}")
+        ctx.exit(1)
+
+    doc = build_report(
+        bin_obj,
+        vulns,
+        failures=failures,
+        title=title,
+        analyst=analyst,
+        remote=remote,
+    )
+
+    report_format = {
+        "sarif": ReportFormat.SARIF,
+        "html": ReportFormat.HTML,
+        "markdown": ReportFormat.MARKDOWN,
+        "json": ReportFormat.JSON,
+        "text": ReportFormat.TEXT,
+    }[fmt]
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    generator = ReportGenerator(ReportConfig(format=report_format))
+    generator.save(doc, str(output_path), format=report_format)
+
+    counts = doc.get_severity_counts()
+
+    if json_output:
+        console.print_json(
+            data={
+                "binary": str(bin_obj.path),
+                "report": str(output_path),
+                "format": fmt,
+                "findings": len(doc.findings),
+                "severity_counts": counts,
+                "overall_risk": doc.get_overall_risk(),
+                "detectors_attempted": attempted,
+                "detectors_failed": len(failures),
+                "binary_parsed": doc.metadata["binary_parsed"],
+                "complete": doc.metadata["complete"],
+                "detector_failures": doc.metadata["detector_failures"],
+            }
+        )
+        return
+
+    console.print(f"\n[bold]Report[/bold]  : {output_path}")
+    console.print(f"  Format     : {fmt}")
+    console.print(f"  Findings   : {len(doc.findings)}")
+    console.print(f"  Risk       : {doc.get_overall_risk()}")
+    if doc.findings:
+        console.print(
+            "  By severity: "
+            + ", ".join(f"{n} {sev}" for sev, n in counts.items() if n)
+        )
+
+    if failures:
+        console.print(
+            f"\n[yellow]Incomplete: {len(failures)} of {attempted} detectors failed, "
+            f"so absence of a finding here is not evidence of absence.[/yellow]"
+        )
+        for failure in failures:
+            console.print(f"  [yellow]{failure.detector}[/yellow]: {failure.error}")
+
+    if not bin_obj.protections_measured:
+        console.print(
+            "[yellow]Protection detection did not run; the report says so rather "
+            "than listing every protection as disabled.[/yellow]"
+        )
+
+
 def main():
     """Main entry point."""
     cli(obj={})
