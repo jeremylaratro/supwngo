@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- GitHub Actions CI workflow: runs pytest on Python 3.10-3.12 on push/PR to main,
+  with system dependencies (gdb, ltrace, strace) and CLI entry point verification.
 - Win function argument discovery: `Ret2WinExecutor` now scans the disassembly of
   detected win functions for comparison constants (via `cmp` instructions) and builds
   a ROP chain that sets `rdi`, `rsi`, `rdx` to match. This enables solving challenges
