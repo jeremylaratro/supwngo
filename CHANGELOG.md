@@ -43,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   report specific precondition failures (PIE, Full RELRO, missing PLT
   entries, no menu detected) instead of generic "not applicable".
 
+### Changed
+- `SeccompAction` enum in `seccomp.py` now uses canonical kernel BPF constants
+  (imported from `seccomp_advanced.py`) instead of opaque `auto()` values.
+- `ShellcodeConstraints` in `restricted_shellcode.py` renamed to
+  `RestrictedShellcodeConstraints` to eliminate name collision with the
+  distinct class in `constrained_shellcode.py`. The public API export name
+  is unchanged.
+
 ### Removed
 - Dead packages: `ai`, `api`, `containers`, `distributed`, `embedded`,
   `macos`, `windows` (12,136 lines, 27 files). All 7 packages had zero
