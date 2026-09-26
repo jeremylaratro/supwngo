@@ -157,6 +157,9 @@ class Binary:
     executable_regions: List[Tuple[int, int]] = field(default_factory=list)
     writable_regions: List[Tuple[int, int]] = field(default_factory=list)
 
+    # ELF dynamic linking
+    interpreter: Optional[str] = None
+
     # Metadata
     md5: str = ""
     sha256: str = ""
@@ -309,6 +312,21 @@ class Binary:
                     )
                     self.segments.append(seg)
 
+                # Parse interpreter (PT_INTERP segment)
+                for segment in elf.iter_segments():
+                    if segment.header.p_type == 'PT_INTERP':
+                        self.interpreter = segment.get_interp_name()
+                        break
+
+                # Parse RPATH/RUNPATH from dynamic section
+                for section in elf.iter_sections():
+                    if hasattr(section, 'iter_tags'):
+                        for tag in section.iter_tags():
+                            if tag.entry.d_tag == 'DT_RUNPATH':
+                                self.protections.runpath = tag.runpath
+                            elif tag.entry.d_tag == 'DT_RPATH':
+                                self.protections.rpath = tag.rpath
+
                 # Parse symbol tables
                 for section in elf.iter_sections():
                     if isinstance(section, SymbolTableSection):
@@ -371,6 +389,66 @@ class Binary:
         if got_plt and not got_plt.is_writable:
             return "Full RELRO"
         return "Partial RELRO"
+
+    def detect_shipped_libc(self) -> Optional[Path]:
+        """Find a libc shipped alongside the binary (e.g. HTB challenges).
+
+        Checks the interpreter path, RUNPATH, RPATH, and common directory
+        layouts (``glibc/``, ``lib/``) relative to the binary's directory.
+        Returns the absolute path to ``libc.so.6`` if found, else None.
+        """
+        binary_dir = self.path.resolve().parent
+        search_dirs: list[Path] = []
+
+        if self.interpreter and not self.interpreter.startswith('/lib'):
+            interp = Path(self.interpreter)
+            if not interp.is_absolute():
+                interp_dir = binary_dir / interp.parent
+            else:
+                interp_dir = interp.parent
+            search_dirs.append(interp_dir)
+
+        for rp in (self.protections.runpath, self.protections.rpath):
+            if rp:
+                for entry in rp.split(':'):
+                    entry = entry.replace('$ORIGIN', str(binary_dir))
+                    p = Path(entry)
+                    if not p.is_absolute():
+                        p = binary_dir / p
+                    search_dirs.append(p)
+
+        for subdir in ('glibc', 'lib', '.'):
+            search_dirs.append(binary_dir / subdir)
+
+        seen: set[Path] = set()
+        for d in search_dirs:
+            try:
+                d = d.resolve()
+            except OSError:
+                continue
+            if d in seen or not d.is_dir():
+                continue
+            seen.add(d)
+            candidate = d / 'libc.so.6'
+            if candidate.exists():
+                logger.debug(f"Detected shipped libc: {candidate}")
+                return candidate
+        return None
+
+    def libc_env(self) -> Optional[dict]:
+        """Build an environment dict with LD_LIBRARY_PATH set for a shipped libc.
+
+        Returns None if no shipped libc is detected.
+        """
+        import os
+        shipped = self.detect_shipped_libc()
+        if shipped is None:
+            return None
+        env = dict(os.environ)
+        libc_dir = str(shipped.parent)
+        existing = env.get('LD_LIBRARY_PATH', '')
+        env['LD_LIBRARY_PATH'] = f"{libc_dir}:{existing}" if existing else libc_dir
+        return env
 
     def get_angr_project(self, auto_load_libs: bool = False) -> Any:
         """
