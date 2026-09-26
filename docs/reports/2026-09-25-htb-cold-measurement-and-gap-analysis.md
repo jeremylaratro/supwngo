@@ -273,21 +273,21 @@ should be cleaned up.
 Two separate heap code paths: the library (4,341 lines, unreachable) and the pipeline
 executor (370 lines, inline reimplementation). They are complementary but disconnected.
 
-### 4.8 Massive code duplication (measured)
+### 4.8 Massive code duplication (measured, partially resolved)
 
 The codebase has significant redundant implementations:
 
-| Concept | Copies | Files |
-| --- | --- | --- |
-| Shellcode generator | **3** | `shellcode.py`, `constrained_shellcode.py`, `restricted_shellcode.py` |
-| Exploit verifier | **2** | `verify.py`, `verification.py` (duplicate class names) |
-| Seccomp analyzer | **2** | `seccomp.py`, `seccomp_advanced.py` (duplicate enum names) |
-| Auto-exploiter | **2** | `auto.py` (2,942 lines), `enhanced_auto.py` (1,432 lines) |
-| Canary bypass | **2** | `exploit/canary_bypass.py`, `vulns/canary_bypass.py` |
-| HeapLayout class | **2** | `exploit/heap/layout.py`, `vulns/heap_advanced.py` |
-| verify_shell() | **3** | `auto.py` (×2), `verification.py`, `pipeline/verifier.py` |
-| cyclic/offset | **3** | `utils/helpers.py`, `exploit/offset_finder.py`, scattered |
-| base/advanced vuln detector | **3 pairs** | `heap.py`/`heap_advanced.py`, `integer.py`/`integer_advanced.py`, `race.py`/`race_advanced.py` |
+| Concept | Copies | Files | Status |
+| --- | --- | --- | --- |
+| Shellcode generator | **3** | `shellcode.py`, `constrained_shellcode.py`, `restricted_shellcode.py` | 3 distinct roles; name collision **fixed** (PR #11) |
+| Exploit verifier | **2** | `verify.py`, `verification.py` | Intentional: static vs runtime verification |
+| Seccomp analyzer | **2** | `seccomp.py`, `seccomp_advanced.py` | Enum duplication **fixed** (PR #11) |
+| Auto-exploiter | **2** | `auto.py` (2,942 lines), `enhanced_auto.py` (1,432 lines) | Open |
+| Canary bypass | **2** | `exploit/canary_bypass.py`, `vulns/canary_bypass.py` | Open (detection vs exploitation) |
+| HeapLayout class | **2** | `exploit/heap/layout.py`, `vulns/heap_advanced.py` | Different fields; no runtime conflict |
+| verify_shell() | **3** | `auto.py` (×2), `verification.py`, `pipeline/verifier.py` | Open |
+| cyclic/offset | **3** | `utils/helpers.py`, `exploit/offset_finder.py`, scattered | Open |
+| base/advanced vuln detector | **3 pairs** | `heap.py`/`heap_advanced.py`, `integer.py`/`integer_advanced.py`, `race.py`/`race_advanced.py` | Open |
 
 ### 4.9 Hardcoded libc offsets and paths (measured)
 
@@ -309,11 +309,12 @@ Beyond the already-known `libc_version="2.31"` at `fsop.py:214` and `off_by_one.
 `fuzzing/`, all of `symbolic/`, and `utils/`. Additionally, `exploit/auto.py` (2,942
 lines) and `exploit/enhanced_auto.py` (1,432 lines) have no dedicated tests.
 
-### 4.11 48+ module-level `def exploit()` functions (measured)
+### 4.11 ~~48+ module-level `def exploit()` functions~~ (FALSE POSITIVE)
 
-Scattered across the codebase are 48+ functions named `exploit()` defined at module
-scope — these are code-as-string templates embedded as actual Python, creating name
-collision risk and maintenance confusion.
+~~Scattered across the codebase are 48+ functions named `exploit()` defined at module
+scope.~~ **Correction (26SEP2026):** AST analysis confirmed zero actual module-level
+`exploit()` functions. All 51 `grep` matches are inside triple-quoted string templates
+(generated exploit scripts). No name collision or maintenance risk.
 
 ---
 
@@ -368,13 +369,13 @@ distinguish success from failure.
 - [ ] Mismatch detector (deferred — needs cross-validation logic)
 - [ ] Retire hardcoded `libc_version="2.31"` (deferred — heap library depends on it)
 
-### Sprint 4 — CLI option consistency + --json parity — DEFERRED
+### Sprint 4 — CLI option consistency + --json parity — PARTIAL (PR #12)
 
 **Goal:** Uniform CLI surface. Lower priority than capability fixes.
 
 - [ ] Add `--libc` to all analysis commands where meaningful
 - [ ] Add `--json` to the 11 commands currently missing it
-- [ ] Fix `--json` producing mixed console+JSON output (Bug B-4)
+- [x] Fix `--json` producing mixed console+JSON output (Bug B-4) — PR #12
 - [ ] Standardize option naming
 
 ### Sprint 5 — Heap executor skip diagnostics — COMPLETE (PR #8)
@@ -398,13 +399,25 @@ distinguish success from failure.
 - [x] Associated TestLLMAnalyzer test class removed
 - [ ] Reachability regression test (deferred — needs CI)
 
-### Sprint 7 — CI + containerized execution
+### Sprint 7 — CI + containerized execution — PARTIAL (PR #10)
 
 **Goal:** Tests enforced on every push. Results reproducible in a container.
 
-- [ ] Add `.github/workflows/ci.yml` running pytest + reachability check
+- [x] Add `.github/workflows/ci.yml` running pytest + CLI verification — PR #10
 - [ ] Create Dockerfile with pinned libc, patchelf, and all tool dependencies
 - [ ] Document container-based usage
+
+### Sprint 9 — Code duplication consolidation — COMPLETE (PR #11)
+
+**Goal:** Eliminate name collisions and semantic confusion from duplicate definitions.
+
+- [x] `SeccompAction` enum in `seccomp.py` now imports from `seccomp_advanced.py`
+  (correct kernel BPF constants replace opaque `auto()` values)
+- [x] `ShellcodeConstraints` in `restricted_shellcode.py` renamed to
+  `RestrictedShellcodeConstraints` to eliminate name collision
+- [x] Public API exports unchanged — downstream code unaffected
+- [ ] Remaining naming collisions (HeapLayout, base/advanced detector pairs) —
+  lower priority, no runtime conflicts
 
 ### Sprint 8 — Re-measurement + documentation
 
