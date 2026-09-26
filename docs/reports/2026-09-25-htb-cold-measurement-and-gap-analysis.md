@@ -484,11 +484,20 @@ partial JSON output instead of zero bytes.
 - [x] JSON output includes `"interrupted": true` field; handoff report built
   with error fallback if interrupted too early
 
+### Sprint 14 — Empty diagnostic fields on total failure — COMPLETE
+
+**Goal:** Bug 2.5 — `blocking_unknowns` empty when all techniques SKIPPED.
+
+- [x] `derive_blocking_unknowns()` now falls back to SKIPPED techniques when
+  no attempts reached FAILED/PARTIAL/ERROR (total-skip runs)
+- [x] Test updated: total-skip produces diagnostics; mixed runs still gate
+  on FAILED/PARTIAL/ERROR only
+
 ### Remaining backlog (sorted by speed × complexity)
 
 | Item | Bug/Gap | Complexity | Status |
 | --- | --- | --- | --- |
-| Diagnostic fields empty on failure | 2.5 | Medium | Open |
+| ~~Diagnostic fields empty on failure~~ | 2.5 | Medium | **DONE** (PR #17) |
 | Dockerfile + container docs | Sprint 7 | Medium | Partial |
 | house_of_modern IO offsets | 4.9 | Low (unreachable) | Deferred |
 | Heap pipeline integration | 3.3 | High | Open |
