@@ -30,6 +30,25 @@ The in-sample benchmark is 13/13. The held-out score is **0/6**. The gap is not 
 techniques — it is bugs in the gating, orchestration, and failure-handling code that
 prevent existing techniques from being applied.
 
+### Remediation status (26SEP2026)
+
+All 10 identified bugs have been fixed across PRs #3-#18. All 6 deferred feature
+gaps remain open (heap pipeline integration, custom I/O models, structured file
+inputs are the highest value). HTB re-measurement is BLOCKED on challenge archives.
+
+| Bug | Status | PR |
+| --- | --- | --- |
+| 2.1 Exit code always 0 | **FIXED** | #4 |
+| 2.2 Timeout produces zero output | **FIXED** | #16 |
+| 2.3 SROP gate inverted | **FIXED** | #4 |
+| 2.4 No progress reporting | **FIXED** | #16 |
+| 2.5 Diagnostic fields empty | **FIXED** | #17 |
+| 2.6 Skip reasons non-specific | **FIXED** | #4, #8 |
+| 2.7 No console script | **FIXED** | #12 |
+| 2.8 Hardcoded libc version | **FIXED** | #12 |
+| 2.9 No loader threading | **FIXED** | #6 |
+| 2.10 ret2win arg discovery | **FIXED** | #5 |
+
 ---
 
 ## 1. Per-challenge results
