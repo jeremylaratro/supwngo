@@ -64,6 +64,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pwn --analyze-only` flag: quick recon pass (protections, dangerous functions,
   input sources) without gadget enumeration or strategy ranking.
 
+- Disassembly-guided `variable_overwrite`: the executor now scans the binary's
+  `cmp`/`test` instructions via `comparison_immediates()` to recover the actual
+  gate constants before falling back to the hardcoded folklore list. Loop order
+  swapped to magic-outer/buffer-inner so recovered values are tried across all
+  buffer sizes first. Provenance tracking distinguishes `recovered_immediate`
+  from `literal_magic_list`. Reduces typical solve time from 126 to ~5-15
+  process spawns for binaries with `cmp` immediates.
+
 ### Changed
 - `analyze` command is now a thin alias for `pwn --analyze-only`. All analysis
   logic lives in `pwn`; input sources (previously only in `analyze`) are now

@@ -35,15 +35,20 @@ from pathlib import Path
 
 import pytest
 
+from supwngo.core.binary import Binary
 from supwngo.core.context import ExploitContext
 from supwngo.exploit.pipeline.contracts import (
     CANDIDATE_SOURCE_LITERAL_MAGIC_LIST,
+    CANDIDATE_SOURCE_RECOVERED_IMMEDIATE,
     AttemptOutcome,
     AttemptRecord,
 )
 from supwngo.exploit.pipeline.executors.stack_techniques import (
     MAGIC_VALUES,
     VariableOverwriteExecutor,
+)
+from supwngo.exploit.pipeline.executors.input_shape_techniques import (
+    FALLBACK_MAGIC_VALUES,
 )
 from supwngo.exploit.pipeline.verifier import PipelineVerifier
 
@@ -92,21 +97,21 @@ def _run_target_directly(binary: Path, payload: bytes) -> str:
     return (r.stdout + r.stderr).decode("latin-1", "ignore")
 
 
-def _attempt_variable_overwrite(binary: Path) -> AttemptRecord:
+def _attempt_variable_overwrite(binary_path: Path) -> AttemptRecord:
     """Run the real, unmodified VariableOverwriteExecutor against a compiled
     fixture through the real PipelineVerifier -- no mocking of the
     executor's sweep or the verifier's success determination.
 
     Expensive: every non-winning payload falls through
     ExploitVerifier._verify_with_pwntools (supwngo/exploit/verification.py),
-    which carries ~0.8s of fixed time.sleep() per attempt. A full 126-combo
-    sweep (fixture B, which never wins) costs minutes. Callers MUST go
+    which carries ~0.8s of fixed time.sleep() per attempt. Callers MUST go
     through the module-scoped `record_a`/`record_b` fixtures below rather
     than calling this directly, so each fixture is attempted exactly once
     for the whole test module.
     """
     context = ExploitContext()
-    verifier = PipelineVerifier(str(binary), timeout=5.0, static_preflight=False)
+    context.binary = Binary.load(str(binary_path))
+    verifier = PipelineVerifier(str(binary_path), timeout=5.0, static_preflight=False)
     return VariableOverwriteExecutor().attempt(context, verifier)
 
 
@@ -135,24 +140,26 @@ class TestFixturesAreGenuineVulnerabilities:
             "fixture A must be won by exactly the documented (offset, magic) "
             f"pair and nothing else in the 14x9 sweep space; got {hits}")
 
-    def test_fixture_b_real_vulnerability_but_unreachable_by_the_sweep(
+    def test_fixture_b_real_vulnerability_unreachable_by_fallback_list(
             self, fixture_b_binary):
-        # The bug is real: the correct (un-swept) value does win it.
+        # The bug is real: the correct value does win it.
         control_payload = (b"A" * FIXTURE_A_WIN_OFFSET
                            + struct.pack("<I", FIXTURE_B_GATE_VALUE) + b"\n")
         assert "win" in _run_target_directly(fixture_b_binary, control_payload).lower(), (
             "fixture B must be a genuine, winnable overflow -- otherwise a "
             "sweep failing on it proves nothing")
-        # But no MAGIC_VALUES entry reaches it.
-        assert FIXTURE_B_GATE_VALUE not in MAGIC_VALUES
+        # No FALLBACK_MAGIC_VALUES entry reaches it -- the executor
+        # succeeds only because comparison_immediates() recovers
+        # 0x12345678 from the binary's own cmp instructions.
+        assert FIXTURE_B_GATE_VALUE not in FALLBACK_MAGIC_VALUES
         for buf_size in [32, 40, 48, 56, 60, 64, 72, 80, 96, 100, 104, 112, 120, 128]:
-            for magic in MAGIC_VALUES:
+            for magic in FALLBACK_MAGIC_VALUES:
                 payload = b"A" * buf_size + struct.pack("<I", magic) + b"\n"
                 assert "win" not in _run_target_directly(fixture_b_binary, payload).lower(), (
-                    f"fixture B was won by a swept (offset={buf_size}, "
+                    f"fixture B was won by a fallback (offset={buf_size}, "
                     f"magic={hex(magic)}) pair -- it must be un-winnable by "
-                    f"the fixed MAGIC_VALUES sweep for this fixture to work "
-                    f"as a negative control")
+                    f"the FALLBACK_MAGIC_VALUES list for this fixture to work "
+                    f"as a recovered-immediate control")
 
 
 class _StubReceipt:
@@ -262,21 +269,23 @@ class TestCandidateProvenanceOnRealAttempts:
         assert prov["source"] == CANDIDATE_SOURCE_LITERAL_MAGIC_LIST
         assert prov["value"] == hex(FIXTURE_A_WIN_MAGIC)
 
-    def test_fixture_b_sweep_fails_and_carries_no_provenance(self, record_b):
+    def test_fixture_b_succeeds_via_recovered_immediate(self, record_b):
         record = record_b
 
-        assert record.outcome == AttemptOutcome.FAILED
-        assert record.candidate_provenance is None
-        # Nothing to attribute: the sweep exhausted every candidate it has.
-        assert record.payload == b""
+        assert record.outcome == AttemptOutcome.SUCCESS
+        assert record.candidate_provenance is not None, (
+            "fixture B should succeed via comparison_immediates() recovering "
+            "0x12345678 from the binary's cmp instructions")
+        assert record.candidate_provenance.source == CANDIDATE_SOURCE_RECOVERED_IMMEDIATE
+        assert record.candidate_provenance.value == FIXTURE_B_GATE_VALUE
+        assert record.offset == FIXTURE_A_WIN_OFFSET
 
-    def test_fixture_b_to_dict_provenance_is_null_not_omitted(self, record_b):
+    def test_fixture_b_to_dict_provenance_is_recovered_immediate(self, record_b):
         d = record_b.to_dict()
-        assert "candidate_provenance" in d, (
-            "the key must always be present (null when absent), so a "
-            "consumer reading report.json can distinguish 'no provenance' "
-            "from 'field does not exist in this schema version'")
-        assert d["candidate_provenance"] is None
+        assert "candidate_provenance" in d
+        assert d["candidate_provenance"] is not None
+        assert d["candidate_provenance"]["source"] == CANDIDATE_SOURCE_RECOVERED_IMMEDIATE
+        assert d["candidate_provenance"]["value"] == hex(FIXTURE_B_GATE_VALUE)
 
 
 class TestProvenanceNeverEntersNotesOrRenderedScripts:
@@ -293,7 +302,8 @@ class TestProvenanceNeverEntersNotesOrRenderedScripts:
 
     def test_failure_reason_is_unaffected(self, record_a, record_b):
         assert record_a.failure_reason == ""
-        assert CANDIDATE_SOURCE_LITERAL_MAGIC_LIST not in record_b.failure_reason
+        assert record_b.failure_reason == ""
+        assert CANDIDATE_SOURCE_LITERAL_MAGIC_LIST not in (record_a.failure_reason + record_b.failure_reason)
 
     def test_templates_render_path_does_not_touch_candidate_provenance(self):
         """Structural guard: templates.py's generated-script rendering reads
@@ -342,7 +352,7 @@ class TestRequiredProvenanceGate:
     def test_gate_passes_against_both_real_fixtures(self, record_a, record_b):
         records = {"fixture_a": record_a, "fixture_b": record_b}
         expected = {"fixture_a": CANDIDATE_SOURCE_LITERAL_MAGIC_LIST,
-                    "fixture_b": None}
+                    "fixture_b": CANDIDATE_SOURCE_RECOVERED_IMMEDIATE}
         _provenance_gate(records, expected)  # must not raise
 
     def test_gate_is_never_asserted_across_attempts_that_never_occurred(self):
@@ -366,7 +376,7 @@ class TestRequiredProvenanceGate:
         a = dataclasses.replace(record_a, candidate_provenance=None)
         records = {"fixture_a": a, "fixture_b": record_b}
         expected = {"fixture_a": CANDIDATE_SOURCE_LITERAL_MAGIC_LIST,
-                    "fixture_b": None}
+                    "fixture_b": CANDIDATE_SOURCE_RECOVERED_IMMEDIATE}
         with pytest.raises(AssertionError, match="missing"):
             _provenance_gate(records, expected)
 
@@ -374,7 +384,7 @@ class TestRequiredProvenanceGate:
         """Red-proof 2: swap fixture A's and B's expected sources."""
         records = {"fixture_a": record_a, "fixture_b": record_b}
         correct_expected = {"fixture_a": CANDIDATE_SOURCE_LITERAL_MAGIC_LIST,
-                            "fixture_b": None}
+                            "fixture_b": CANDIDATE_SOURCE_RECOVERED_IMMEDIATE}
         swapped_expected = {
             "fixture_a": correct_expected["fixture_b"],
             "fixture_b": correct_expected["fixture_a"],
