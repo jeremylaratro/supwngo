@@ -81,6 +81,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the number of untried candidates is reported in `failure_reason`, so a gate
   constant ranking below the cap is diagnosable rather than a silent miss.
 
+- `DeliverySpec` (`supwngo/exploit/pipeline/contracts.py`): a new, additive
+  value object describing how a payload reaches a target — a general
+  transport description (not tuned to one challenge), covering the four
+  transports also named in `afl.py`'s `generate_harness(input_method=...)`
+  docstring: `SINK_STDIN` (today's default, unchanged), `SINK_ARGV` (payload
+  as an argv token), `SINK_FILE_ARGV` (payload file named via argv, AFL's
+  `@@` convention accepted as an alias for `{payload_file}`), and
+  `SINK_FILE_FIXED` (payload file at a fixed path, no argv). `build_argv()`
+  computes the launch argv and raises rather than silently dropping the
+  payload when a sink's required placeholder is missing or a file sink has
+  no `payload_filename`; `is_file_sink()` lets callers branch on the
+  file/non-file question without string comparison. `materialize()` is the
+  single definition of file contents (`b"".join(parts)`). A reserved,
+  currently-unused `container` field is the intended hook for a future
+  format-envelope wrapper (see
+  `docs/research/2026-09-26-snowscan-bmp-format-gate.md`). `AttemptRecord`
+  gains an optional `delivered_bytes` field recording the exact bytes handed
+  to the target, needed because some executors verify `payload + b"\n"` but
+  store `payload` without it. Foundation layer only — no pipeline call site
+  consumes `DeliverySpec` yet (see
+  `docs/plans/2026-09-26-sprint2prime-input-vector-plan.md`, REVISION 3).
+
 ### Changed
 - `analyze` command is now a thin alias for `pwn --analyze-only`. All analysis
   logic lives in `pwn`; input sources (previously only in `analyze`) are now
