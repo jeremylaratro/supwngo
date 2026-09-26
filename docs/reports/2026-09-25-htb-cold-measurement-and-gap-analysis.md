@@ -369,12 +369,13 @@ distinguish success from failure.
 - [ ] Mismatch detector (deferred — needs cross-validation logic)
 - [ ] Retire hardcoded `libc_version="2.31"` (deferred — heap library depends on it)
 
-### Sprint 4 — CLI option consistency + --json parity — PARTIAL (PR #12)
+### Sprint 4 — CLI option consistency + --json parity — PARTIAL (PR #12, #14)
 
 **Goal:** Uniform CLI surface. Lower priority than capability fixes.
 
 - [ ] Add `--libc` to all analysis commands where meaningful
-- [ ] Add `--json` to the 11 commands currently missing it
+- [x] Add `--json` to the 11 commands missing it — PR #14 (all 30 commands
+  now have `--json`)
 - [x] Fix `--json` producing mixed console+JSON output (Bug B-4) — PR #12
 - [ ] Standardize option naming
 

@@ -68,7 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in `verification.py`).
 
 ### Fixed
-- `--json` output on all 20 CLI commands no longer mixes Rich console text
+- All 30 CLI commands now support `--json` output. Previously 11 commands
+  lacked it: fuzz, exploit, rop, symbolic, libc-id, checksec, cyclic,
+  cyclic-find, template, version, decompile.
+- `--json` output on all 30 CLI commands no longer mixes Rich console text
   (progress spinners, status messages, banners) into stdout. Console output
   is redirected to stderr when `--json` is active; JSON is written directly
   to stdout via `click.echo()`. This makes `supwngo analyze ./bin --json |
