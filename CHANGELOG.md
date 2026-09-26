@@ -53,6 +53,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pipeline solved 0/7. The winning technique is prefixed with `legacy:` in
   the output (e.g. `legacy:variable_overwrite`).
 
+- `--strategy <name>` flag on `solve` and `autopwn`: attempt only the named
+  technique, bypassing applicability gates. Validates the name against the
+  executor registry at invocation time.
+
+- `--all-strategies` flag on `solve` and `autopwn`: attempt every registered
+  technique regardless of applicability gates. Useful for exhaustive testing
+  or when the static-analysis heuristics misjudge a target.
+
 ### Fixed
 - Win function detection in canonical pipeline now uses `WinFunctionFinder`
   (expanded name list + call-graph + file-ops detection) as fallback when the
