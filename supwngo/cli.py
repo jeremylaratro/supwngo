@@ -866,7 +866,7 @@ def pwn(ctx, binary, libc, no_gadgets, json_output):
 
         # Print all strategies
         console.print("\n[bold]All Viable Strategies:[/bold]")
-        for i, strat in enumerate(sorted(report.strategies, key=lambda s: s.priority)):
+        for i, strat in enumerate(sorted(report.strategies, key=lambda s: (-s.confidence, s.priority))):
             if strat == report.recommended:
                 continue
             style = "dim" if i > 2 else ""

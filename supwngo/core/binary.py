@@ -431,6 +431,16 @@ class Binary:
             seen.add(d)
             candidate = d / 'libc.so.6'
             if candidate.exists():
+                if candidate.stat().st_size < 1024:
+                    logger.warning(f"Shipped libc too small ({candidate.stat().st_size}B), skipping: {candidate}")
+                    continue
+                try:
+                    with open(candidate, 'rb') as f:
+                        if f.read(4) != b'\x7fELF':
+                            logger.warning(f"Shipped libc missing ELF magic, skipping: {candidate}")
+                            continue
+                except OSError:
+                    continue
                 logger.debug(f"Detected shipped libc: {candidate}")
                 return candidate
         return None
