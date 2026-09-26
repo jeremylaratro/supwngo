@@ -36,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sigreturn frame, then calling `execve()`. This is the canonical SROP approach
   for minimal static binaries (e.g. HackTheBox "Sick ROP").
 
+### Removed
+- Dead packages: `ai`, `api`, `containers`, `distributed`, `embedded`,
+  `macos`, `windows` (12,136 lines, 27 files). All 7 packages had zero
+  import references from any live code path. The associated test class
+  `TestLLMAnalyzer` was also removed.
+
 ### Fixed
 - `autopwn`, `exploit`, and `solve` commands now exit with code 1 when
   exploitation fails. Previously all 32 non-`report` commands always returned
