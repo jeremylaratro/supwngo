@@ -251,17 +251,21 @@ README claims "Heap exploitation techniques (tcache poisoning, fastbin dup, Hous
 under Exploit Generation. House-of-* has no CLI and no pipeline surface.
 `build_default_registry()` registers 17 executors, none of which are house-of-* variants.
 
-### 4.4 Option inconsistency (measured)
+### 4.4 Option inconsistency (measured, assessed)
 
-`--libc` exists on 7 of 33 commands: exploit, rop, pwn, template, autopwn, explain,
-solve. A user who learns the flag on `exploit` finds it missing on `checksec`, `analyze`,
-`heap-analysis`, `leaks`, etc.
+`--libc` exists on 7 of 30 commands: exploit, rop, pwn, template, autopwn, explain,
+solve. Most analysis commands (`analyze`, `checksec`, `cfg`, `dataflow`,
+`strings_analysis`) are pure static analysis that don't use a libc file.
+**Assessment (26SEP2026):** The 7 commands with `--libc` are the exploitation/interaction
+commands where it matters. Adding `--libc` to `heap_analysis` or `symbolic` would require
+underlying module changes, not just CLI wiring — deferred as low priority.
 
-### 4.5 33 commands, 22 have --json, 11 do not (measured)
+### 4.5 ~~33 commands, 22 have --json, 11 do not~~ **RESOLVED** (PR #12, #14)
 
-Commands WITHOUT `--json`: fuzz, triage, exploit, rop, symbolic, libc-id, checksec,
-cyclic, cyclic-find, batch, template, decompile, version. Inconsistent output format
-support.
+~~Commands WITHOUT `--json`: fuzz, triage, exploit, rop, symbolic, libc-id, checksec,
+cyclic, cyclic-find, batch, template, decompile, version.~~ All 30 commands now have
+`--json` (PR #12 fixed stdout pollution, PR #14 added the flag to all 11 missing
+commands).
 
 ### 4.6 Stale local branches (measured: 8)
 
