@@ -448,6 +448,7 @@ def exploit(ctx, binary, crash, remote, libc, output, auto):
             with open(output, "w") as f:
                 f.write(exploiter.exploit_template)
             console.print(f"[yellow]Template saved to {output}[/yellow]")
+            ctx.exit(1)
 
 
 @cli.command()
@@ -2583,6 +2584,7 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output):
                     f.write(artifact)
                 kind = "Partial exploit script" if engine.exploit_script else "Fallback template"
                 console.print(f"\n[yellow]{kind} saved to: {output}[/yellow]")
+            ctx.exit(1)
 
 
 # === `solve` - Phase 6 of docs/plans/2026-09-23-effectiveness-and-usability.md ===
@@ -3018,6 +3020,8 @@ def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, 
                 "[dim]That template is a starting point, not a strategy. Re-run "
                 "with --walkthrough for a step-by-step route to a shell.[/dim]"
             )
+        if not walkthrough:
+            ctx.exit(1)
 
     if walkthrough:
         # Pass the hand-off report through: the walkthrough's header tells the

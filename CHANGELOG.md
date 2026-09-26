@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Executor skip reasons: every technique executor now reports *why* it declined a
+  target instead of the generic "not applicable to this target". The specific
+  precondition that failed (e.g. "PIE enabled", "no output function in PLT+GOT",
+  "NX enabled") is recorded in the attempt's `failure_reason` field and logged.
+- Two-stage SROP strategy: `SropExecutor` can now exploit targets that lack a
+  `/bin/sh` string by planting it into a writable section via a chained `read()`
+  sigreturn frame, then calling `execve()`. This is the canonical SROP approach
+  for minimal static binaries (e.g. HackTheBox "Sick ROP").
+
+### Fixed
+- `autopwn`, `exploit`, and `solve` commands now exit with code 1 when
+  exploitation fails. Previously all 32 non-`report` commands always returned
+  exit code 0 regardless of outcome, making scripted usage and CI integration
+  impossible.
+- `SropExecutor.is_applicable()` gate widened: no longer requires `/bin/sh` to
+  already exist in the binary. SROP is now applicable to any non-PIE target with
+  a writable section where the string can be planted. The previous gate made SROP
+  inapplicable to exactly the class of targets it was designed for.
+
+### Added
 - **`supwngo report`** — generates a vulnerability report from static analysis in
   SARIF, HTML, Markdown, JSON or plain text. The `reporting/` package (SARIF
   exporter, CVSS v3.1 calculator, HTML/Markdown writers) was fully implemented but
