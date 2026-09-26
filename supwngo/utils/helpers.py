@@ -62,64 +62,6 @@ def hexdump(data: bytes, offset: int = 0, width: int = 16) -> str:
     return "\n".join(lines)
 
 
-def cyclic(length: int, alphabet: bytes = None) -> bytes:
-    """
-    Generate de Bruijn sequence for offset finding.
-
-    Args:
-        length: Length of pattern to generate
-        alphabet: Alphabet to use (default: lowercase letters)
-
-    Returns:
-        Cyclic pattern bytes
-    """
-    if alphabet is None:
-        alphabet = b"abcdefghijklmnopqrstuvwxyz"
-
-    # Simple cyclic pattern generation
-    pattern = bytearray()
-    for i in range(length):
-        c1 = alphabet[(i // (len(alphabet) ** 2)) % len(alphabet)]
-        c2 = alphabet[(i // len(alphabet)) % len(alphabet)]
-        c3 = alphabet[i % len(alphabet)]
-        pattern.append(c1)
-        if len(pattern) >= length:
-            break
-        pattern.append(c2)
-        if len(pattern) >= length:
-            break
-        pattern.append(c3)
-        if len(pattern) >= length:
-            break
-        pattern.append(ord(b"a") + (i % 26))
-        if len(pattern) >= length:
-            break
-
-    return bytes(pattern[:length])
-
-
-def cyclic_find(value: Union[int, bytes], length: int = 10000) -> int:
-    """
-    Find offset of value in cyclic pattern.
-
-    Args:
-        value: Value to search for (int or bytes)
-        length: Length of pattern to search
-
-    Returns:
-        Offset of value, or -1 if not found
-    """
-    if isinstance(value, int):
-        # Convert to bytes (try both endiannesses)
-        value_bytes = struct.pack("<I", value & 0xFFFFFFFF)
-    else:
-        value_bytes = value
-
-    pattern = cyclic(length)
-    pos = pattern.find(value_bytes)
-
-    return pos
-
 
 def align(value: int, alignment: int) -> int:
     """Align value up to alignment boundary."""

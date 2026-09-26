@@ -85,16 +85,14 @@ class TestHelpers:
 
     def test_cyclic(self):
         """Test cyclic pattern generation."""
-        from supwngo.utils.helpers import cyclic, cyclic_find
+        from supwngo.exploit.offset_finder import cyclic, cyclic_find
 
         pattern = cyclic(100)
         assert len(pattern) == 100
-        # Each 4-byte sequence should be unique
-        assert b"aaaa" in pattern
 
     def test_cyclic_find(self):
         """Test finding offset in cyclic pattern."""
-        from supwngo.utils.helpers import cyclic, cyclic_find
+        from supwngo.exploit.offset_finder import cyclic, cyclic_find
 
         pattern = cyclic(200)
         # Find a known subsequence

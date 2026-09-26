@@ -549,7 +549,7 @@ quit
         Returns:
             Offset to return address or None
         """
-        from supwngo.utils.helpers import cyclic, cyclic_find
+        from supwngo.exploit.offset_finder import cyclic, cyclic_find
 
         pattern = cyclic(pattern_length)
 
@@ -558,7 +558,7 @@ quit
         if crash_info["crashed"]:
             pc = crash_info.get("address", 0)
             if pc:
-                offset = cyclic_find(pc, pattern_length)
+                offset = cyclic_find(pc)
                 if offset >= 0:
                     logger.debug(f"Found overflow offset: {offset}")
                     return offset

@@ -16,7 +16,7 @@ from supwngo.vulns.detector import (
     VulnSeverity,
     VulnType,
 )
-from supwngo.utils.helpers import cyclic, cyclic_find
+from supwngo.exploit.offset_finder import cyclic, cyclic_find
 from supwngo.utils.logging import get_logger
 
 logger = get_logger(__name__)
