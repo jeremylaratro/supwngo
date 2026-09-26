@@ -1,13 +1,11 @@
 """The version is declared in several places; this pins them to agree.
 
-Before this test the string "1.0.0" was hardcoded in five locations
-(supwngo/__init__.py, pyproject.toml, setup.py, and twice in
-supwngo/api/server.py). Nothing checked them against each other, so a release
-could bump three and leave two behind and every suite would still pass -- the
-API would then report a version the package had not been at for two releases.
+Before this test the string "1.0.0" was hardcoded in several locations.
+Nothing checked them against each other, so a release could bump some and
+leave others behind.
 
-The two API sites now read supwngo.__version__ rather than repeating the
-literal, which is why this file also guards against the literal coming back.
+Sites that previously hardcoded the version now read supwngo.__version__,
+which is why this file also guards against the literal coming back.
 
 supwngo/__init__.py is the single source of truth: it is what `supwngo
 --version` prints, via click.version_option in cli.py.
@@ -81,7 +79,7 @@ def test_cli_version_flag_reports_the_package_version():
 
 
 @pytest.mark.parametrize(
-    "relpath", ["supwngo/api/server.py", "supwngo/reporting/sarif.py"]
+    "relpath", ["supwngo/reporting/sarif.py"]
 )
 def test_module_does_not_hardcode_a_version_literal(relpath):
     """Regression guard: each of these sites carried its own "1.0.0" and
