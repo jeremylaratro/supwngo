@@ -1,0 +1,15 @@
+.git
+.github
+.claude
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+dist
+build
+.pytest_cache
+.mypy_cache
+docs
+tests
+*.md
+!README.md

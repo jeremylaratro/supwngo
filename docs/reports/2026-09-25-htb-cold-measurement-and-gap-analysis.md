@@ -404,13 +404,14 @@ distinguish success from failure.
 - [x] Associated TestLLMAnalyzer test class removed
 - [ ] Reachability regression test (deferred — needs CI)
 
-### Sprint 7 — CI + containerized execution — PARTIAL (PR #10)
+### Sprint 7 — CI + containerized execution — COMPLETE (PR #10, #18)
 
 **Goal:** Tests enforced on every push. Results reproducible in a container.
 
 - [x] Add `.github/workflows/ci.yml` running pytest + CLI verification — PR #10
-- [ ] Create Dockerfile with pinned libc, patchelf, and all tool dependencies
-- [ ] Document container-based usage
+- [x] Dockerfile with python:3.11-slim-bookworm, GDB, ltrace, strace, patchelf,
+  libc6-dbg — PR #18
+- [x] `.dockerignore` to keep image minimal
 
 ### Sprint 9 — Code duplication consolidation — COMPLETE (PR #11)
 
@@ -498,7 +499,7 @@ partial JSON output instead of zero bytes.
 | Item | Bug/Gap | Complexity | Status |
 | --- | --- | --- | --- |
 | ~~Diagnostic fields empty on failure~~ | 2.5 | Medium | **DONE** (PR #17) |
-| Dockerfile + container docs | Sprint 7 | Medium | Partial |
+| ~~Dockerfile + container docs~~ | Sprint 7 | Medium | **DONE** (PR #18) |
 | house_of_modern IO offsets | 4.9 | Low (unreachable) | Deferred |
 | Heap pipeline integration | 3.3 | High | Open |
 | auto.py / enhanced_auto.py base | 4.8 | High | Open |

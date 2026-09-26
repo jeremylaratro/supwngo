@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Dockerfile and `.dockerignore` for containerized usage. Based on
+  `python:3.11-slim-bookworm` with GDB, ltrace, strace, patchelf, and libc6-dbg.
+  Build with `docker build -t supwngo .` and run with `docker run supwngo analyze ./bin`.
 - GitHub Actions CI workflow: runs pytest on Python 3.10-3.12 on push/PR to main,
   with system dependencies (gdb, ltrace, strace) and CLI entry point verification.
 - Win function argument discovery: `Ret2WinExecutor` now scans the disassembly of
