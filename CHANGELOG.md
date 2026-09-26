@@ -114,6 +114,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removed, and its `has_file_io` check is commented as not being a vector
   oracle (`read` is the stdin primitive, so it labels every stdin target
   "file input" too) — use this new probe instead.
+- `DeliverySpec.build_argv()` now rejects undeliverable or contradictory
+  specifications loudly instead of silently producing a wrong argv. Five cases
+  previously passed: an unknown/typoed `sink` fell through every branch and was
+  treated as stdin, **silently dropping the payload**; a file sink with a
+  `{payload_file}` token but no `payload_value` substituted an empty path; a
+  `{payload_arg}` token was honoured on non-`SINK_ARGV` sinks; both placeholder
+  kinds in one template both received the same value; and `SINK_STDIN` accepted a
+  `{payload_file}` token, which can switch an argv-sensitive target away from its
+  working stdin mode. Each now raises `ValueError` naming the offending field and
+  the fix. The load-bearing invariant is unchanged and asserted: the default
+  `DeliverySpec()` still returns exactly `[binary_path]` and never raises, so
+  every existing spawn site keeps byte-identical argv.
 - `classify_input_vector()` now reports `evidence["stage3_basis"]`
   (`none`/`output`/`returncode`/`timeout`), recording *why* the
   content-volume stage fired. A verdict driven only by the large probe file
