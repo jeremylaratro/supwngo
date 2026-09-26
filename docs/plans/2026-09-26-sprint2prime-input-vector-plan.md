@@ -233,6 +233,18 @@ probe is *not* fooled by it; if it is, the sprint stops.
 
 ## 5. Sub-components
 
+> **VOCABULARY NOTE (added with REVISION 5) — read before implementing from this
+> table.** This table is Revision-2 text and predates REVISION 4's four-transport
+> model. Wherever it says **`SINK_FILE`**, the shipped code has **two** constants:
+> `SINK_FILE_ARGV` (the path is passed in argv) and `SINK_FILE_FIXED` (the target
+> opens a path it already knows). Use `is_file_sink(sink)` to cover both. There is
+> also `SINK_ARGV`, where the payload *itself* is an argv token and no file exists —
+> absent from this table entirely. The four shipped constants live in
+> `supwngo/exploit/pipeline/contracts.py`; that module, not this table, is the
+> vocabulary of record. Likewise S2's "3-stage probe" shipped as **four** stages.
+> Struck rows and stale names are retained deliberately so corrections sit beside
+> their originals, but implement against the code.
+
 | # | Files | Change | Contract affected | Failure mode introduced |
 |---|---|---|---|---|
 | S1 | `pipeline/contracts.py` | `DeliverySpec` + `SINK_STDIN`/`SINK_FILE`; `build_argv(payload_path)`; `materialize(parts) -> bytes` | new type, additive | a wrong default silently changes every spawn → pinned by per-site seam tests, not by S1 alone |
@@ -242,7 +254,19 @@ probe is *not* fooled by it; if it is, the sprint stops.
 | S5 | `pipeline/verifier.py` + `core/context.py` + `orchestrator.py` | **Resolve the spec at call time** from `context.delivery_spec`, *not* via the constructor | `PipelineVerifier` reads the context it already holds | **this is finding 2**: a constructor-carried spec is built at `orchestrator.py:152`, before the prologue at `:237`, so it would be permanently stdin. Call-time resolution removes the ordering hazard by construction; T9 asserts the verifier observes the same value stored on the context |
 | S6 | `templates.py` raw-payload template only | File mode is supported **only** where the payload is a pre-spawn constant. The generic `build_script()` path and the multi-part template **raise a documented "file delivery unsupported for this technique" error** rather than emitting an artifact that silently sends to stdin | **generated artifact shape**, narrowly | **this is finding 3**: `open_target()` (`script_builder.py:88-98`) is called before the body computes the payload, so it cannot write a payload file. 13 `build_script()` consumers are therefore *not* converted — they refuse | a technique refuses where it could have worked → accepted, and visible in the failure reason rather than silent |
 | S7 | `analysis/static.py:76`, `:303` | delete the unreachable `"argv"` entry; comment that `file input` is **not** a vector oracle, citing B-2 | removes dead code | none; behavior-neutral by inspection |
-| S8 | `profile_stage.py` prologue | call the probe **once**, store the spec on `ExploitContext` **before** the verifier is first used | one extra probe (≤4 short runs) per invocation | latency → bounded; probe failure routes to stdin |
+| S8 | ~~`profile_stage.py` prologue~~ | ~~call the probe **once**, store the spec on `ExploitContext` **before** the verifier is first used~~ | ~~one extra probe (≤4 short runs) per invocation~~ | ~~latency → bounded; probe failure routes to stdin~~ |
+
+> **ERRATUM on S8 (added with REVISION 5).** The S8 row above is **struck and
+> superseded by REVISION 3**, which is the governing revision. It describes the
+> probe *deciding* the sink — exactly the authoritative-probe design that rounds 2
+> and 3 both returned NOT-APPROVED on, and that measured false positives still
+> justify rejecting (a false positive suppresses a target's working stdin delivery).
+>
+> **S8 as it actually stands:** the vector is **operator-declared** — an
+> `--input-vector`/`--input-name` CLI option and the matching engine option. The
+> probe may be *logged* as a hint for the operator, but must never select a sink.
+> The row is left in place rather than deleted so the correction sits beside the
+> original.
 
 Ordering: S1 → S2 → S5 (wiring first, so nothing can read a stale spec) →
 S3/S4 → S6 → S7/S8.
