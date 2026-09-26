@@ -189,6 +189,24 @@ target's stdout discriminates. This means "deliver bytes to a file" and "satisfy
 structured-format parser" are two different capabilities, and only the first is
 Sprint 2′. Registered separately rather than smuggled into Sprint 2′'s scope.
 
+> **ADDENDUM (26SEP2026), `measured` —
+> `docs/research/2026-09-26-snowscan-bmp-format-gate.md`.** Two corrections to the
+> above, written here beside the original rather than replacing it:
+>
+> 1. **The gate is passable, cheaply.** A 20×20 **8bpp** BMP with a standard
+>    54-byte header is **fully accepted**: snowscan enters its per-row scan loop,
+>    prints `[01] : PASS` … `[20] : PASS`, and exits `rc=0`. B-3's complexity drops
+>    from 4 to 2 and its priority rises to **P1**.
+> 2. **The `rc=0` claim above is stage-specific.** The four *pre-open* refusals
+>    (missing argument, bad extension) exit `rc=0`; the *post-open* validation
+>    refusals exit `rc=255`, and acceptance exits `rc=0`. Both statements are true
+>    of different stages — noted so they are not read as contradictory.
+>
+> Also measured: bit depth is load-bearing and the error text is misleading
+> (`20×20/24bpp` is rejected with a *resolution* message), and `30×30/8bpp` is
+> rejected despite the advertised `20x20 to 30x30` range — so the accepted set is
+> narrower than the message claims and must be swept before anything is hardcoded.
+
 ## Issues (friction / debt) — pre-existing, NOT caused by this effort
 
 ### I-1 — `test_i2_attempt_duration` fails on `main`
@@ -216,7 +234,7 @@ adjustment with a stated reason.
 | ~~G-2~~ | — | — | — | **withdrawn**: mis-diagnosed, superseded by G-2′ | — | `closed` |
 | **G-2a** (argv/file) | 5 — a whole target class is structurally unreachable; no technique can ever win it | 3 — new delivery+verifier channel, but additive and testable in isolation | P0 | none | **P0** | `now` |
 | **B-2** (vector classifier inverted) | 5 — it is the *feeder* for G-2a; using it as-is risks a 5/5 regression for zero gain, so G-2a cannot ship without resolving this | 2 — needs a discriminating signal, and the argv-differential probe is already measured to work (0 FP, 1 TP) | P0 | none | **P0** | `now` (rides in Sprint 2′) |
-| **B-3** (format gates) | 3 — it is what stands between a working file channel and `snowscan` actually solving, i.e. between Sprint 2′ and T-1 | 4 — needs a structured-format payload synthesizer (valid BMP header + dimension constraints); unproven | P2 | **push down**: it is strictly downstream of G-2a, and bundling it would make Sprint 2′ untestable in isolation | **P2** | `later` |
+| **B-3** (format gates) | 4 — it is what stands between a working file channel and `snowscan` actually solving, i.e. between Sprint 2′ and T-1 | ~~4~~ → **2** — a fully accepted BMP is now built and confirmed against the real target (20×20, 8bpp, 54-byte header → `[01]…[20] PASS`, `rc=0`); the synthesizer is ~15 lines of `struct.pack` | ~~P2~~ **P1** | **raised twice**: (a) Revision 3 showed format validation *masks* the signal a vector probe needs, so B-3 is a prerequisite of reliable detection rather than a follow-on; (b) `measured` research dropped its complexity from 4 to 2 | **P1** | `next` |
 | **G-2b** (command shell) | 4 — unblocks `ancient_interface` | 4 — needs per-target protocol inference; approach unproven | P2 | **spike-first**: infer-the-protocol is the unproven part | **P2** | `later` |
 | **G-2c** (banner/handshake) | 3 — partly handled by existing settle discipline | 2 — extends `deliver_parts()` | P1 | none | **P1** | `later` |
 | **G-2d** (network) | 2 — no target in this set exercises it; `inferred` only | 4 — socket lifecycle, unproven | P3 | none | **P3** | `later` |
