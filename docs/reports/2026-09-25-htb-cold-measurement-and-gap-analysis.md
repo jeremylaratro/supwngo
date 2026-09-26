@@ -524,6 +524,42 @@ partial JSON output instead of zero bytes.
 | auto.py / enhanced_auto.py base | 4.8 | High | Open |
 | Test coverage for ~15k lines | 4.10 | Very High | Open |
 | HTB re-measurement | Sprint 8 | Medium | BLOCKED |
+| CLI command deconfliction | New | Medium | **QUEUED** |
+| Strategy selection CLI flag | New | Medium | **QUEUED** |
+
+### Queued — CLI command deconfliction (post-sprint)
+
+**Goal:** Audit `pwn`, `autopwn`, `exploit`, `solve` for redundancy and merge where
+overlapping. Currently four commands with unclear differentiation:
+
+- `exploit` — vulnerability-type-directed exploit generation (BOF/fmtstr/heap), with
+  `--auto` flag that runs `AutoExploiter` (legacy engine)
+- `pwn` — "quick pwn" wrapper: static analysis → gadgets → technique suggestion →
+  template generation. Does NOT run the pipeline engine.
+- `autopwn` — runs `CanonicalAutopwnEngine` (the canonical pipeline). Per-attempt
+  timeout, strategy ordering, verification, handoff report.
+- `solve` — thin wrapper over `CanonicalAutopwnEngine` with `--interactive` guided
+  fallback, `--walkthrough`, `--remote`, and script-to-file output.
+
+**Investigation:** Which pairs are genuinely distinct vs redundant? `autopwn` and
+`solve` already share the same engine — the difference is output handling and
+`--interactive`. `exploit --auto` runs a different (legacy) engine entirely. `pwn`
+doesn't run an engine at all. Consolidate into fewer commands, keeping all unique
+switches (e.g. `--interactive`, `--walkthrough`, `--remote`, `--strategy`).
+
+### Queued — Strategy selection / force-all CLI flag (post-sprint)
+
+**Goal:** Let the operator specify a strategy or force all strategies for `solve`,
+`autopwn`, `pwn`, `exploit`, `explain`.
+
+- `--strategy <name>` — run only the named technique (e.g. `--strategy ret2win`,
+  `--strategy srop`, `--strategy tcache_poison_got`)
+- `--all-strategies` — try every registered executor regardless of `is_applicable()`
+  gating (useful for debugging false negatives in the applicability checks)
+- Strategy names should match executor registry keys (visible via `supwngo autopwn
+  --list-strategies` or similar)
+- `explain` should accept `--strategy` to scope the walkthrough to a specific
+  technique path
 
 ---
 
