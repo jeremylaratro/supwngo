@@ -46,6 +46,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   report specific precondition failures (PIE, Full RELRO, missing PLT
   entries, no menu detected) instead of generic "not applicable".
 
+### Fixed
+- Win function detection in canonical pipeline now uses `WinFunctionFinder`
+  (expanded name list + call-graph + file-ops detection) as fallback when the
+  fast symbol-table scan misses. Previously, `profile_stage.py` had a narrower
+  21-name list that missed domain-specific names like `fill_ammo`.
+- SROP executor no longer skips binaries that lack `.bss`/`.data` sections.
+  For minimal static binaries (e.g. sick_rop), a three-stage strategy is used:
+  mprotect a LOAD page to RWX, plant `/bin/sh` via read(), then execve().
+- `detect_shipped_libc()` now validates that the found libc file is > 1KB and
+  starts with ELF magic before returning it. Prevents silent failures from
+  corrupt/empty libc files (e.g. bad zip extraction producing 0-byte files).
+- `pwn` command strategy recommendations now sort by confidence score
+  descending (tiebreak: priority ascending) instead of priority number alone.
+  Previously, VARIABLE_OVERWRITE (conf=0.5, pri=1) ranked above ROP_EXECVE
+  (conf=0.8, pri=2) despite lower confidence.
+
 ### Changed
 - `SeccompAction` enum in `seccomp.py` now uses canonical kernel BPF constants
   (imported from `seccomp_advanced.py`) instead of opaque `auto()` values.
