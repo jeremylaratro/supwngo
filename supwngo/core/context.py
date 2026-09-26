@@ -272,7 +272,6 @@ class ExploitContext:
     profile_prompts: List[bytes] = field(default_factory=list)
     profile_input_count: int = 0
     profile_has_menu: bool = False
-    profile_menu_roles: Dict[str, int] = field(default_factory=dict)
     profile_has_alarm: bool = False
     profile_is_shellcode_runner: bool = False
     profile_buffer_size: Optional[int] = None
