@@ -62,11 +62,28 @@ class TestDeriveBlockingUnknowns:
         unknowns = derive_blocking_unknowns(ctx)
         assert "PIE base not leaked" in unknowns
 
-    def test_pie_unleaked_not_flagged_when_only_skipped(self):
+    def test_pie_unleaked_flagged_when_all_skipped(self):
+        """When every technique is SKIPPED (total failure), blocking unknowns
+        should still surface — empty diagnostics on total failure is worse
+        than no field at all (bug 2.5)."""
         ctx = self._context(pie=True)
         ctx.attempts.append(AttemptRecord(
             technique="ret2win", outcome=AttemptOutcome.SKIPPED,
             failure_reason="not applicable to this target",
+        ))
+        assert "PIE base not leaked" in derive_blocking_unknowns(ctx)
+
+    def test_pie_unleaked_not_flagged_when_some_attempted(self):
+        """When at least one technique reached FAILED/PARTIAL/ERROR, SKIPPED
+        techniques are NOT included in the blocking-unknowns gate."""
+        ctx = self._context(pie=True)
+        ctx.attempts.append(AttemptRecord(
+            technique="ret2win", outcome=AttemptOutcome.SKIPPED,
+            failure_reason="not applicable to this target",
+        ))
+        ctx.attempts.append(AttemptRecord(
+            technique="fmtstr_write_gate", outcome=AttemptOutcome.FAILED,
+            failure_reason="no format string found",
         ))
         assert derive_blocking_unknowns(ctx) == []
 

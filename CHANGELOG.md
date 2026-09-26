@@ -72,6 +72,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in `verification.py`).
 
 ### Fixed
+- `blocking_unknowns` in handoff reports now surfaces diagnostic information on
+  total-failure runs where all techniques were SKIPPED. Previously, the gate
+  required at least one FAILED/PARTIAL/ERROR attempt, so total-skip runs
+  produced empty diagnostics — worse than no field at all.
 - `autopwn` and `solve` commands now emit partial JSON output when killed by
   wall-clock timeout (SIGTERM/SIGINT) instead of producing zero bytes. A SIGTERM
   handler converts the signal to SystemExit so the output path executes; the
