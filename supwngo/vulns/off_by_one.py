@@ -13,6 +13,7 @@ from enum import Enum, auto
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from supwngo.core.binary import Binary
+from supwngo.utils.config import DEFAULT_LIBC_VERSION
 from supwngo.vulns.detector import Vulnerability, VulnerabilityDetector, VulnType, VulnSeverity
 from supwngo.utils.logging import get_logger
 
@@ -393,7 +394,7 @@ class NullByteExploiter:
     - Chunk size corruption
     """
 
-    def __init__(self, libc_version: str = "2.31"):
+    def __init__(self, libc_version: str = DEFAULT_LIBC_VERSION):
         """
         Initialize exploiter.
 
