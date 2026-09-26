@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Win function argument discovery: `Ret2WinExecutor` now scans the disassembly of
+  detected win functions for comparison constants (via `cmp` instructions) and builds
+  a ROP chain that sets `rdi`, `rsi`, `rdx` to match. This enables solving challenges
+  like HTB "Rocket Blaster XXX" where `fill_ammo(0xdeadbeef, 0xdeadbabe, 0xdead1337)`
+  must be called with specific magic values.
+- Win function detection expanded: `WinFunctionFinder` now also detects functions
+  that open/read files (potential flag-reading functions) and includes additional
+  name patterns (`fill_ammo`, `open_flag`, `show_flag`, `reward`, etc.).
 - Executor skip reasons: every technique executor now reports *why* it declined a
   target instead of the generic "not applicable to this target". The specific
   precondition that failed (e.g. "PIE enabled", "no output function in PLT+GOT",
