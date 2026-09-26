@@ -58,6 +58,24 @@ confidence score. VARIABLE_OVERWRITE (conf=0.5, pri=1) ranks above ROP_EXECVE
 
 **Fix:** Sort by confidence descending, break ties by priority ascending.
 
+## Results (26SEP2026, PR #21)
+
+Sprints 1-3 and 5 implemented and merged. Sprint 4 deferred (requires investigation).
+
+| Sprint | Status | Measured Impact |
+|--------|--------|----------------|
+| 1. Win function unification | **DONE** | fill_ammo detected on rocket_blaster_xxx; ret2win ATTEMPTED (offset mismatch due to menu) |
+| 2. SROP gate widened | **DONE** | sick_rop SROP ATTEMPTED → PARTIAL (3-stage mprotect+read+execve script generated) |
+| 3. Libc validation | **DONE** | 0-byte libc rejected; valid libc found → ret2libc_leak SUCCEEDED on rocket_blaster_xxx |
+| 4. explain PIE support | DEFERRED | needs investigation |
+| 5. Strategy sorting | **DONE** | confidence-first sorting applied |
+
+**Canonical pipeline solve rate: 0/7 → 1/7** (rocket_blaster_xxx via ret2libc_leak, SHELL_ACCESS verified).
+
+sick_rop SROP went from SKIP to PARTIAL — the three-stage exploit script is generated
+but verification fails (likely timing/interaction issue in the multi-stage read-rax
+pattern). Next step: tune the script's timing and validate the mprotect+read chain.
+
 ## Queued (post-sprint, per user request)
 
 1. CLI deconfliction: pwn/autopwn/exploit/solve command merge
