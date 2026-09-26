@@ -78,5 +78,5 @@ pattern). Next step: tune the script's timing and validate the mprotect+read cha
 
 ## Queued (post-sprint, per user request)
 
-1. CLI deconfliction: pwn/autopwn/exploit/solve command merge
-2. `--strategy` / `--all-strategies` flags for exploitation commands
+1. ~~CLI deconfliction: pwn/autopwn/exploit/solve command merge~~ → **DONE** (PR #23, legacy engine fallback)
+2. ~~`--strategy` / `--all-strategies` flags for exploitation commands~~ → **DONE** (PR #24)
