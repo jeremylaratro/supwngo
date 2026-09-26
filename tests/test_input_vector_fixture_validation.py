@@ -56,6 +56,7 @@ ADVERSARIAL_FIXTURES = [
     "neg_nondeterministic",
     "neg_argc_banner",
     "neg_argv_config_stdin_payload",
+    "neg_slow_config_stdin_payload",
 ]
 
 
@@ -238,3 +239,67 @@ class TestAdversarialFixturesExhibitThePropertyTheyClaim:
         out_b, rc_b = _run([exe, str(big)])
         assert (out_s, rc_s) == (out_b, rc_b), (
             "a 32-byte and a 4096-byte config must behave identically")
+
+
+class TestStage3BasisIsRecordedSoWeakEvidenceIsDiscountable:
+    """The probe's stage 3 fires on any (rc, output) difference between a
+    32-byte and a 4096-byte file. One of the three possible bases -- a
+    *timeout* on the large run -- is also produced by a target that merely does
+    work proportional to its input size, so it is much weaker evidence than a
+    genuine output or returncode change.
+
+    That false-positive class is harmless by construction: the probe is
+    advisory and can never commit a DeliverySpec (Sprint 2' REVISION 3). These
+    tests exist so the limitation stays MEASURED and diagnosable rather than
+    latent, and so nobody later mistakes a timeout-based verdict for strong
+    evidence.
+    """
+
+    def test_slow_config_target_is_a_timeout_based_false_positive(self, built):
+        """The known false-positive: payload channel is stdin, yet the verdict
+        is file-candidate purely because the large config run timed out."""
+        from supwngo.analysis.vector_probe import classify_input_vector
+
+        r = classify_input_vector(str(built["neg_slow_config_stdin_payload"]), timeout=5.0)
+        assert r.verdict == "file-candidate", (
+            "if this fixture stops being classified file-candidate the "
+            "limitation may have been fixed -- re-measure rather than "
+            "silently dropping this gate")
+        assert r.evidence.get("stage3_basis") == "timeout", (
+            "a timeout-driven verdict MUST be labelled as such, so nobody "
+            "mistakes it for strong evidence")
+
+    def test_genuine_file_sink_can_show_a_strong_basis(self, built):
+        """Paired positive control: without this, the assertion above could
+        pass because *every* verdict is labelled 'timeout'.
+
+        Note what this does NOT claim. `stage3_basis` is not a discriminator --
+        mech_line_text is a genuine file sink that also reports 'timeout'
+        (measured; it blocks on the newline-free 4096-byte probe file). Only
+        the strong direction is usable, and that asymmetry is pinned in
+        tests/test_input_vector_foundation.py."""
+        from supwngo.analysis.vector_probe import classify_input_vector
+
+        r = classify_input_vector(str(built["file_vector_gate"]), timeout=5.0)
+        assert r.verdict == "file-candidate"
+        assert r.evidence.get("stage3_basis") == "output", (
+            "this sink's difference is a real output change, so the basis must "
+            "record the strong evidence rather than collapsing to 'timeout'")
+
+    def test_slow_config_fixture_really_is_slow_only_on_the_large_file(self, built, tmp_path):
+        """Validates the fixture's own claim: the 32-byte case must complete
+        well inside the budget while the 4096-byte case must not. Otherwise
+        this fixture is not testing the timeout basis at all."""
+        exe = str(built["neg_slow_config_stdin_payload"])
+        small = tmp_path / "s.bin"
+        small.write_bytes(b"Z" * 32)
+        big = tmp_path / "b.bin"
+        big.write_bytes(b"Z" * 4096)
+
+        out_s, rc_s = _run([exe, str(small)], timeout=5.0)
+        assert rc_s == 0 and b"cfg scanned" in out_s, (
+            f"32-byte config should complete quickly, got rc={rc_s} {out_s[:80]!r}")
+        out_b, rc_b = _run([exe, str(big)], timeout=5.0)
+        assert rc_b is None, (
+            "4096-byte config must exceed the 5s budget for this fixture to "
+            f"exercise the timeout basis, got rc={rc_b}")

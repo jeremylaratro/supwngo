@@ -572,3 +572,80 @@ required implementation constraint with its own gate, not a stylistic note.
   labels stay untouched (B-2 says they are not a vector oracle), but the new
   transport vocabulary deliberately matches `afl.py`'s `stdin|file|argv` so the
   fuzzing and exploit paths can later share one resolver.
+
+---
+
+## REVISION 5 — `stage3_basis`, and a correction to the false-positive bound
+
+Appended 2026-09-26, after the foundation layer (S1/S2/S7) was built and tested.
+Two of this document's earlier claims turned out to be measurably wrong. Both
+corrections are recorded here rather than by editing the originals.
+
+### Correction 1 — the probe's false-positive class was larger than stated
+
+REVISION 3 argued the 4-stage probe had "0 unsafe false positives", citing the four
+adversarial fixtures then in the suite. That is **an artifact of which fixtures were
+chosen, not a property of the probe.** A fifth adversarial fixture,
+`tests/fixtures/input_vector/neg_slow_config_stdin_payload.c`, was built
+specifically to attack stage 3 and produced a false positive on the first try:
+
+| | 32-byte config | 4096-byte config |
+|---|---|---|
+| wall clock | ~0.43 s | 20.00 s (exceeds the 5 s budget) |
+| probe sees | normal exit | `rc: None` (timeout) |
+
+Its payload channel is **stdin**; argv carries only a config file. Stage 3 compares a
+small against a large file and treats *any* difference as the content-volume signal,
+so a target doing work proportional to its input size is classified
+`file-candidate`. `MEASURED`.
+
+This does not change the design, because REVISION 3 already removed the probe's
+authority: an advisory verdict cannot commit a `DeliverySpec`, so a wrong advisory
+cannot suppress a working stdin delivery. It does change what may be *claimed*. The
+honest statement is **"no unsafe false positive can reach the pipeline"** (structural,
+holds), not "the probe has no false positives" (empirical, false).
+
+### Correction 2 — `stage3_basis` is not a discriminator
+
+To keep the above diagnosable rather than latent, `classify_input_vector()` now emits
+`evidence["stage3_basis"]` ∈ `{none, output, returncode, timeout}`, recording *why*
+stage 3 fired. The initial rationale — that a caller could discount a timeout-driven
+verdict — **over-claimed, and was caught by its own test.** Measured across every
+file-candidate fixture:
+
+| fixture | genuine file sink? | `stage3_basis` |
+|---|---|---|
+| `file_vector_gate` | yes | `output` |
+| `mech_open_read_argv` | yes | `output` |
+| `mech_line_text` | **yes** | **`timeout`** |
+| `neg_slow_config_stdin_payload` | no | `timeout` |
+
+`mech_line_text` reads its payload from a file and still times out, because it blocks
+on a 4096-byte probe file containing no newline. So the weak class holds **both** a
+genuine sink and a non-sink, and `timeout` means *"this stage proved nothing"* — never
+*"not a file target"*.
+
+Only the converse is usable, and it is the half now asserted:
+**a `output`/`returncode` basis implied a genuine file sink in every case measured.**
+Pinned by `test_stage3_basis_is_trustworthy_only_in_the_strong_direction`, with a
+non-vacuity guard (the strong set must be non-empty) and both weak-class memberships
+asserted so the false rule cannot be re-derived later.
+
+### Correction 3 — a foundation gate was green only by omission
+
+`test_exactly_the_true_file_vector_fixtures_are_unsafe_file_candidate` asserted the
+probe's file-candidate set was *exactly* the three real sinks. That passed only
+because the counterexample was absent from `FIXTURE_NAMES`; adding
+`neg_slow_config_stdin_payload` turned it red immediately. The gate now asserts
+`TRUE_FILE_CANDIDATES | KNOWN_TIMEOUT_FALSE_POSITIVES`, so a **new** false positive
+still fails while the known one is enumerated and labelled. Deleting the gate or
+quietly leaving the fixture out were both rejected: the first loses the regression
+protection, the second is the defect.
+
+### Effect on the metrics
+
+- **M-7** is restated as **"5/5 non-file HTB targets retain `SINK_STDIN`"** (the
+  earlier count conflated conclusive and inconclusive verdicts; see the round-1/2
+  class answers). Unchanged by this revision.
+- No change to M-4, M-5, or M-6. The probe is not on any metric's critical path —
+  the operator-declared vector is, which is the point of REVISION 3.

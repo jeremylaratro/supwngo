@@ -114,6 +114,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removed, and its `has_file_io` check is commented as not being a vector
   oracle (`read` is the stdin primitive, so it labels every stdin target
   "file input" too) — use this new probe instead.
+- `classify_input_vector()` now reports `evidence["stage3_basis"]`
+  (`none`/`output`/`returncode`/`timeout`), recording *why* the
+  content-volume stage fired. A verdict driven only by the large probe file
+  timing out is weak evidence — a target that merely does work proportional
+  to its input size produces the same signal (measured: a config parser at
+  0.43 s for 32 bytes and 20.00 s for 4096 bytes is reported as
+  `file-candidate` while its real payload channel is stdin). The label is
+  **not** a discriminator and must not be read as one: a genuine file sink
+  can share it (measured: a line-based reader blocks on a newline-free probe
+  file). Only the strong direction is usable — an `output`/`returncode`
+  basis implied a real file sink in every case measured. This cannot affect
+  exploitation outcomes, because the probe remains advisory and cannot
+  commit a `DeliverySpec`.
 
 ### Changed
 - `analyze` command is now a thin alias for `pwn --analyze-only`. All analysis

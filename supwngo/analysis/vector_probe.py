@@ -260,6 +260,35 @@ def classify_input_vector(
         stage3_volume_sensitive = (rc_small, out_small) != (rc_large, out_large)
         evidence["stage3_volume_sensitive"] = stage3_volume_sensitive
 
+        # Record WHY stage 3 fired, because one of the three bases is much
+        # weaker evidence than the others. A difference that exists *only*
+        # because the large file timed out is also produced by a target that
+        # merely does work proportional to its input size -- measured: a
+        # config-file parser doing per-byte work is classified
+        # "file-candidate" on a 5s budget while its real payload channel is
+        # stdin. That is a known false-positive class, harmless because the
+        # probe is advisory and can never commit a DeliverySpec (see
+        # REVISION 3 of the Sprint 2' plan).
+        #
+        # MEASURED LIMIT ON HOW FAR THIS HELPS: "timeout" is *ambiguous*, not
+        # a negative signal. A genuine file sink can land in the same class --
+        # tests/fixtures/input_vector/mech_line_text.c reads its payload from
+        # a file and still times out, because it blocks on a 4096-byte probe
+        # file containing no newline. So a caller may NOT read "timeout" as
+        # "not really a file target". Only the converse is usable: an
+        # "output"/"returncode" basis was, across every fixture measured, a
+        # genuine file sink. Pinned by
+        # test_stage3_basis_is_trustworthy_only_in_the_strong_direction.
+        if not stage3_volume_sensitive:
+            stage3_basis = "none"
+        elif rc_large is _UNREACHABLE_RC or rc_small is _UNREACHABLE_RC:
+            stage3_basis = "timeout"
+        elif out_small != out_large:
+            stage3_basis = "output"
+        else:
+            stage3_basis = "returncode"
+        evidence["stage3_basis"] = stage3_basis
+
         if stage3_volume_sensitive:
             return VectorProbeResult(
                 verdict=VERDICT_FILE_CANDIDATE, evidence=evidence, extension=extension,

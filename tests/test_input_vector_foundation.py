@@ -58,6 +58,7 @@ FIXTURE_NAMES = [
     "neg_nondeterministic",
     "neg_argc_banner",
     "neg_argv_config_stdin_payload",
+    "neg_slow_config_stdin_payload",
 ]
 
 #: MEASURED verdicts (per-fixture positive/negative controls proven able to
@@ -84,6 +85,15 @@ EXPECTED_VERDICTS = {
     "neg_nondeterministic": "inconclusive-nondeterministic",
     "neg_argc_banner": "argv-only-not-opened",
     "neg_argv_config_stdin_payload": "argv-only-config",
+    # MEASURED false positive, deliberately kept in the suite. Its payload
+    # channel is stdin; argv carries only a config file. It is nonetheless
+    # classified "file-candidate" because stage 3 compares a 32-byte against a
+    # 4096-byte file and this target does work proportional to config size, so
+    # the large run TIMES OUT (32B -> 0.43s, 4096B -> 20.00s) and the timeout
+    # itself becomes the "difference". Harmless: the probe is advisory and can
+    # never commit a DeliverySpec (Sprint 2' REVISION 3). Pinned here so the
+    # limitation stays measured rather than latent.
+    "neg_slow_config_stdin_payload": "file-candidate",
 }
 
 #: The only fixtures that genuinely are file-vector targets. Kept as its own
@@ -91,6 +101,18 @@ EXPECTED_VERDICTS = {
 #: site) so the load-bearing "no unsafe false positive" assertion reads as
 #: a single, auditable set literal.
 TRUE_FILE_CANDIDATES = {"file_vector_gate", "mech_open_read_argv", "mech_line_text"}
+
+#: Fixtures the probe calls "file-candidate" even though they are NOT file
+#: targets. This set exists because the original form of this suite asserted
+#: the file-candidate set was EXACTLY `TRUE_FILE_CANDIDATES`, which was green
+#: only because no counterexample was in `FIXTURE_NAMES` -- adding one turned
+#: the gate red. Enumerating the known miss keeps the gate meaningful (a NEW
+#: false positive still fails) instead of either lying or being deleted.
+#:
+#: Every member MUST be distinguishable from a real file sink by its
+#: `stage3_basis` evidence, which the test below asserts mechanically rather
+#: than trusting this comment.
+KNOWN_TIMEOUT_FALSE_POSITIVES = {"neg_slow_config_stdin_payload"}
 
 
 @pytest.fixture(scope="module")
@@ -326,11 +348,55 @@ class TestProbeAdversarialNegatives:
         file_candidates = {
             name for name, v in verdicts.items() if v == "file-candidate"
         }
-        assert file_candidates == TRUE_FILE_CANDIDATES, (
+        assert file_candidates == TRUE_FILE_CANDIDATES | KNOWN_TIMEOUT_FALSE_POSITIVES, (
             f"unsafe false positive/negative: expected exactly "
-            f"{TRUE_FILE_CANDIDATES}, got {file_candidates}; "
-            f"full verdicts={verdicts}"
+            f"{TRUE_FILE_CANDIDATES | KNOWN_TIMEOUT_FALSE_POSITIVES}, got "
+            f"{file_candidates}; full verdicts={verdicts}"
         )
+
+    def test_stage3_basis_is_trustworthy_only_in_the_strong_direction(
+            self, compiled_fixtures):
+        """What `stage3_basis` can and cannot be used for -- MEASURED, and
+        deliberately weaker than it first appears.
+
+        The tempting claim is "a real file sink differs on output/returncode
+        while a merely-slow target only times out", which would make the basis
+        a discriminator. That claim is FALSE and this test pins why:
+        `mech_line_text` is a genuine file sink (proven solvable via its own
+        transport in the fixture-validation suite) and it ALSO lands on
+        basis='timeout', because it blocks on a 4096-byte file with no newline.
+        So basis='timeout' is genuinely ambiguous and must never be read as
+        evidence either way.
+
+        What IS usable is the one-directional property asserted below: a STRONG
+        basis (a real output or returncode difference) only ever occurs for a
+        genuine file sink. That is the half a caller may rely on."""
+        basis_by_name = {}
+        for name, path in compiled_fixtures.items():
+            r = classify_input_vector(str(path))
+            if r.verdict == "file-candidate":
+                basis_by_name[name] = r.evidence.get("stage3_basis")
+
+        strong = {n for n, b in basis_by_name.items()
+                  if b in ("output", "returncode")}
+        weak = {n for n, b in basis_by_name.items() if b == "timeout"}
+
+        assert strong <= TRUE_FILE_CANDIDATES, (
+            f"a STRONG stage-3 basis must imply a genuine file sink, but "
+            f"{sorted(strong - TRUE_FILE_CANDIDATES)} are not real sinks; "
+            f"bases={basis_by_name}")
+        assert strong, (
+            "no file-candidate had a strong basis -- without this the check "
+            "above passes vacuously")
+        # The weak class is ambiguous BY MEASUREMENT: it holds both a real sink
+        # and a non-sink. Asserting both memberships is what stops a future
+        # reader from re-deriving the false "timeout means not-a-sink" rule.
+        assert weak & TRUE_FILE_CANDIDATES, (
+            f"expected at least one GENUINE sink on the weak basis (measured: "
+            f"mech_line_text); bases={basis_by_name}")
+        assert weak & KNOWN_TIMEOUT_FALSE_POSITIVES, (
+            f"expected at least one NON-sink on the weak basis (measured: "
+            f"neg_slow_config_stdin_payload); bases={basis_by_name}")
 
     def test_mech_flag_style_and_mech_fixed_path_are_documented_safe_false_negatives(
             self, compiled_fixtures):
