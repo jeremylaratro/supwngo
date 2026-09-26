@@ -217,7 +217,9 @@ class TestSolveEndToEnd:
         # assumed.
         plain_output = tmp_path / "plain_exploit.py"
         plain_result = _run_solve(str(binary), "-o", str(plain_output))
-        assert plain_result.returncode == 0, plain_result.stdout + plain_result.stderr
+        assert plain_result.returncode == 1, (
+            f"expected rc=1 for a failed solve, got {plain_result.returncode}"
+        )
         assert "Result: SUCCESS" not in plain_result.stdout
         assert "buffer-to-return-address offset not determined" in plain_result.stdout
 
