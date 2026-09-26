@@ -2766,6 +2766,21 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output):
         finally:
             signal.signal(signal.SIGTERM, prev_handler)
 
+    if not engine.successful and not _timeout_interrupted:
+        with console.status("Canonical pipeline did not solve — trying legacy engine..."):
+            try:
+                from supwngo.exploit.enhanced_auto import EnhancedAutoExploiter
+                legacy = EnhancedAutoExploiter(bin_obj, libc_path=libc)
+                legacy.run()
+                if legacy.successful:
+                    engine.successful = True
+                    engine.technique_used = f"legacy:{legacy.technique_used}"
+                    engine.exploit_script = legacy.exploit_script or legacy.exploit_template
+                    engine.context.verification_level = legacy.verification_level
+                    engine.context.captured_flag = legacy._captured_flag
+            except Exception:
+                pass
+
     if json_output:
         try:
             handoff = engine.handoff_report.to_dict()
@@ -3239,6 +3254,23 @@ def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, 
                 engine.exploit_template = engine.exploit_template or ""
         finally:
             _sig.signal(_sig.SIGTERM, _prev)
+
+    # Legacy engine fallback: if the canonical pipeline failed, try the
+    # legacy EnhancedAutoExploiter which uses more aggressive heuristics.
+    if not engine.successful and not _timeout_interrupted:
+        with console.status("Canonical pipeline did not solve — trying legacy engine..."):
+            try:
+                from supwngo.exploit.enhanced_auto import EnhancedAutoExploiter
+                legacy = EnhancedAutoExploiter(bin_obj, libc_path=libc)
+                legacy.run()
+                if legacy.successful:
+                    engine.successful = True
+                    engine.technique_used = f"legacy:{legacy.technique_used}"
+                    engine.exploit_script = legacy.exploit_script or legacy.exploit_template
+                    engine.context.verification_level = legacy.verification_level
+                    engine.context.captured_flag = legacy._captured_flag
+            except Exception:
+                pass
 
     if interactive and not engine.successful and not _timeout_interrupted:
         engine = _guided_fallback(engine, binary, libc, timeout)
