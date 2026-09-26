@@ -61,6 +61,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   technique regardless of applicability gates. Useful for exhaustive testing
   or when the static-analysis heuristics misjudge a target.
 
+- `pwn --analyze-only` flag: quick recon pass (protections, dangerous functions,
+  input sources) without gadget enumeration or strategy ranking.
+
+### Changed
+- `analyze` command is now a thin alias for `pwn --analyze-only`. All analysis
+  logic lives in `pwn`; input sources (previously only in `analyze`) are now
+  shown in full `pwn` output too.
+
 ### Fixed
 - Win function detection in canonical pipeline now uses `WinFunctionFinder`
   (expanded name list + call-graph + file-ops detection) as fallback when the

@@ -83,80 +83,8 @@ def cli(ctx, verbose):
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
 def analyze(ctx, binary, output, json_output):
-    """Perform comprehensive binary analysis."""
-    _reset_console()
-    if json_output:
-        _json_mode()
-
-    from supwngo.core.binary import Binary
-    from supwngo.analysis.static import StaticAnalyzer
-    from supwngo.analysis.protections import ProtectionAnalyzer
-
-    console.print(f"\n[bold]Analyzing:[/bold] {binary}\n")
-
-    # Load binary
-    with console.status("Loading binary..."):
-        bin_obj = Binary.load(binary)
-
-    # Run analysis
-    with console.status("Running static analysis..."):
-        static = StaticAnalyzer(bin_obj)
-        static_results = static.analyze()
-
-    with console.status("Analyzing protections..."):
-        prot_analyzer = ProtectionAnalyzer(bin_obj)
-        prots = prot_analyzer.analyze()
-
-    if json_output:
-        results = {
-            "binary": str(binary),
-            "arch": bin_obj.arch,
-            "bits": bin_obj.bits,
-            "protections": prots.to_dict(),
-            "dangerous_functions": static_results.get("dangerous_calls", []),
-            "input_sources": static_results.get("input_sources", []),
-        }
-        _emit_json(results)
-    else:
-        # Print checksec report
-        console.print(Panel(prot_analyzer.checksec_report(), title="Protections"))
-
-        # Print dangerous functions
-        if static_results.get("dangerous_calls"):
-            table = Table(title="Dangerous Function Calls")
-            table.add_column("Function", style="red")
-            table.add_column("Address", style="cyan")
-            table.add_column("Risk", style="yellow")
-
-            for call in static_results["dangerous_calls"][:10]:
-                table.add_row(
-                    call["function"],
-                    call["address"],
-                    call["risk"],
-                )
-
-            console.print(table)
-
-        # Print input sources
-        if static_results.get("input_sources"):
-            console.print("\n[bold]Input Sources:[/bold]")
-            for source in static_results["input_sources"]:
-                console.print(f"  - {source['function']} ({source['type']})")
-
-    # Save to output
-    Path(output).mkdir(parents=True, exist_ok=True)
-    output_file = Path(output) / f"{Path(binary).name}_analysis.json"
-
-    with open(output_file, "w") as f:
-        json.dump({
-            "binary": str(binary),
-            "arch": bin_obj.arch,
-            "bits": bin_obj.bits,
-            "protections": prots.to_dict(),
-            "analysis": static_results,
-        }, f, indent=2, default=str)
-
-    console.print(f"\n[green]Analysis saved to {output_file}[/green]")
+    """Alias for `pwn --analyze-only`. Kept for backward compatibility."""
+    ctx.invoke(pwn, binary=binary, libc=None, no_gadgets=True, json_output=json_output, analyze_only=True)
 
 
 @cli.command()
@@ -732,14 +660,21 @@ def libc_id(ctx, puts, printf, system, json_output):
 @click.option("-l", "--libc", type=click.Path(exists=True), help="Target libc for ret2libc/one_gadget")
 @click.option("--no-gadgets", is_flag=True, help="Skip gadget enumeration (faster)")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.option(
+    "--analyze-only", is_flag=True,
+    help="Protections and dangerous functions only — skip gadgets and strategy suggestions",
+)
 @click.pass_context
-def pwn(ctx, binary, libc, no_gadgets, json_output):
+def pwn(ctx, binary, libc, no_gadgets, json_output, analyze_only):
     """
     CTF-focused analysis with exploit strategy suggestions.
 
-    This command performs comprehensive binary analysis and suggests
-    the best exploitation strategies based on protections and available
-    gadgets. Designed for CTF challenges.
+    Performs comprehensive binary analysis: protections, dangerous functions,
+    input sources, ROP gadgets, and ranked exploitation strategies. Designed
+    for CTF challenges.
+
+    Use --analyze-only for a quick recon pass (protections + dangerous
+    functions + input sources) without gadget enumeration or strategy ranking.
     """
     _reset_console()
     if json_output:
@@ -748,31 +683,24 @@ def pwn(ctx, binary, libc, no_gadgets, json_output):
     from supwngo.core.binary import Binary
     from supwngo.analysis.protections import ProtectionAnalyzer
     from supwngo.analysis.static import StaticAnalyzer
-    from supwngo.exploit.strategy import StrategySuggester, suggest_strategies
-    from supwngo.exploit.rop.gadgets import GadgetFinder
 
     console.print(f"\n[bold cyan]{'=' * 60}[/bold cyan]")
     console.print(f"[bold cyan]  SupwnGo CTF Analysis: {Path(binary).name}[/bold cyan]")
     console.print(f"[bold cyan]{'=' * 60}[/bold cyan]\n")
 
-    # Load binary
     with console.status("Loading binary..."):
         bin_obj = Binary.load(binary)
 
-    # Protection analysis
     with console.status("Analyzing protections..."):
         prot_analyzer = ProtectionAnalyzer(bin_obj)
         prots = prot_analyzer.analyze()
 
-    # Print checksec
     console.print(Panel(prot_analyzer.checksec_report(), title="[bold]Security Features[/bold]"))
 
-    # Static analysis
     with console.status("Running static analysis..."):
         static = StaticAnalyzer(bin_obj)
         static_results = static.analyze()
 
-    # Print dangerous functions
     if static_results.get("dangerous_calls"):
         table = Table(title="[bold red]Dangerous Functions[/bold red]")
         table.add_column("Function", style="red")
@@ -784,16 +712,33 @@ def pwn(ctx, binary, libc, no_gadgets, json_output):
 
         console.print(table)
 
-    # Gadget analysis (optional but recommended)
+    if static_results.get("input_sources"):
+        console.print("\n[bold]Input Sources:[/bold]")
+        for source in static_results["input_sources"]:
+            console.print(f"  - {source['function']} ({source['type']})")
+
+    if analyze_only:
+        if json_output:
+            _emit_json({
+                "binary": str(binary),
+                "arch": bin_obj.arch,
+                "bits": bin_obj.bits,
+                "protections": prots.to_dict(),
+                "dangerous_functions": static_results.get("dangerous_calls", []),
+                "input_sources": static_results.get("input_sources", []),
+            })
+        return
+
     gadget_finder = None
     if not no_gadgets:
+        from supwngo.exploit.rop.gadgets import GadgetFinder
+
         with console.status("Enumerating ROP gadgets..."):
             gadget_finder = GadgetFinder(bin_obj)
             gadgets = gadget_finder.find_gadgets()
 
         console.print(f"\n[cyan]Found {len(gadgets)} gadgets[/cyan]")
 
-        # Show useful gadgets
         useful_table = Table(title="[bold]Key Gadgets[/bold]")
         useful_table.add_column("Type", style="cyan")
         useful_table.add_column("Address", style="green")
@@ -817,7 +762,6 @@ def pwn(ctx, binary, libc, no_gadgets, json_output):
 
         console.print(useful_table)
 
-    # One-gadget analysis (if libc provided)
     if libc:
         with console.status("Finding one-gadgets in libc..."):
             from supwngo.analysis.one_gadget import OneGadgetFinder
@@ -837,10 +781,11 @@ def pwn(ctx, binary, libc, no_gadgets, json_output):
 
             console.print(og_table)
 
-    # Strategy suggestion
     console.print(f"\n[bold yellow]{'=' * 60}[/bold yellow]")
     console.print("[bold yellow]  EXPLOIT STRATEGY SUGGESTIONS[/bold yellow]")
     console.print(f"[bold yellow]{'=' * 60}[/bold yellow]\n")
+
+    from supwngo.exploit.strategy import StrategySuggester
 
     with console.status("Analyzing exploit strategies..."):
         suggester = StrategySuggester(bin_obj, gadget_finder)
@@ -849,22 +794,19 @@ def pwn(ctx, binary, libc, no_gadgets, json_output):
     if json_output:
         _emit_json(report.to_dict())
     else:
-        # Print warnings
         if report.warnings:
-            console.print("[bold red]⚠️  Warnings:[/bold red]")
+            console.print("[bold red]Warnings:[/bold red]")
             for w in report.warnings:
                 console.print(f"    [red]! {w}[/red]")
             console.print()
 
-        # Print recommended strategy
         if report.recommended:
             console.print(Panel(
                 str(report.recommended),
-                title="[bold green]🎯 RECOMMENDED APPROACH[/bold green]",
+                title="[bold green]RECOMMENDED APPROACH[/bold green]",
                 border_style="green"
             ))
 
-        # Print all strategies
         console.print("\n[bold]All Viable Strategies:[/bold]")
         for i, strat in enumerate(sorted(report.strategies, key=lambda s: (-s.confidence, s.priority))):
             if strat == report.recommended:
@@ -872,9 +814,8 @@ def pwn(ctx, binary, libc, no_gadgets, json_output):
             style = "dim" if i > 2 else ""
             console.print(f"\n[{style}]{strat}[/{style}]" if style else f"\n{strat}")
 
-        # Print notes
         if report.notes:
-            console.print("\n[bold cyan]📝 Notes:[/bold cyan]")
+            console.print("\n[bold cyan]Notes:[/bold cyan]")
             for note in report.notes:
                 console.print(f"    [cyan]- {note}[/cyan]")
 
