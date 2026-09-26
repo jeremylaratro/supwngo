@@ -1,0 +1,4 @@
+# compiled fixtures are built at test time, matching i3_candidate_provenance
+*
+!*.c
+!.gitignore
