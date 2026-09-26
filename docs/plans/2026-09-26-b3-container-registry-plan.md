@@ -183,3 +183,110 @@ most likely wrong:
    path useless?
 3. Does C0's sweep need bit depths other than 8, given that depth is load-bearing and
    the error text hides it?
+
+---
+
+# REVISION 1 — after peer review (NOT-APPROVED) and a decisive re-measurement
+
+Review: `docs/plans/2026-09-26-b3-plan-review-daybreak.md` (verdict NOT-APPROVED;
+2 Critical, 5 High, 3 Medium). Eight findings **accepted**, one **refuted by
+measurement**, one already corrected elsewhere. Revision 1 governs where it disagrees
+with the text above; the original is retained so corrections sit beside it.
+
+## R1.1 — Critical finding 1 is REFUTED by measurement
+
+The review's headline objection was that BMP trailer bytes may be *accepted but never
+read*, making T-C6 unsatisfiable and the whole BMP path pointless; it recommended
+embedding inside the 400-byte pixel array instead. **That was the right question and
+the wrong answer.** `measured`, 20 reps per case, 20×20/8bpp envelope:
+
+| trailer | crashes | return codes |
+|---|---|---|
+| 0 bytes | 0 / 20 | `[0]` |
+| 64 bytes | 0 / 20 | `[0]` |
+| 8192 bytes | **8 / 20** | `[-11, 0]` — **SIGSEGV** |
+
+The trailer is read and **overflows something**. Reachability is proven by crash, which
+is stronger evidence than the sentinel tracing the review proposed. The pixel-array
+recommendation is therefore not adopted — and separately, pixel *content* was measured
+to have **no** effect on output (`0xAA` vs `0x55` fills give byte-identical
+transcripts), so the pixel array is the *worse* carrier of the two.
+
+This also overturned a `measured` claim in this effort's own research doc, which said
+trailing bytes were ignored. Erratum:
+`docs/research/2026-09-26-snowscan-bmp-format-gate.md`. Two mistakes produced it —
+judging the run by stdout without ever reading the exit status, and taking one run as
+the answer for a nondeterministic crash whose segfault discards buffered output.
+
+**Two hard consequences for every gate in this sprint:**
+
+1. **No single-run observation is admissible.** A single run misses this crash ~60% of
+   the time. Every gate touching the target uses repetitions and reports the ratio.
+2. **The crash threshold is unmeasured and must not be guessed.** An early 4-rep bisect
+   suggested 64 bytes; 20 reps showed 0/20 there. C0 must sweep it properly.
+
+## R1.2 — Accepted findings and what changes
+
+| # | finding | change |
+|---|---|---|
+| 2 (Crit) | T-C6 asserted "loop reached", not "payload reached" — a random trailer would keep it green | **T-C6 rewritten** (R1.3). Reachability is now evidenced by a *reproducible crash ratio* attributable to the trailer, with a no-trailer negative control, not by the PASS transcript |
+| 3 (High) | M-8 measured parser *acceptance*, not payload *carriage*; two writers emitting valid empty containers with ignored trailers would score 2/2 | **M-8 rewritten** to require an independent **round trip**: BMP payload recovered from decoded pixel indices, WAV payload recovered via `readframes()`, each compared byte-for-byte |
+| 4 (High) | `finalize(buf)` works for PNG only under an unstated invariant | **Invariant now stated** (R1.4). The reviewer's analysis is adopted verbatim: it holds iff `wrap()` emits correct boundaries and `finalize()` only updates integrity fields derived from them |
+| 5 (High) | nothing guaranteed `finalize()` ran in production; unit tests could pass while shipped WAVs carried stale lengths | **Public API is one atomic `encode(payload) -> bytes`**; `wrap`/`finalize` become private stages. This was a real API defect, not a documentation gap |
+| 6 (High) | the WAV red-proof assumed `wave.open()` validates lengths strictly — it does not; a zero-length `data` chunk opens fine and reports zero frames | **T-C3 rewritten** to assert exact extracted frames, declared frame count, and both length fields, with wrong-but-present mutations in **both** directions (too small *and* too large), plus an odd-payload-length case since `data` size excludes the RIFF pad byte while the outer size includes it |
+| 7 (High) | C0 swept one dimension and called it "the accepted set", though 20×20/24bpp already proves depth matters | **C0 renamed** to *accepted 8bpp geometry slice*, the implementation is **locked to 8bpp**, and 20×20/24bpp is retained as a standing negative control. The two-dimensional characterization is explicitly not claimed |
+| 8 (Med) | `container=` on a non-file transport was undefined, and argv — not just stdin — is also not a file sink | **Raise `ValueError`** for a container on `SINK_STDIN` or `SINK_ARGV`, following the `build_argv()` precedent. Tested across all four transports: both file sinks accept, both non-file sinks reject |
+| 9 (Med) | "the per-row scan loop is the write primitive" was stated as fact | Already **downgraded to `inferred`** in the research erratum. The trailer evidence now points away from the scan loop, so this sprint makes no claim about where the vulnerable write lives |
+| 10 (Med) | T-C5 had no red-proof, violating this plan's own universal rule | **Red-proof added**: bypass wrapping inside `materialize()` only, and require T-C5 to fail against independently generated finalized bytes — not against a value obtained through the same bypassed path |
+
+## R1.3 — Revised reachability gate (replaces T-C6)
+
+| id | asserts | red-proof |
+|---|---|---|
+| T-C6′ | with a pipeline-generated wrapped payload, the target crashes (`-11`) in **≥1 of N** reps at the trailer size C0 establishes, **and** a byte-identical envelope with a 0-byte trailer crashes in **0 of N** reps | remove the trailer → the crash ratio must fall to 0/N. The paired control is what makes the crash attributable to the payload rather than to the target being generally flaky |
+| T-C7 | an **unwrapped** payload is rejected at the signature gate (`rc=255`) and never reaches the scan loop | wrap it → must be accepted, proving the gate discriminates on the envelope |
+
+Note what T-C6′ deliberately does **not** claim: not that the crash is controllable,
+not that RIP is reached, and not that the target is exploitable. It claims the payload
+reaches memory-unsafe code. Turning that into control is exploitation work downstream
+of this sprint.
+
+## R1.4 — The container interface, restated
+
+```
+name        -> "bmp"
+extension   -> ".bmp"
+capacity()  -> int | None
+encode(payload) -> bytes        # THE ONLY PUBLIC ENTRY POINT
+  _wrap(payload)  -> bytes      # private: emit structurally correct buffer,
+                                #          with correct chunk boundaries/lengths
+  _finalize(buf)  -> bytes      # private: recompute integrity fields DERIVED
+                                #          from those boundaries
+```
+
+**Stated invariant (was unstated, finding 4):** `_wrap()` must produce a structurally
+parseable buffer whose boundaries and lengths are already correct; `_finalize()` may
+only update integrity fields derived from those boundaries. Under this contract PNG
+needs no interface change — a whole-buffer finalizer can walk delimited chunks and
+recompute each CRC from `chunk_type + chunk_data`. **RIFF does not exercise this
+invariant**, so it remains `inferred` and a PNG spike is the only thing that would
+confirm it.
+
+## R1.5 — Revised metrics
+
+| metric | baseline | target | provenance |
+|---|---|---|---|
+| **M-5″** | trailer-attributable crash from a *pipeline-generated* payload: **0** (no pipeline payload passes the format gate at all) | crash in ≥1/N reps with a 0/N no-trailer control | `measured` |
+| **M-8′** | container formats whose payload is recovered **byte-for-byte by an independent parser**: **0** | **2** (BMP via decoded pixel indices, WAV via `readframes()`) | `measured` |
+| M-9 | targets moved FAIL→SUCCESS | **still not claimed** | — |
+
+M-8′'s round-trip requirement replaces "an independent parser opens the file", which
+the reviewer correctly showed a payload-blind writer would satisfy. That is the same
+defect class as a fixture that cannot fail, one level up: a metric that cannot
+distinguish success from a convincing shell.
+
+## R1.6 — Status
+
+**Not approved for implementation yet.** Revision 1 answers the review on paper; per
+the standing rule the revised plan goes back for one more round before code, and the
+review budget for this sprint is 3 rounds total.
