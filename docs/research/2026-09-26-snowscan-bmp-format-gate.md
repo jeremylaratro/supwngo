@@ -28,7 +28,7 @@ rows padded to a 4-byte multiple.
 | case | rc | target output |
 |---|---|---|
 | **20×20, 8bpp** | **0** | `[01] : PASS` … `[20] : PASS` — **fully accepted** |
-| 20×20, 8bpp, 8 KB appended *after* the pixel array | 0 | identical full PASS run — trailing bytes ignored |
+| ~~20×20, 8bpp, 8 KB appended *after* the pixel array~~ | ~~0~~ | ~~identical full PASS run — trailing bytes ignored~~ **← WRONG, see ERRATUM below** |
 | 20×20, 24bpp | 255 | `Invalid bitmap size. The acceptaple resolution range is 20x20 to 30x30.` |
 | 25×25, 24bpp | 255 | same |
 | 30×30, 24bpp | 255 | same |
@@ -78,3 +78,57 @@ retrofitted onto this sprint's baseline.
   above; every accepted input completed normally).
 - Whether the accepted dimension set is exactly `{20×20}` or a larger set at
   8bpp. **Do not hardcode `20×20` in the synthesizer until this is swept.**
+
+---
+
+## ERRATUM (2026-09-26, same day) — "trailing bytes ignored" is FALSE
+
+The struck row above, and conclusion 3's claim that *"the naive 'append the payload'
+overflow is closed at this layer; the exploit surface is inside the per-row scan, not
+the file tail"*, are **both wrong**. They were produced by observing **stdout only**
+and never checking the process's own exit status.
+
+**Re-measured** with the target's `returncode` captured directly (not a pipeline's
+status), 20 repetitions per case, 20×20/8bpp envelope:
+
+| trailer after the pixel array | crashes | distinct return codes |
+|---|---|---|
+| 0 bytes | **0 / 20** | `[0]` |
+| 64 bytes | 0 / 20 | `[0]` |
+| **8192 bytes** | **8 / 20** | `[-11, 0]` — **SIGSEGV** |
+
+**The trailer is read, and it overflows something.** A `-11`/`139` never occurs
+without a trailer and occurs in 40% of runs with an 8 KB one, so the trailer is
+reachable and memory-unsafe — the opposite of "ignored". The file tail is therefore a
+**live exploit surface**, not a closed one.
+
+### Why the original measurement said otherwise
+
+Two compounding mistakes, both worth naming because they are reusable failure modes:
+
+1. **Exit status was never observed.** The run was judged by its printed output, and a
+   crash *after* the last `PASS` line looks identical to a clean finish on stdout.
+2. **The crash is nondeterministic, and a single run was taken as the answer.** With
+   stdio buffering, a segfault usually discards the buffered output entirely, so the
+   same input yields either the full 239-byte PASS transcript or **nothing at all**
+   depending on the run. A one-shot observation of this target can produce three
+   different-looking results from one input.
+
+### Consequences
+
+- **B-3's BMP path is more viable than planned, not less.** Payload belongs in the
+  trailer, whose reachability is now proven by crash. An earlier peer review argued
+  the trailer might be "accepted but never read" and recommended embedding inside the
+  400-byte pixel array instead; that recommendation is **superseded by measurement** —
+  and separately, pixel *content* was measured NOT to affect output at all
+  (`0xAA`-filled and `0x55`-filled 20×20 images produce byte-identical transcripts).
+- **Any B-3 gate must use repetitions, never a single run.** A single run has a ~60%
+  chance of missing this crash entirely.
+- **The crash threshold is NOT established.** An early 4-rep bisect appeared to show
+  crashes from 64 bytes upward; that did not reproduce at 20 reps (0/20 at 64 bytes).
+  The threshold and the offset of the overwritten object remain **unmeasured**, and no
+  number should be relied on until they are swept with adequate reps.
+- **Conclusion 4's "the scan loop is the exploit surface" is downgraded from
+  `measured` to `inferred`.** One `PASS` line per row proves a row loop runs; it does
+  not prove that loop performs the vulnerable write, and the trailer evidence now
+  points elsewhere.
