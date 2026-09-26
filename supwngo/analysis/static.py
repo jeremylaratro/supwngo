@@ -73,7 +73,6 @@ INPUT_SOURCES = {
     "recvfrom": "network",
     "recvmsg": "network",
     "getenv": "environment",
-    "argv": "command line",
 }
 
 
@@ -299,6 +298,13 @@ class StaticAnalyzer:
             })
 
         # Check for file operations
+        # NOTE: this is NOT a vector oracle (B-2,
+        # docs/plans/2026-09-26-legacy-to-canonical-gap-analysis.md item B-2).
+        # `read` is the stdin primitive, so every stdin-only target also has
+        # `read` in its PLT and gets labeled "file input" here regardless of
+        # where its bytes actually come from. Use
+        # `supwngo/analysis/vector_probe.py`'s `classify_input_vector()` for
+        # actual (advisory) vector classification.
         file_funcs = ["fopen", "open", "fread", "read"]
         has_file_io = any(f in self.binary.plt for f in file_funcs)
         if has_file_io:

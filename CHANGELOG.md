@@ -102,6 +102,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   store `payload` without it. Foundation layer only — no pipeline call site
   consumes `DeliverySpec` yet (see
   `docs/plans/2026-09-26-sprint2prime-input-vector-plan.md`, REVISION 3).
+- `supwngo/analysis/vector_probe.py` (new): `classify_input_vector()`, an
+  **advisory-only** 4-stage behavioral probe that reports whether a
+  target's exploitable input looks like it arrives via stdin or a file
+  named in argv. Never authoritative and never touches pipeline state — a
+  `"file-candidate"` verdict is a report, not a decision; only an explicit
+  future operator option may commit a `DeliverySpec` to a file sink. This
+  design followed two rounds of peer review rejecting an authoritative
+  probe over a real, reproducible false-positive fixture. The dead,
+  unreachable `"argv"` entry in `analysis/static.py`'s `INPUT_SOURCES` is
+  removed, and its `has_file_io` check is commented as not being a vector
+  oracle (`read` is the stdin primitive, so it labels every stdin target
+  "file input" too) — use this new probe instead.
 
 ### Changed
 - `analyze` command is now a thin alias for `pwn --analyze-only`. All analysis
