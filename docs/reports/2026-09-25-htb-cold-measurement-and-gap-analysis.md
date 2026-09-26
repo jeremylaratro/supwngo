@@ -419,12 +419,28 @@ distinguish success from failure.
 - [ ] Remaining naming collisions (HeapLayout, base/advanced detector pairs) —
   lower priority, no runtime conflicts
 
-### Sprint 8 — Re-measurement + documentation
+### Sprint 10 — Hardcoded offset cleanup + dead code removal — COMPLETE (PR #13)
+
+**Goal:** Remove hardcoded libc offsets from heap exploit code; clean dead verify_shell
+template.
+
+- [x] `TcacheExploiter.hook_overwrite_targets()` now accepts optional `libc` ELF
+  parameter; resolves `__free_hook`/`__malloc_hook`/etc. from libc symbols when
+  available, falls back to hardcoded Ubuntu 18.04 offsets otherwise
+- [x] Hardcoded offsets extracted to `_FALLBACK_OFFSETS` class variable with
+  provenance annotation (Ubuntu 18.04 glibc 2.27)
+- [x] Dead `get_shell_verification_code()` removed from `auto.py` — never called;
+  canonical template is `create_verified_exploit_script()` in `verification.py`
+- [ ] `house_of_modern.py` IO jumps offsets — same pattern, lower priority
+  (unreachable from pipeline)
+
+### Sprint 8 — Re-measurement + documentation — BLOCKED
 
 **Goal:** Re-run the HTB cold measurement with all fixes applied. Update gap analysis
 with new results.
 
-- [ ] Re-run autopwn against all 6 applicable HTB targets
+- [ ] Re-run autopwn against all 6 applicable HTB targets (BLOCKED: HTB archives
+  no longer on system)
 - [ ] Compare pre/post results
 - [ ] Update this document with post-fix measurements
 - [ ] Tag `v2.1.0` with the improvements

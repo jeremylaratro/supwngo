@@ -53,12 +53,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hardcoded `libc_version="2.31"` defaults across 9 callsites (heap techniques,
   FSOP, off-by-one, tester) now reference `DEFAULT_LIBC_VERSION` from
   `supwngo.utils.config`. The value is unchanged but lives in one place.
+- `TcacheExploiter.hook_overwrite_targets()` now accepts an optional `libc`
+  parameter (pwntools ELF object) and resolves symbols from it instead of
+  relying solely on hardcoded Ubuntu 18.04 offsets. Hardcoded offsets remain
+  as fallbacks when no libc ELF is provided.
 
 ### Removed
 - Dead packages: `ai`, `api`, `containers`, `distributed`, `embedded`,
   `macos`, `windows` (12,136 lines, 27 files). All 7 packages had zero
   import references from any live code path. The associated test class
   `TestLLMAnalyzer` was also removed.
+- Dead `get_shell_verification_code()` function from `exploit/auto.py`
+  (never called; the live template is `create_verified_exploit_script()`
+  in `verification.py`).
 
 ### Fixed
 - `--json` output on all 20 CLI commands no longer mixes Rich console text
