@@ -2727,6 +2727,8 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output):
     if json_output:
         _json_mode()
 
+    import signal
+
     from supwngo.core.binary import Binary
     from supwngo.exploit.pipeline import CanonicalAutopwnEngine
 
@@ -2734,6 +2736,13 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output):
 
     with console.status("Loading binary..."):
         bin_obj = Binary.load(binary)
+
+    _timeout_interrupted = False
+
+    def _sigterm_handler(signum, frame):
+        raise SystemExit(128 + signum)
+
+    prev_handler = signal.signal(signal.SIGTERM, _sigterm_handler)
 
     with console.status("Running auto-exploitation..."):
         engine = CanonicalAutopwnEngine(
@@ -2744,12 +2753,28 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output):
         if offset:
             engine.context.offset = offset
             console.print(f"[cyan]Using provided offset: {offset}[/cyan]")
-        engine.run()
+        try:
+            engine.run()
+        except (KeyboardInterrupt, SystemExit):
+            _timeout_interrupted = True
+            engine.exploit_template = engine.exploit_template or ""
+            try:
+                from supwngo.exploit.pipeline.templates import generate_universal_template
+                engine.exploit_template = generate_universal_template(engine.context)
+            except Exception:
+                pass
+        finally:
+            signal.signal(signal.SIGTERM, prev_handler)
 
     if json_output:
+        try:
+            handoff = engine.handoff_report.to_dict()
+        except Exception:
+            handoff = {"error": "interrupted before handoff report could be built"}
         result = {
             "binary": str(binary),
             "success": engine.successful,
+            "interrupted": _timeout_interrupted,
             "verified": engine.context.verification_level.name if engine.context.verification_level else "NONE",
             "flag": engine.context.captured_flag,
             "technique": engine.technique_used,
@@ -2760,31 +2785,17 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output):
                 "has_alarm": engine.context.profile_has_alarm,
                 "leaked_addresses": {k: hex(v) for k, v in engine.context.leaks.items()},
             },
-            # I2: wall-clock seconds spent in each profiling-prologue stage
-            # (`CanonicalAutopwnEngine._run_prologue()`), which precedes the
-            # first technique attempt - `None` until `run()`'s prologue
-            # executes, and NEVER coerced to 0 (that would collapse "never
-            # ran" into "ran in zero seconds", the exact defect this field
-            # exists to let a caller detect).
             "prologue": {
                 "static_analysis_duration_sec": engine.static_analysis_duration_sec,
                 "dynamic_profile_duration_sec": engine.dynamic_profile_duration_sec,
                 "leak_acquisition_duration_sec": engine.leak_acquisition_duration_sec,
             },
-            # The pwntools load state (commit 3453f09) - lets a caller tell
-            # "pwntools failed to load this ELF" apart from "this binary
-            # genuinely has no symbols". Enum serialised by `.value` so the
-            # payload stays JSON-clean without relying on `default=str`.
             "binary_load": {
                 "pwntools_load_state": bin_obj.pwntools_load_state.value,
                 "pwntools_load_error": bin_obj.pwntools_load_error,
                 "protections_measured": bin_obj.protections_measured,
             },
-            # Structured hand-off (Phase 4 of the effectiveness/usability
-            # plan) - always present for a stable schema, but only
-            # populated beyond `attempts_detail` when `success` is False.
-            # See supwngo/exploit/pipeline/handoff.py for the frozen shape.
-            "handoff": engine.handoff_report.to_dict(),
+            "handoff": handoff,
         }
         _emit_json(result)
     else:
@@ -3206,23 +3217,47 @@ def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, 
     with console.status("Loading binary..."):
         bin_obj = Binary.load(binary)
 
+    import signal as _sig
+
+    _timeout_interrupted = False
+
+    def _solve_sigterm(signum, frame):
+        raise SystemExit(128 + signum)
+
+    _prev = _sig.signal(_sig.SIGTERM, _solve_sigterm)
+
     with console.status("Running canonical auto-exploitation pipeline..."):
         engine = CanonicalAutopwnEngine(bin_obj, timeout=timeout, libc_path=libc)
-        engine.run()
+        try:
+            engine.run()
+        except (KeyboardInterrupt, SystemExit):
+            _timeout_interrupted = True
+            try:
+                from supwngo.exploit.pipeline.templates import generate_universal_template
+                engine.exploit_template = generate_universal_template(engine.context)
+            except Exception:
+                engine.exploit_template = engine.exploit_template or ""
+        finally:
+            _sig.signal(_sig.SIGTERM, _prev)
 
-    if interactive and not engine.successful:
+    if interactive and not engine.successful and not _timeout_interrupted:
         engine = _guided_fallback(engine, binary, libc, timeout)
 
     if json_output:
+        try:
+            handoff = engine.handoff_report.to_dict()
+        except Exception:
+            handoff = {"error": "interrupted before handoff report could be built"}
         result = {
             "binary": str(binary),
             "success": engine.successful,
+            "interrupted": _timeout_interrupted,
             "verified": engine.context.verification_level.name if engine.context.verification_level else "NONE",
             "flag": engine.context.captured_flag,
             "technique": engine.technique_used,
             "output_path": str(output_path),
             "attempts": [a.to_dict() for a in engine.context.attempts],
-            "handoff": engine.handoff_report.to_dict(),
+            "handoff": handoff,
         }
         artifact = engine.exploit_script if engine.successful else (engine.exploit_script or engine.exploit_template)
         _write_solve_artifact(_fill_remote_placeholders(artifact, remote_host, remote_port), output_path)

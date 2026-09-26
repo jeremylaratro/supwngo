@@ -52,7 +52,7 @@ supwngo report ./challenge -o findings.sarif
 
 ### Exploit Generation
 - Automatic ROP chain building (ret2libc, ret2csu, SROP, ret2dlresolve)
-- Heap exploitation techniques (tcache poisoning, fastbin dup, House of *)
+- Heap exploitation techniques (tcache poisoning, fastbin dup)
 - Shellcode generation with encoder support
 - Protection bypass strategies
 

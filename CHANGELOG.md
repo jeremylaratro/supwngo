@@ -59,6 +59,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as fallbacks when no libc ELF is provided.
 
 ### Removed
+- Duplicate `cyclic`/`cyclic_find` from `utils/helpers.py`. All callers now use
+  the authoritative de Bruijn implementation in `exploit/offset_finder.py` (which
+  delegates to pwntools when available). The removed helpers version was a naive
+  homebrew pattern that was not a true de Bruijn sequence.
 - Dead packages: `ai`, `api`, `containers`, `distributed`, `embedded`,
   `macos`, `windows` (12,136 lines, 27 files). All 7 packages had zero
   import references from any live code path. The associated test class
@@ -68,6 +72,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in `verification.py`).
 
 ### Fixed
+- `autopwn` and `solve` commands now emit partial JSON output when killed by
+  wall-clock timeout (SIGTERM/SIGINT) instead of producing zero bytes. A SIGTERM
+  handler converts the signal to SystemExit so the output path executes; the
+  JSON payload includes `"interrupted": true` and whatever attempts completed
+  before the kill. Previously timeout-killed runs (rc=124) produced no output.
+- README no longer claims "House of *" heap techniques under Exploit Generation.
+  The actual pipeline-reachable heap techniques are tcache poisoning and fastbin dup;
+  house-of-* variants exist in the heap library but are not wired to the pipeline.
+- Autopwn pipeline now logs stage progress (static analysis, dynamic profiling, leak
+  acquisition, strategy selection, and per-technique attempt/skip/result) at INFO
+  level. Previously 900s+ runs produced only pwntools "Starting local process" lines
+  with no indication of which technique was being tried or what stage the pipeline
+  was in.
 - All 30 CLI commands now support `--json` output. Previously 11 commands
   lacked it: fuzz, exploit, rop, symbolic, libc-id, checksec, cyclic,
   cyclic-find, template, version, decompile.

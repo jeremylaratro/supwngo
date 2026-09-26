@@ -450,6 +450,52 @@ with new results.
 - [ ] Update this document with post-fix measurements
 - [ ] Tag `v2.1.0` with the improvements
 
+### Sprint 11 — Fast wins (README + progress logging) — COMPLETE
+
+**Goal:** Fix README overclaims and add operator-visible progress logging.
+
+- [x] Remove "House of *" from README Exploit Generation claims (line 55) — only
+  tcache poisoning and fastbin dup are pipeline-reachable
+- [x] Add `logger.info` calls to orchestrator prologue stages (static analysis,
+  dynamic profiling, leak acquisition) with timing
+- [x] Add `logger.info` before and after each technique attempt in
+  `_attempt_techniques()` with outcome and duration
+- [x] Log strategy selection with technique count and order
+
+### Sprint 12 — Cyclic dedup — COMPLETE
+
+**Goal:** Eliminate duplicate `cyclic`/`cyclic_find` in `utils/helpers.py`; redirect
+all callers to the authoritative `exploit/offset_finder.py` implementation.
+
+- [x] Redirect `analysis/dynamic.py`, `vulns/stack_bof.py`, `exploit/primitives.py`
+  imports to `exploit/offset_finder.py`
+- [x] Remove `cyclic`/`cyclic_find` from `utils/helpers.py`
+- [x] Update tests (`test_core.py`) to use `offset_finder` version
+
+### Sprint 13 — Timeout fallback output — COMPLETE
+
+**Goal:** Bug 2.2 — when autopwn is killed by wall-clock timeout (rc=124), emit
+partial JSON output instead of zero bytes.
+
+- [x] Register SIGTERM handler in `autopwn` and `solve` commands to convert signal
+  to SystemExit, allowing output path to execute
+- [x] Wrap `engine.run()` in try/except for KeyboardInterrupt/SystemExit
+- [x] Generate universal template on interrupt for partial output
+- [x] JSON output includes `"interrupted": true` field; handoff report built
+  with error fallback if interrupted too early
+
+### Remaining backlog (sorted by speed × complexity)
+
+| Item | Bug/Gap | Complexity | Status |
+| --- | --- | --- | --- |
+| Diagnostic fields empty on failure | 2.5 | Medium | Open |
+| Dockerfile + container docs | Sprint 7 | Medium | Partial |
+| house_of_modern IO offsets | 4.9 | Low (unreachable) | Deferred |
+| Heap pipeline integration | 3.3 | High | Open |
+| auto.py / enhanced_auto.py base | 4.8 | High | Open |
+| Test coverage for ~15k lines | 4.10 | Very High | Open |
+| HTB re-measurement | Sprint 8 | Medium | BLOCKED |
+
 ---
 
 ## 6. HTB challenge writeup summary (for reference)
