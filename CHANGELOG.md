@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Win function detection expanded: `WinFunctionFinder` now also detects functions
   that open/read files (potential flag-reading functions) and includes additional
   name patterns (`fill_ammo`, `open_flag`, `show_flag`, `reward`, etc.).
+- Shipped libc auto-detection: the autopwn pipeline now detects libc shipped
+  alongside the target binary by inspecting the ELF interpreter path, RUNPATH,
+  RPATH, and common directory layouts (`glibc/`, `lib/`). When detected, the
+  libc is set on the ExploitContext automatically and `LD_LIBRARY_PATH` is
+  threaded through all process spawning (verifier, executors, script runner).
+  This enables solving challenges that ship their own glibc (e.g. HTB targets
+  with `interpreter ./glibc/ld-linux-x86-64.so.2`).
+- `Binary.detect_shipped_libc()` and `Binary.libc_env()` methods for finding
+  and configuring a shipped libc's environment.
+- ELF interpreter, RUNPATH, and RPATH are now parsed and stored on the
+  `Binary` object during loading.
 - Executor skip reasons: every technique executor now reports *why* it declined a
   target instead of the generic "not applicable to this target". The specific
   precondition that failed (e.g. "PIE enabled", "no output function in PLT+GOT",
