@@ -736,3 +736,65 @@ Test obligation: add to T10 a case where a deliberately malformed spec reaches t
 gate, asserting (a) the run completes, (b) that technique's `failure_reason` names the
 delivery problem, and (c) the other techniques still report their own outcomes. Prove
 it RED by letting the exception propagate.
+
+---
+
+## Phase 7 / Phase 8 — foundation layer (S1, S2, S7)
+
+### Phase 7(a) — nothing that worked before is broken
+
+`measured`, run `20260926-211443Z`:
+
+| gate | baseline (pre-change, `main` @ `311ff25`, run `20260926-164613Z`) | after | Δ |
+|---|---|---|---|
+| benchmark, **compared per target** | 13/13 eligible SUCCESS, each 5/5 reps; 2 VOID | 13/13 eligible SUCCESS, each 5/5 reps; 2 VOID | **none** |
+| full pytest suite | — | **1174 passed, 14 skipped, 14 deselected, 0 failed** | — |
+
+The 2 VOID targets are unchanged and remain **corpus faults, not tool faults**:
+`11_heap_uaf_leak` (`corpus_missing_liveness_gate`) and `13_off_by_one`
+(`corpus_trivially_solvable`). They must not be "fixed" into passes.
+
+Two process notes, both recorded because they affected the evidence:
+
+- The earlier regression command's `--deselect` for the known `solve_command`
+  failure **silently never matched** — the node ID omitted the `TestSolveEndToEnd::`
+  class segment, so only 13 items were deselected and the test ran every time. A
+  filter that cannot fail is the same defect class as a test that cannot fail. The
+  correct ID is
+  `tests/test_solve_command.py::TestSolveEndToEnd::test_guided_fallback_resumes_to_success_with_supplied_offset`;
+  14 items are now deselected and the suite is clean.
+- That failure was confirmed **pre-existing** by stashing all working changes and
+  re-running it at `HEAD` — it fails identically (90 s subprocess timeout in the
+  `solve` CLI). It is not caused by this sprint.
+
+### Phase 8 — material benefit, and what is NOT claimed
+
+**No target moved from FAIL to SUCCESS, and none could have.** `measured` — match
+identity: `DeliverySpec` and `classify_input_vector|vector_probe` across all `*.py`
+excluding `tests/` and each symbol's own defining file → **zero production
+consumers**; every non-test hit is a docstring or comment mention. The foundation
+layer is unwired by design (S1/S2/S7 only). The pre-registered target metrics M-4
+through M-7 belong to the wiring layer and are **not** claimed here.
+
+What is claimed, against the same harness:
+
+| # | metric | baseline | after | provenance |
+|---|---|---|---|---|
+| F-1 | probe false positives among purpose-built adversarial fixtures | 2 of 3 non-sink fixtures misclassified `file-candidate` | **1 of 4** (`neg_argv_echo_no_open` fixed by the single-path change; `neg_fast_cfg_stdin_payload` and `neg_slow_config_stdin_payload` remain, both pinned) | `measured` |
+| F-2 | genuine file sinks still detected | 3/3 | **3/3** — no regression from the fix | `measured` |
+| F-3 | `build_argv()` paths that silently drop or corrupt a payload | 5 | **0** (all raise `ValueError`) | `measured` |
+| F-4 | gates in the input-vector suites able to pass vacuously | 4 (set-equality-by-omission, expectation/fixture parity, name-blocklist signature gate, tautological pair) | **0** | `measured` |
+| F-5 | mislabelled failure causes in probe evidence | 2 (`OSError`→`"timeout"` in stage 3; timeout→`"launch_error"` in stage 0) | **0** | `measured` |
+
+**Honest characterization of that benefit.** F-1 is a capability improvement. F-2 is a
+non-regression. F-3, F-4 and F-5 are **correctness and trustworthiness-of-measurement
+improvements, not capability improvements** — they are explicitly the non-metric
+ground the methodology allows for keeping work that does not move the headline number.
+They matter here for a specific reason: this sprint produced three separate
+false claims that survived because a gate could not fail, so the value of removing
+that possibility is not abstract.
+
+**The claim this sprint must not make** is that the transport model works end to end.
+It is a contract plus an advisory probe, both proven in isolation. Whether a
+file-vector target can actually be solved is decided by the wiring layer, and remains
+unproven until M-4 is measured there.
