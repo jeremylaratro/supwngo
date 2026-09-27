@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `container_file_rop` technique executor
+  (`supwngo/exploit/pipeline/executors/container_file_techniques.py`): reaches a
+  target class the stdin-oriented executors structurally cannot — the payload
+  arrives as a **file whose path is passed in argv**, the file must pass a format
+  check before any byte of it is read, and the overflow comes from a **buffer
+  sized from one parsed metadata field but filled from an unrelated length**
+  (typically "until EOF"), with nothing comparing the two. It emits a standalone
+  pwntools script that builds the container envelope, then *searches* the small
+  parameter space the bug leaves open — the gated extension, the payload index
+  landing on the fill loop's own buffer-base local, and the low byte written
+  there. Writing that local shifts every later write forward and makes the loop
+  skip the bytes in between, which is what leaves the `FILE*`, the loop index and
+  the header pointer intact; a `ret` sled absorbs the residual stack-ASLR
+  uncertainty, so an 8-aligned guess suffices. Measured: solves
+  `snow_scan` (HTB) unaided to `SHELL_ACCESS` — previously `NOT_SOLVED` by every
+  technique in the registry. Also allowlisted in
+  `orchestrator.FILE_DELIVERY_ALLOWLIST`, on the distinct ground that it never
+  consults the resolved delivery spec (a file path in argv *is* the technique),
+  so it cannot fall through to the wrong channel.
 - `benchmark/controls/` — positive controls for `scripts/htb_rescore.py`, with
   `flagfile_win`: `benchmark/corpus/15_win_function` with its flag read from
   `./flag.txt` at runtime instead of a compiled-in constant. Every corpus target
