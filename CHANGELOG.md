@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `eintr_accumulator_rop` technique executor
+  (`supwngo/exploit/pipeline/executors/signal_underflow_techniques.py`): defeats a
+  stack canary without leaking it, on the bug class where an accumulate-until-
+  complete read loop (`n += read(fd, buf + n, want - n)`) keeps `n` signed while
+  the program installs a handler **without** `SA_RESTART`. Each signal delivered
+  during the blocking read makes it return -1, so the write cursor walks
+  backwards below `buf` — and `-fstack-protector`'s frame reordering puts arrays
+  highest, so what lies below `buf` is the loop's own cursor and target count.
+  One 8-byte write reprograms the loop to run forwards from the saved return
+  address, which is *above* the canary, so the canary is never touched and the
+  epilogue's check passes. Parameters are derived from the image, not hardcoded:
+  frame offsets from the accumulate loop's own disassembly (anchored on the
+  `cdqe` that sign-extends the cursor — the defect itself), the command
+  vocabulary from the program's own help strings, and `main` from the entry stub.
+  Measured: solves `ancient_interface` (HTB) unaided to `SHELL_ACCESS` in ~10s,
+  where the engine previously TIMED OUT at 300s on all three reps. Listed first
+  in `FIRST_TECHNIQUES`: its gate is the narrowest in the registry, and targets
+  with this bug have a read loop that cannot terminate on EOF, so any
+  byte-pushing technique tried ahead of it hangs until the budget is gone.
 - `container_file_rop` technique executor
   (`supwngo/exploit/pipeline/executors/container_file_techniques.py`): reaches a
   target class the stdin-oriented executors structurally cannot — the payload
