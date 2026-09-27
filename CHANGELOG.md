@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `srop_symtab_pivot` technique executor
+  (`supwngo/exploit/pipeline/executors/srop_nowrite_techniques.py`): SROP against
+  an image with **no writable segment at all** — two LOAD segments (`R`, `R E`),
+  no imports, no leak — where the existing `srop` executor has nowhere to stage a
+  frame. Two observations make it solvable. `rax = 15` comes free from any syscall
+  wrapper that returns a byte count (`write(1, x, 15)` returns 15, and the
+  wrapper's own `ret` is the jump to the bare `syscall`); the frame's `uc_flags`
+  and `&uc` qwords are ignored by the kernel, so they double as that wrapper's
+  stack-passed arguments. And for the harder problem — what `[rsp]` the
+  post-sigreturn `ret` reads, with nothing writable to have prepared — a PT_LOAD
+  is mapped a page at a time, so file bytes past `p_filesz` are mapped too, and in
+  a small static binary that tail is the **symbol table**. Its `st_value` fields
+  are qwords holding the binary's own function addresses at fixed known
+  locations, so the frame runs `mprotect(<image>, RWX)` with `rsp` pointed at one
+  of them: the `ret` reads a function address out of the symbol table and
+  re-enters the overflowing function, which now has its stack inside the page it
+  just made writable. Pivot candidates and the overflow offset are searched, not
+  assumed. Measured: solves `sick_rop` (HTB) unaided to `SHELL_ACCESS`
+  (`offset=40, pivot=0x4010d8`, 37 candidates, ~11s), previously `NOT_SOLVED`.
 - `eintr_accumulator_rop` technique executor
   (`supwngo/exploit/pipeline/executors/signal_underflow_techniques.py`): defeats a
   stack canary without leaking it, on the bug class where an accumulate-until-
