@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Ingress-variation benchmark corpus (`benchmark/corpus_vectors/`, manifest
+  `benchmark/corpus_vectors.yaml`): eight targets that hold the vulnerability
+  constant — a struct pinning an overwrite gate at offset 64 — and vary only how
+  the payload reaches the process. Covers stdin, `fopen`/`fread` on `argv[1]`,
+  raw `open(2)`/`read(2)`, a `-f FILE` flag, a path embedded inside one token
+  (`--input=FILE`), and the payload delivered as an argv token, plus a negative
+  control that accepts a path and never opens it paired with a positive control
+  that differs only by the two lines that read it. Measures that a declared
+  transport delivers bytes the target consumes; it does *not* measure whether
+  the payload is correct as opposed to merely accepted.
+- Optional per-target `cli_args:` key in benchmark manifests, so a corpus can
+  declare the delivery flags its targets need. Defaults to empty, leaving runs
+  of `corpus.yaml` and `corpus_r2.yaml` byte-identical to before the key
+  existed — asserted by `tests/test_bench_cli_args.py`, not assumed, because the
+  M-1a baseline is only comparable if that equality holds.
+- `tests/test_bench_cli_args.py`: validates every manifest-declared delivery
+  vector through a real `DeliverySpec.build_argv()` call before any benchmark
+  trusts it, so an invalid row fails as a configuration error instead of being
+  misread as a transport failure. Includes red-proofs that the validation can
+  fail.
 - Dockerfile and `.dockerignore` for containerized usage. Based on
   `python:3.11-slim-bookworm` with GDB, ltrace, strace, patchelf, and libc6-dbg.
   Build with `docker build -t supwngo .` and run with `docker run supwngo analyze ./bin`.

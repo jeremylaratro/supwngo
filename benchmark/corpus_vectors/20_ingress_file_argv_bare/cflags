@@ -1,0 +1,12 @@
+# Protections for the M-1b ingress corpus. Held IDENTICAL across every target
+# in this corpus on purpose: the ingress mechanism is the only variable, so a
+# protection difference would confound the measurement.
+#
+# canary=OFF  the overwrite must reach the gate at offset 64
+# pie=OFF     keeps the technique's address handling out of the comparison
+# -O0         the struct layout that pins the gate to offset 64 is an -O0
+#             layout; at higher -O the member can be reordered or elided and
+#             the target silently stops being solvable by the sweep
+-fno-stack-protector
+-no-pie
+-O0

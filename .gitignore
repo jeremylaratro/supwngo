@@ -259,3 +259,14 @@ docs/.obsidian/
 # real artifact). Only worktrees/ is ignored, so a future .claude/settings.json
 # or .claude/agents/ remains trackable.
 .claude/worktrees/
+
+# Benchmark corpus artifacts. Only the sources and the per-target `cflags` are
+# tracked -- those are the reproducible inputs; everything else is produced by
+# build_all.sh or by a run. `flag.txt` holds the target's secret flag, so it
+# must never enter history; it was previously untracked only by omission, which
+# is not a guarantee. Build artifacts have no extension, hence the explicit
+# per-target globs rather than a blanket rule that would also swallow the .c.
+benchmark/corpus*/*/flag.txt
+benchmark/corpus*/*/payload.bin
+benchmark/corpus_vectors/*/ingress_*
+!benchmark/corpus_vectors/*/ingress_*.c

@@ -412,6 +412,21 @@ def build_with_secret(corpus: Corpus, slug: str, secret: str) -> None:
         )
 
 
+def target_cli_args(target: dict) -> list[str]:
+    """Per-target extra CLI arguments declared by the manifest (M-1b).
+
+    Defaults to EMPTY for a target with no `cli_args:` key, which is every
+    target in `corpus.yaml` and `corpus_r2.yaml` -- so those runs build the
+    exact argument list they built before this key existed. That equality is
+    the whole reason the M-1a baseline stays comparable, so it is asserted by
+    `tests/test_bench_cli_args.py` rather than trusted.
+
+    A separate function, not an inline expression, so the default behaviour is
+    directly testable without standing up a whole benchmark run.
+    """
+    return [str(a) for a in (target.get("cli_args") or [])]
+
+
 def run_supwngo(binary_abs: Path, timeout: float, extra_args: list[str],
                 tmpdir: Path | None = None):
     """Invoke the real supwngo autopwn CLI as a subprocess. Returns
@@ -896,11 +911,20 @@ def run_one(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
 
     say(f"=== {slug}  [{target['technique']}, {target['difficulty']}] ===")
 
+    # Optional per-target CLI arguments (M-1b). Defaults to EMPTY, so a manifest
+    # without the key -- corpus.yaml and corpus_r2.yaml -- produces the exact
+    # argument list it produced before this key existed. That equality is what
+    # keeps the M-1a baseline comparable, so it is asserted by a test rather
+    # than trusted. Recorded in `base` because a run whose arguments are not in
+    # its own report cannot be reproduced from it.
+    cli_args = target_cli_args(target)
+
     base = {
         "slug": slug,
         "technique_intended": target["technique"],
         "difficulty": target["difficulty"],
         "protections": target.get("protections"),
+        "cli_args": cli_args,
     }
 
     t0 = time.time()
@@ -936,7 +960,8 @@ def run_one(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
 
     # (1) structured self-report
     t_probe0 = time.time()
-    rc1, out1, err1, to1 = run_supwngo(bp, timeout, ["--json"], tmpdir=tmpdir)
+    rc1, out1, err1, to1 = run_supwngo(bp, timeout, ["--json"] + cli_args,
+                                       tmpdir=tmpdir)
     probe_duration = time.time() - t_probe0
     supwngo_json = parse_json_result(out1) if out1 else None
 
@@ -944,7 +969,8 @@ def run_one(corpus: Corpus, target: dict, timeout: float, results_dir: Path,
     #     module docstring)
     script_path = results_dir / f"{slug}_generated.py"
     t_scriptgen0 = time.time()
-    rc2, out2, err2, to2 = run_supwngo(bp, timeout, ["-o", str(script_path)],
+    rc2, out2, err2, to2 = run_supwngo(bp, timeout,
+                                       ["-o", str(script_path)] + cli_args,
                                        tmpdir=tmpdir)
     script_generation_duration = time.time() - t_scriptgen0
 

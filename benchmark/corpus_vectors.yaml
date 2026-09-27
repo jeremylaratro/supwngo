@@ -1,0 +1,141 @@
+# M-1b ingress-variation corpus manifest.
+#
+# WHAT THIS CORPUS MEASURES, AND WHAT IT DOES NOT
+#
+# Measures: whether a payload delivered over an operator-declared transport
+# reaches code that consumes it. The VULNERABILITY IS HELD CONSTANT across
+# every target -- a struct pinning an overwrite gate at offset 64 with winning
+# value 0x5AFEF11E -- so a per-target difference is attributable to the ingress
+# mechanism and not to a different challenge.
+#
+# Does NOT measure: whether the engine constructs a *correct* payload as
+# opposed to any payload the target happens to accept. Proving that needs a
+# same-length wrong-payload replay through the identical launch recipe, which
+# three review rounds established cannot be bolted on as a partial spec. It is
+# deliberately out of this corpus's claim. See the ESCALATION section of
+# docs/plans/2026-09-26-m1b-variation-benchmark-plan.md.
+#
+# Also NOT here: `file-fixed` targets. `negative_control()` launches the target
+# with NO argv (run_bench.py:507), so a `file-argv` target cannot reach a stale
+# payload file left by an earlier rep -- but a `file-fixed` target opens a
+# hardcoded path and WOULD find it, turning a real success into a VOID. Adding
+# `file-fixed` requires per-rep workspace staging, which is its own sprint.
+#
+# Validated before use (`measured` 2026-09-27, all 8 targets): the winning
+# value wins, a WRONG value at the same offset does not, and the bare negative
+# control produces nothing -- so a win is attributable to the value rather than
+# to merely reaching the offset. Control 90 wins under none of the three.
+#
+# Protections are declared per target in its own `cflags` file, which
+# build_all.sh requires for any corpus it does not have a case entry for. They
+# are identical across the corpus on purpose.
+
+targets:
+  # ---- fixed point: the same gate over stdin. Anchors the family so a
+  #      variant failure can be told apart from a corpus-wide mistake.
+  #      NOT a capability claim -- stdin already worked.
+  - slug: 10_ingress_stdin_varov
+    technique: variable_overwrite
+    difficulty: easy
+    hand_verified: true
+    cli_args: []
+    protections: {canary: false, nx: true, pie: false, relro: partial, linking: dynamic}
+    solve_path: >-
+      Overflow a 64-byte struct member from stdin to set the adjacent gate to
+      0x5AFEF11E. Identical gate and value to every other target here; only the
+      ingress differs. Serves as the family fixed point.
+
+  # ---- required capability rows: five ingress mechanisms
+  - slug: 20_ingress_file_argv_bare
+    technique: variable_overwrite
+    difficulty: easy
+    hand_verified: true
+    cli_args: ["--input-vector", "file-argv", "--input-name", "payload.bin",
+               "--input-argv", "{payload_file}"]
+    protections: {canary: false, nx: true, pie: false, relro: partial, linking: dynamic}
+    solve_path: >-
+      fopen(argv[1]) + fread. Nothing is read from fd 0, so a stdin-only
+      pipeline cannot solve this target at all -- that impossibility is the
+      point of the row.
+
+  - slug: 21_ingress_file_argv_open
+    technique: variable_overwrite
+    difficulty: easy
+    hand_verified: true
+    cli_args: ["--input-vector", "file-argv", "--input-name", "payload.bin",
+               "--input-argv", "{payload_file}"]
+    protections: {canary: false, nx: true, pie: false, relro: partial, linking: dynamic}
+    solve_path: >-
+      Raw open(2)/read(2) instead of stdio. Same transport, different syscall
+      surface, so a pass proves the file channel is not fopen-specific.
+
+  - slug: 22_ingress_file_argv_flag
+    technique: variable_overwrite
+    difficulty: easy
+    hand_verified: true
+    cli_args: ["--input-vector", "file-argv", "--input-name", "payload.bin",
+               "--input-argv", "-f {payload_file}"]
+    protections: {canary: false, nx: true, pie: false, relro: partial, linking: dynamic}
+    solve_path: >-
+      The path arrives behind a '-f FILE' flag, so the argv TEMPLATE has to be
+      honoured rather than just the path appended.
+
+  - slug: 23_ingress_file_argv_embed
+    technique: variable_overwrite
+    difficulty: easy
+    hand_verified: true
+    cli_args: ["--input-vector", "file-argv", "--input-name", "payload.bin",
+               "--input-argv", "--input={payload_file}"]
+    protections: {canary: false, nx: true, pie: false, relro: partial, linking: dynamic}
+    solve_path: >-
+      The path is EMBEDDED inside one token, '--input=PATH'. This is the shape
+      round-3 finding H1 was about: the renderer must substitute within a
+      token, not replace the whole token, and the generated artifact must
+      launch the same argv the verifier did.
+
+  - slug: 24_ingress_argv_direct
+    technique: variable_overwrite
+    difficulty: easy
+    hand_verified: true
+    # SINK_ARGV requires an EXPLICIT '{payload_arg}' token: build_argv refuses
+    # an empty template for this sink, because "no template" would mean the
+    # payload never reaches argv at all. Omitting it made this row invalid, and
+    # tests/test_bench_cli_args.py caught that before the first measurement --
+    # otherwise the row would have failed for a configuration reason and been
+    # misread as the argv transport not working.
+    cli_args: ["--input-vector", "argv", "--input-argv", "{payload_arg}"]
+    protections: {canary: false, nx: true, pie: false, relro: partial, linking: dynamic}
+    solve_path: >-
+      The payload IS the argv token (strcpy from argv[1]). Reachable only
+      because 0x5AFEF11E is NUL-free -- the argv sink refuses any payload
+      containing a NUL, since an argv token is a NUL-terminated C string at the
+      syscall boundary.
+
+  # ---- control pair. 90 alone proves nothing (a target with no win path fails
+  #      for free), so it is paired with 91, which is the same file plus the
+  #      single causal branch that reads the file. 90 FAILED + 91 SUCCESS
+  #      together show the corpus discriminates "does file content reach a
+  #      decision".
+  - slug: 90_ingress_neg_no_open
+    technique: variable_overwrite
+    difficulty: easy
+    hand_verified: true
+    expected_status: FAILED
+    cli_args: ["--input-vector", "file-argv", "--input-name", "payload.bin",
+               "--input-argv", "{payload_file}"]
+    protections: {canary: false, nx: true, pie: false, relro: partial, linking: dynamic}
+    solve_path: >-
+      NEGATIVE CONTROL, MUST NOT SOLVE. Accepts a path in argv[1] and never
+      opens it, so nothing the file sink writes can reach memory. A SUCCESS
+      here means the harness is crediting something other than exploitation.
+
+  - slug: 91_ingress_neg_paired_open
+    technique: variable_overwrite
+    difficulty: easy
+    hand_verified: true
+    cli_args: ["--input-vector", "file-argv", "--input-name", "payload.bin",
+               "--input-argv", "{payload_file}"]
+    protections: {canary: false, nx: true, pie: false, relro: partial, linking: dynamic}
+    solve_path: >-
+      PAIRED POSITIVE CONTROL, MUST SOLVE. Byte-identical to 90 except for the
+      two lines that actually read the file.
