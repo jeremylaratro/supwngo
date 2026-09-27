@@ -325,6 +325,81 @@ plan and review round.
 
 ## Appendix A — items added after the queue's first publication
 
+#### G-4 — SROP cannot use a syscall's return value as a register primitive
+
+| field | value |
+|---|---|
+| type | gap |
+| relevance | **5** — it is the binding constraint on `sick_rop`, one of legacy's three solves, and therefore directly on **T-1** |
+| complexity | 3 — a new primitive in the SROP planner, not a new technique |
+| priority | **P1** |
+| lane | now (candidate for the next sprint) |
+| status | open |
+| provenance | **measured 2026-09-27**, run `20260927-142133Z` + disassembly |
+| exit | `srop` sets `rax` via a controlled-length `read` on a target with no `pop rax`, and `sick_rop` solves |
+
+**Measured.** `sick_rop` is 4832 bytes / **26 instructions**. The complete set of
+instructions touching `rax`:
+
+```
+401000:  mov $0x0,%eax      (read)
+401017:  mov $0x1,%eax      (write)
+401045:  push %rax
+401014, 40102b: syscall
+```
+
+There is **no `pop rax` gadget and no writable-section trick that helps**.
+`rt_sigreturn` requires `rax == 15`, and the only primitive in the binary that can
+produce an arbitrary `rax` is **`read`'s own return value**: invoke `read` and send
+exactly 15 bytes, so the syscall returns 15 into `rax`, then transfer to `syscall`.
+
+This is a semantic fact about syscall return values, not a search-space point. The
+current executor sweeps *offsets*, so no increase in its budget or candidate list
+can reach it — which is why this is filed as a capability gap rather than a tuning
+issue.
+
+Supporting measurement that rules out the competing explanation: `vuln` calls
+`read` with length `$0x300` = **768 bytes** into a 32-byte frame
+(`sub $0x20,%rsp`), and the epilogue is `leave; ret`, so the return address sits at
+offset **40** — a value already in `COMMON_RET_OFFSETS`. Neither the frame size nor
+the offset list is the constraint.
+
+#### I-9 — SROP's failure_reason states a hypothesis the binary refutes
+
+| field | value |
+|---|---|
+| type | bug |
+| relevance | 3 — no effect on any solve, but it actively misdirects diagnosis, which is worse than saying nothing |
+| complexity | 1 |
+| priority | **P2** |
+| lane | now (ride along with G-4) |
+| status | open |
+| provenance | **measured 2026-09-27** |
+| exit | the reason either states a fact about the target or declines to speculate; it never asserts a bound it did not check |
+
+`srop` on `sick_rop` reports:
+
+> built a real rt_sigreturn frame and generated a script, but no offset candidate
+> produced a verified shell (a 248-byte frame plus the offset may simply not fit in
+> this target's read)
+
+The parenthetical is **false for this target** and checkable from the binary: the
+`read` accepts 768 bytes, so a 248-byte frame at offset 40 uses ~288 of 768. A
+human following that hint would go looking for a size problem that does not exist,
+and would not find G-4.
+
+**Same defect class as I-6 and round-3 H3** — a failure of *measurement* rendered as
+a failure of *the thing measured*. Here the executor did not measure the read
+length at all; it guessed, and the guess is presented in the same voice as the
+established facts around it. The fix is to gate the speculative clause on an actual
+check of the target's input length, or drop it.
+
+**Also recorded:** the same run shows `srop`'s recorded skip reason in
+`docs/reports/2026-09-26-comprehensive-feature-retest.md` ("no '/bin/sh' string and
+no writable section to plant one") is **out of date** — SROP no longer declines at
+that gate, it builds a real frame and fails at offset verification. Erratum noted
+here beside the claim rather than only in a chat message.
+
 #### I-7 — an undeliverable candidate aborted the whole sweep instead of being pruned — **CLOSED**
 
 | field | value |
