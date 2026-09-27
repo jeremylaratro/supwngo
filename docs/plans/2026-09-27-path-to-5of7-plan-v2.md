@@ -1,7 +1,27 @@
 # Path to 5/7 (v2) — HTB challenges and their challenge-alike variations
 
 **Date:** 2026-09-27
-**Status:** PLAN — not approved, not started. **Implementation is gated on the
+**Status:** **SUPERSEDED — NOT-APPROVED at review (Sol 5.6, 5 CRITICAL / 4 HIGH). Do
+not implement from this document.** Retained unchanged below as the reviewed artifact
+of record. Live plan: **[v3](2026-09-27-path-to-5of7-plan-v3.md)**; review:
+**[r1-v2-sol](2026-09-27-5of7-plan-review-r1-v2-sol.md)**.
+
+> **What v2 got right and wrong.** The reviewer affirmed the ordering principle —
+> "the high-level measure → diagnose → implement ordering is sound" — and showed v2
+> **does not enforce it**. Six findings verified against the code, all confirmed:
+> the T-1′ harness runs the legacy engine on every failing target (`cli.py:3342-3366`),
+> so v2's timing-derived diagnoses are void; ablation by executor cannot separate
+> sub-routes that share a technique name (`rop_techniques.py:829-842`); I-12 targeted
+> a classifier the canonical profiler never calls; every red-proof was one-sided
+> (an always-red reducer satisfied all of them); and the SROP chain has a **second**
+> defect (`rop_techniques.py:991,996` — `mprotect` never executes) that a
+> trace-only exit would have passed over. v2 also proposed revising the user's 5/7
+> target downward, which is not mine to do; v3 withdraws that branch.
+>
+> Because the structure survived and its enforcement did not, v2 was **revised into
+> v3** rather than superseded the way v1 was.
+
+**Original status line:** PLAN — not approved, not started. **Implementation is gated on the
 user's sign-off** (user directive, 2026-09-27: "make a recommendation on next steps
 but do not start until I sign off").
 **Supersedes:** [2026-09-27-path-to-5of7-plan.md](2026-09-27-path-to-5of7-plan.md)

@@ -503,7 +503,46 @@ from quietly restoring the tautology.
 mispruned. That wants a clear SKIP with a stated reason, not a prune, and it is
 not what the measurement demonstrated. Filed as **I-8** rather than fixed here.
 
-#### I-11 — a recovered image base is written to a key nothing reads
+#### I-13 — the T-1′ harness cannot enforce "without legacy fallback", so target timings are not canonical timings
+
+| field | value |
+|---|---|
+| type | bug |
+| relevance | **5** — it does not change the 1/7 score, but it invalidates every *diagnosis* drawn from per-target runtimes, which is what the next sprint's sequencing was built on |
+| complexity | 2 — a canonical-only path plus an assertion in the harness |
+| priority | **P0** |
+| lane | now (must precede any budget or spike work) |
+| status | open |
+| provenance | **measured 2026-09-27** (source read + report JSON), surfaced by peer review of plan v2, finding 1 |
+| exit | the harness runs a path that **cannot instantiate** `EnhancedAutoExploiter`, asserts no reported technique carries a `legacy:` prefix, preserves the canonical attempt report on timeout, and the HTB baseline is **re-measured** on it |
+
+**Measured.** `scripts/htb_rescore.py` invokes `supwngo.cli solve`. That command runs
+the legacy engine whenever the canonical pipeline fails and no `--input-vector` was
+declared (`cli.py:3342-3366`; the same fallback exists in `autopwn` at `cli.py:2771`).
+The harness passes no `--input-vector`, so **the legacy engine ran on all six
+non-solving targets.** The docstring's claim that withholding `--libc` satisfies
+T-1's "without legacy fallback" is a non-sequitur — `--libc` does not gate the
+fallback — and is corrected in the same change.
+
+**What survives and what does not.** The solve *count* is unaffected and this is
+checkable, not assumed: a legacy success is labelled `engine.technique_used =
+f"legacy:{...}"` (`cli.py:3362`), and the only technique string recorded anywhere in
+run `20260927-142133Z` is `ret2libc_leak` ×3. **No target was credited to legacy, so
+1/7 stands.** What does not survive is the diagnosis layered on the timings:
+
+- "`ancient_interface` and `auth-or-out` exhaust the timeout in canonical search" is
+  **not established** — the legacy sweep also ran inside that window. The budget
+  sprint's justification must be re-derived after re-baselining.
+- "four targets are declined by every executor in under 20s" is a claim about
+  canonical **and** legacy combined. The conclusion that these are not budget-bound
+  survives (both engines declined fast); the attribution to canonical does not.
+
+**Class note.** This is the *measurement* side of the same defect class as I-6, I-9
+and G-4: a property that was never checked, rendered in the same voice as the
+properties that were. The harness observed the technique string but never *asserted*
+on it, so "no legacy credit" was true by luck rather than by construction.
+
+#### I-11 — one image-base fact, several producers and several consumers, none agreeing
 
 | field | value |
 |---|---|
@@ -514,19 +553,37 @@ not what the measurement demonstrated. Filed as **I-8** rather than fixed here.
 | lane | now (must precede any PIE work) |
 | status | open |
 | provenance | **measured 2026-09-27** (source read), surfaced by peer review R1 finding 6 |
-| exit | a test plants a base through the orchestrator's write path and asserts `context.needs_leak()` flips to `False`; deleting the canonicalization turns it RED |
+| exit | a **planted, validated** base changes an executor's *resolved* gadget/GOT/control-target addresses and permits an attempt that otherwise skips; key canonicalization alone does **not** close this |
 
-**Measured.** `ExploitContext.needs_leak()` gates on `"binary_base" not in
-self.leaks` (`core/context.py:360`, and again at `:400`). The orchestrator's
-known-facts path writes `self.context.leaks["pie"] = known_facts["pie_base"]`
-(`orchestrator.py:560`). **These are different keys.** A correctly recovered image
-base therefore leaves `needs_leak()` still returning `True`, and no consumer of
-`binary_base` ever sees it.
+> **Correction, 2026-09-27 (same day as filing).** Filed originally as "a recovered
+> image base is written to a key nothing reads", asserting that *every* consumer gates
+> on `binary_base`. **That is overstated.** Consumers are split, not uniformly wrong,
+> which makes the defect larger rather than smaller. Caught by peer review of plan v2,
+> finding 3.
 
-This is the reason to distrust any plan whose exit criterion is "the pipeline
-recovers a PIE base": recovery and *consumption* are separate facts here, and only
-the first one would be observed. Whatever fixes this must be proven by asserting the
-downstream state change, not the leak's presence.
+**Measured.** There is no single image-base fact. There are at least four views of it:
+
+| site | keys on | cite |
+|---|---|---|
+| `ExploitContext.needs_leak()` | `leaks["binary_base"]` | `core/context.py:358-360`, again `:400` |
+| orchestrator known-facts write | `leaks["pie"]` | `orchestrator.py:560` |
+| handoff fact-checks | `leaks["pie"]` | `handoff.py:193-196` |
+| `Ret2LibcLeakExecutor` | neither — probes and computes PIE info **privately** | `rop_techniques.py:421` |
+| `tcache_poison_got` | neither — **refuses every PIE target outright**, whatever is stored | `heap_techniques.py:172` |
+
+So a recovered base satisfies the handoff's view, leaves `needs_leak()` still
+returning `True`, and is invisible to both executors that would have to consume it.
+Known facts are additionally applied only **after** the profiling/leak prologue
+(`orchestrator.py:303`), so the ordering is wrong even for the consumer that does read
+the key.
+
+**Why the obvious fix is not the fix.** Renaming one key would make the
+`needs_leak()` red-proof pass while changing no executor's behaviour: the heap
+executor still refuses PIE, and ret2libc still runs its own private probe. That is
+the failure mode this item exists to prevent, so its exit criterion is deliberately
+an *end-to-end* one — a planted base must change a resolved address and unlock an
+attempt that otherwise skips. Recovery and consumption are separate facts and only
+the second one is worth anything.
 
 #### I-12 — `identify_leak_type` cannot distinguish a PIE image pointer from a heap pointer
 
@@ -539,22 +596,41 @@ downstream state change, not the leak's presence.
 | lane | now (rides with I-11) |
 | status | open |
 | provenance | **measured 2026-09-27** (source read), surfaced by peer review R1 finding 6 |
-| exit | a heap pointer from a PIE process is **not** classified `"binary"`; the gate is proven RED by feeding a `0x55…` heap pointer and asserting the wrong-but-present answer is rejected |
+| exit | **paired** controls on the *canonical* path: a provenance-correct code pointer is accepted **and consumed**, while a same-range heap pointer is rejected. Rejection alone does not pass — it is satisfiable by rejecting everything |
 
-**Measured.** `remote/leak.py:194-195` returns `"binary"` for the entire range
-`0x550000000000 … 0x560000000000`, commented "PIE enabled". On amd64 a PIE
-process's **heap is mapped immediately after its image**, in that same `0x55…`
-range. The `"heap"` branch at `:196` only catches `address < 0x100000000`, which a
-PIE-adjacent heap never satisfies. So a leaked heap pointer is classified as a
-binary pointer **unconditionally**, and page-aligning it yields a heap page, not an
-image base.
+> **Correction, 2026-09-27 (same day as filing).** Filed originally against
+> `remote/leak.py:identify_leak_type`. **The canonical pipeline does not call that
+> function.** Fixing it would have left the live defect untouched. Caught by peer
+> review of plan v2, finding 4.
 
-Range classification cannot fix this, because the ranges genuinely overlap. The
-distinguishing information is **provenance** — which action produced the pointer and
-which symbol it is expected to be — plus the symbol's static offset, so that
-`base = leak - known_offset` can be checked against the ELF's own segment layout. A
-classifier that can only say "this number looks like a binary address" is not
-capable of the judgement the caller needs.
+**Measured — there are three independent overlapping-range classifiers**, and the
+one I filed against is the only one the canonical engine never uses:
+
+| classifier | used by | cite |
+|---|---|---|
+| `delivery.classify_address` | **the canonical profiler** — and `shellcode_techniques` | defined `delivery.py:322`; called `profile_stage.py:174,177`, `shellcode_techniques.py:68` |
+| `AutoLeakFinder`'s own classifier | the active leak path | `auto_leak.py:339` |
+| `remote/leak.py:identify_leak_type` | legacy / `remote` only — **not the canonical profiler** | `remote/leak.py:172,194-197` |
+
+The defect is the same in each: on amd64 a PIE process's **heap is mapped
+immediately after its image**, so the `0x55…` region a classifier labels "PIE" is
+also where the heap lives, and the `"heap"` branch (`remote/leak.py:196`) only
+catches `address < 0x100000000`, which a PIE-adjacent heap never satisfies. A leaked
+heap pointer is therefore classified as an image pointer **unconditionally**, and
+page-aligning it yields a heap page. Worse, the active PIE helper can then bind a
+symbol to it on **matching low page bits alone** (`rop_techniques.py:119`), so a
+page-offset coincidence produces a confidently wrong base.
+
+Range classification cannot fix this, because the ranges genuinely overlap — no
+choice of bounds separates them. The distinguishing information is **provenance**:
+which action produced the pointer, which symbol it is expected to be, and that
+symbol's static offset, so `base = leak - known_offset` can be validated against the
+ELF's own segment layout. A classifier that can only say "this number looks like a
+binary address" cannot make the judgement its callers need.
+
+**Scope consequence:** the fix must route all three paths through one typed API, or
+enumerate and replace each. Fixing one and testing that one is how a repair passes
+while the live path stays broken.
 
 #### I-8 — `ret2win` over `SINK_ARGV` should SKIP with a reason, not sweep and fail
 
