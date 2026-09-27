@@ -270,3 +270,13 @@ benchmark/corpus*/*/flag.txt
 benchmark/corpus*/*/payload.bin
 benchmark/corpus_vectors/*/ingress_*
 !benchmark/corpus_vectors/*/ingress_*.c
+
+# Harness controls (benchmark/controls/) follow the same rule as the corpus: the
+# source and its build script are the reproducible inputs, the ELF is produced by
+# build.sh. `flag.txt` here holds a planted secret during a validation run and must
+# never enter history -- the whole point of these controls is that the secret
+# POSTDATES the run, so a committed one would be worthless as well as unsafe.
+benchmark/controls/*/flag.txt
+benchmark/controls/*/flagfile_win
+!benchmark/controls/*/*.c
+!benchmark/controls/*/build.sh

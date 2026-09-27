@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+- `benchmark/controls/` — positive controls for `scripts/htb_rescore.py`, with
+  `flagfile_win`: `benchmark/corpus/15_win_function` with its flag read from
+  `./flag.txt` at runtime instead of a compiled-in constant. Every corpus target
+  carries a compiled-in flag (made secret by `run_bench.py` *recompiling* with
+  `-DFLAG=`), so none of them can reproduce a secret planted in a file, and none
+  could prove the re-score harness's `FLAG_CAPTURED` branch able to fire. Its
+  `SHELL_ACCESS` branch — the only level five of the seven HTB targets can reach —
+  is controlled separately via `--extra-binary`. No change to the harness itself:
+  the defect was in the choice of control, not in its attribution.
 - `--no-legacy` flag on `autopwn` and `solve`: disables the legacy
   `EnhancedAutoExploiter` fallback entirely for a canonical-only run —
   `EnhancedAutoExploiter` is never instantiated, even if the canonical

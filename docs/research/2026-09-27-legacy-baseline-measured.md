@@ -5,9 +5,11 @@
 [plan v3](../plans/2026-09-27-path-to-5of7-plan-v3.md)
 **Status:** complete. This **invalidates the founding premise of the
 legacy-to-canonical port effort.**
-**Provenance:** all figures in §2 are **measured** (probe executed, both controls
-validated). The 3/7 figure discussed in §3 is `recorded` and, as shown there, has
-**no surviving artifact**.
+**Provenance:** all figures in §2 are **measured** (probe executed; three controls —
+positive, negative, and a *wrong-but-present* red — all validated, see §2.1). The 3/7
+figure discussed in §3 is `recorded` and, as shown there, has **no surviving artifact**.
+§8 records a matching control defect found and fixed in `scripts/htb_rescore.py`'s
+validation **before** the re-baseline was run.
 
 ---
 
@@ -45,10 +47,11 @@ along), fresh `HTB{<32 hex>}` planted in `flag.txt` per run, 600 s timeout.
 Per the standing rule that a custom assessment is proven able to go RED *and* GREEN
 before any test trusts it:
 
-| control | expectation | measured |
-|---|---|---|
-| negative — `/bin/true` | must not solve | `NOT_SOLVED` |
-| positive — `benchmark/corpus/15_win_function/win_function` | must solve **and attribute** | `technique=ret2win`, `level=FLAG_CAPTURED`, planted secret reproduced |
+| control | expectation | measured | verdict |
+|---|---|---|---|
+| negative — `/bin/true` | must not solve | `NOT_SOLVED` | ✅ |
+| positive — `benchmark/controls/flagfile_win` | must solve **and attribute the planted secret** | probe verdict `FLAG_CAPTURED`, `secret_reproduced=true`, `technique=ret2win`, 66.7 s | ✅ |
+| red, *wrong-but-present* — `benchmark/corpus/15_win_function` | a real, engine-verified, flag-*shaped* value that is **not** this rep's secret must be **refused** | probe verdict `CLAIMED_UNATTRIBUTED` (engine reported its own `level=FLAG_CAPTURED`) | ✅ |
 
 The positive control initially failed on `rocket_blaster_xxx`, which canonical *does*
 solve. Rather than report that as a negative result, the probe was declared `NOT
@@ -56,8 +59,33 @@ MEASURABLE` and fixed: the CLI passes `libc_path=` into the legacy engine and th
 probe was withholding it, so it was handicapping the engine relative to the operator
 path. With `libc_path` auto-detected (`ws.rglob("libc.so.6")`), `rocket_blaster_xxx`
 *still* returned `NOT_SOLVED`, so the positive control was moved to a target with a
-known-good route. Only after `15_win_function` came back `FLAG_CAPTURED` was the
-rocket result treated as trustworthy.
+known-good route.
+
+> **Correction, 2026-09-27 — recorded here rather than only in chat, because the
+> original wording overstated what had been validated.**
+>
+> An earlier version of this section named `15_win_function` as the positive control
+> and reported it as `level=FLAG_CAPTURED` → "probe validated". That cited **the
+> engine's own self-reported verification level, not the probe's verdict.** Measured:
+> `15_win_function`'s flag is a *compiled-in constant* — `strings … | grep 'FLAG{'`
+> finds `FLAG{421e…}` inside the image — so it can never reproduce a secret planted in
+> a file, and the probe's verdict for it was `CLAIMED_UNATTRIBUTED`. **The probe's
+> attribution branch (`secret in flag_text` → `FLAG_CAPTURED`) was therefore never
+> exercised**, which is precisely the "gate never shown able to fire" failure the
+> validation rule exists to prevent — committed while writing up a finding about
+> unvalidated measurement.
+>
+> **Repaired, not merely caveated.** A purpose-built control that reads its flag from
+> `./flag.txt` at runtime now exists (`benchmark/controls/flagfile_win`, which is
+> `15_win_function` with the flag *source* flipped and nothing else). Re-run against
+> it, the probe returns verdict `FLAG_CAPTURED` with `secret_reproduced=true`. The
+> attribution branch fires, so **0/7 stands on a validated gate.**
+>
+> The accident also supplied the strongest red-proof available, now recorded as the
+> third row above: `15_win_function` is a *wrong-but-present* mutation, not an absence.
+> It presents a genuine, engine-verified, correctly-flag-shaped value that simply is
+> not this rep's secret — and the probe refuses to credit it. An attribution check that
+> only ever saw a *missing* flag would not have been tested at all.
 
 ### 2.2 Results
 
@@ -202,3 +230,45 @@ canonical-only path** (`scripts/htb_rescore.py` now passes `--no-legacy`, commit
 legacy engine was reachable. This finding makes that re-baseline *more* important, not
 less: with legacy measured at 0/7, the canonical-only number is the **only** number
 either target can be scored against.
+
+---
+
+## 8. Addendum — the same defect was found in `htb_rescore.py`, and fixed before use
+
+Running `scripts/htb_rescore.py --only-extras` before the re-baseline (per the standing
+rule that controls precede any real number) found that **the HTB harness could not reach
+a SOLVED verdict for a target the canonical engine demonstrably solves.**
+
+Measured, run `20260927-170031Z`: `15_win_function` → `level=CLAIMED_UNATTRIBUTED`,
+`technique=ret2win`, `secret_reproduced=false`, verdict `NOT_SOLVED`.
+
+**Both components were correct; the control was wrong.** The engine really did capture
+the flag it was designed to print. The harness really did refuse to credit it, because
+it was the flag *compiled into the binary* (`FLAG{421e…}`) and not the `HTB{…}` secret
+planted in the workspace. `benchmark/run_bench.py` makes corpus flags secret by
+**recompiling** with `-DFLAG=<secret>` (`build_with_secret`, `:359`) — a mechanism
+`htb_rescore.py` deliberately cannot use, because HTB binaries ship without source. So
+**no `benchmark/corpus/` target can validate a planted-secret harness**, and pointing one
+at it produces a false red.
+
+Two controls were needed, not one, because the harness has two success levels and **five
+of the seven HTB targets can only ever be scored on the second**:
+
+| level | control | measured (`--reps 2`) |
+|---|---|---|
+| `FLAG_CAPTURED` | `benchmark/controls/flagfile_win` (new) | **SOLVED** — `secret_reproduced=true` ×2 |
+| `SHELL_ACCESS` | `benchmark/corpus/02_ret2plt_system` via `--extra-binary` | **SOLVED** — `shell_confirmed=true` ×2, `technique=ret2plt` |
+| neither (negative) | `/bin/true` | **NOT_SOLVED** — `level=None` ×2 |
+
+Had only the flag control been checked, the branch carrying five of seven targets would
+have gone unverified.
+
+One further harness fact, measured and worth recording because it silently voids a
+validation run: `verdict()` requires **two** counted reps (`htb_rescore.py:209`), so
+`--reps 1` can only ever return `INCONCLUSIVE`. The first control run used `--reps 1` and
+its `INCONCLUSIVE` results proved nothing in either direction.
+
+**No change was made to the harness.** The defect was in the control choice, not in
+`htb_rescore.py`, and weakening its attribution to accept a compiled-in flag would have
+been exactly the prohibited move. The fix is a new control artifact plus
+`benchmark/controls/README.md` recording why a corpus target cannot serve.
