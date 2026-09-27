@@ -325,18 +325,54 @@ plan and review round.
 
 ## Appendix A — items added after the queue's first publication
 
-#### G-4 — SROP cannot use a syscall's return value as a register primitive
+#### G-4 — SROP's read-return `rax` chain is composed against the wrong calling convention
+
+> **ERRATUM, 2026-09-27 (same day as filing).** This item was originally filed as a
+> **gap** titled *"SROP cannot use a syscall's return value as a register
+> primitive"*, asserting that the capability did not exist and that "no increase in
+> its budget or candidate list can reach it." **That assertion is false and the
+> original title is withdrawn.** The capability is implemented: `SropExecutor`
+> detects a `read` function, sets `use_read_for_rax` when no `pop rax` gadget is
+> found, and dispatches `_script_read_rax`
+> ([rop_techniques.py:794-800, 830-833, 905](../../supwngo/exploit/pipeline/executors/rop_techniques.py)).
+> The 1/7 baseline of run `20260927-142133Z` was therefore measured **after** the
+> proposed capability already existed, so building it again would have bought
+> nothing. The real defect is narrower and is stated below. Caught by peer review
+> (Daybreak Blue R1, finding 4 — see
+> [the review](../plans/2026-09-27-5of7-plan-review-r1-daybreak.md)); the error was
+> mine, from filing a "missing capability" without grepping for it first, which is
+> the failure mode the methodology's Phase-1 rule exists to prevent.
 
 | field | value |
 |---|---|
-| type | gap |
+| type | **bug** (was: gap) |
 | relevance | **5** — it is the binding constraint on `sick_rop`, one of legacy's three solves, and therefore directly on **T-1** |
-| complexity | 3 — a new primitive in the SROP planner, not a new technique |
+| complexity | 3 — repair the stack composition and the stage transition, not a new technique |
 | priority | **P1** |
 | lane | now (candidate for the next sprint) |
 | status | open |
-| provenance | **measured 2026-09-27**, run `20260927-142133Z` + disassembly |
-| exit | `srop` sets `rax` via a controlled-length `read` on a target with no `pop rax`, and `sick_rop` solves |
+| provenance | **measured 2026-09-27**, run `20260927-142133Z` + disassembly + source read |
+| exit | the generated script's **observed syscall sequence** on `sick_rop` contains `read(..., 15) = 15` followed by syscall 15 (`rt_sigreturn`), and `sick_rop` solves |
+
+**Measured — the actual defect.** `_script_read_rax` emits
+
+```
+chain = p64(read_addr) + p64(syscall_gadget) + bytes(frame)
+```
+
+`sick_rop`'s `read` is a **stack-argument wrapper**, not a register-convention
+function: `vuln` does `push $0x300; push %r10; call read`, and the wrapper loads
+`rsi` from `0x8(%rsp)` and `rdx` from `0x10(%rsp)`. On entry via this chain,
+`[rsp]` is `syscall_gadget` (the return address), so `[rsp+8]` and `[rsp+16]` are
+the **first two quadwords of the sigreturn frame**, which are zero in a fresh
+`SigreturnFrame`. The call therefore executes `read(0, 0, 0)`, which returns **0,
+not 15**, and the following `syscall` runs with `rax=0` — `SYS_read` again, never
+`rt_sigreturn`. The technique is right; its argument staging is wrong.
+
+The fix is to compose the chain against the wrapper's measured ABI (place the
+length where the wrapper reads it) and to assert the syscall sequence rather than
+only the final shell, so a chain that silently degrades to `read(0,0,0)` cannot
+read as "no offset candidate verified".
 
 **Measured.** `sick_rop` is 4832 bytes / **26 instructions**. The complete set of
 instructions touching `rax`:
@@ -352,11 +388,14 @@ There is **no `pop rax` gadget and no writable-section trick that helps**.
 `rt_sigreturn` requires `rax == 15`, and the only primitive in the binary that can
 produce an arbitrary `rax` is **`read`'s own return value**: invoke `read` and send
 exactly 15 bytes, so the syscall returns 15 into `rax`, then transfer to `syscall`.
+`SropExecutor` already selects exactly this route (`use_read_for_rax`); the
+disassembly above establishes that the route is the only one available, **not** that
+it is absent.
 
 This is a semantic fact about syscall return values, not a search-space point. The
 current executor sweeps *offsets*, so no increase in its budget or candidate list
-can reach it — which is why this is filed as a capability gap rather than a tuning
-issue.
+can fix a chain whose arguments land in the wrong stack slots — which is why this is
+a composition bug rather than a tuning issue.
 
 Supporting measurement that rules out the competing explanation: `vuln` calls
 `read` with length `$0x300` = **768 bytes** into a 32-byte frame
@@ -463,6 +502,59 @@ from quietly restoring the tautology.
 `ret2win` is genuinely undeliverable over `SINK_ARGV` rather than merely
 mispruned. That wants a clear SKIP with a stated reason, not a prune, and it is
 not what the measurement demonstrated. Filed as **I-8** rather than fixed here.
+
+#### I-11 — a recovered image base is written to a key nothing reads
+
+| field | value |
+|---|---|
+| type | bug |
+| relevance | **5** — it silently voids *any* future PIE-base recovery, so it blocks 3 of the 4 unsolved HTB targets before the first line of that work is written |
+| complexity | 1 — canonicalize one key, or teach `needs_leak` both |
+| priority | **P0** |
+| lane | now (must precede any PIE work) |
+| status | open |
+| provenance | **measured 2026-09-27** (source read), surfaced by peer review R1 finding 6 |
+| exit | a test plants a base through the orchestrator's write path and asserts `context.needs_leak()` flips to `False`; deleting the canonicalization turns it RED |
+
+**Measured.** `ExploitContext.needs_leak()` gates on `"binary_base" not in
+self.leaks` (`core/context.py:360`, and again at `:400`). The orchestrator's
+known-facts path writes `self.context.leaks["pie"] = known_facts["pie_base"]`
+(`orchestrator.py:560`). **These are different keys.** A correctly recovered image
+base therefore leaves `needs_leak()` still returning `True`, and no consumer of
+`binary_base` ever sees it.
+
+This is the reason to distrust any plan whose exit criterion is "the pipeline
+recovers a PIE base": recovery and *consumption* are separate facts here, and only
+the first one would be observed. Whatever fixes this must be proven by asserting the
+downstream state change, not the leak's presence.
+
+#### I-12 — `identify_leak_type` cannot distinguish a PIE image pointer from a heap pointer
+
+| field | value |
+|---|---|
+| type | bug |
+| relevance | 4 — it does not break a current solve (nothing consumes it yet, per I-11) but it is the classifier any PIE work would build on, and it is wrong in exactly the case that work needs |
+| complexity | 2 — needs provenance, not a wider range check |
+| priority | **P1** |
+| lane | now (rides with I-11) |
+| status | open |
+| provenance | **measured 2026-09-27** (source read), surfaced by peer review R1 finding 6 |
+| exit | a heap pointer from a PIE process is **not** classified `"binary"`; the gate is proven RED by feeding a `0x55…` heap pointer and asserting the wrong-but-present answer is rejected |
+
+**Measured.** `remote/leak.py:194-195` returns `"binary"` for the entire range
+`0x550000000000 … 0x560000000000`, commented "PIE enabled". On amd64 a PIE
+process's **heap is mapped immediately after its image**, in that same `0x55…`
+range. The `"heap"` branch at `:196` only catches `address < 0x100000000`, which a
+PIE-adjacent heap never satisfies. So a leaked heap pointer is classified as a
+binary pointer **unconditionally**, and page-aligning it yields a heap page, not an
+image base.
+
+Range classification cannot fix this, because the ranges genuinely overlap. The
+distinguishing information is **provenance** — which action produced the pointer and
+which symbol it is expected to be — plus the symbol's static offset, so that
+`base = leak - known_offset` can be checked against the ELF's own segment layout. A
+classifier that can only say "this number looks like a binary address" is not
+capable of the judgement the caller needs.
 
 #### I-8 — `ret2win` over `SINK_ARGV` should SKIP with a reason, not sweep and fail
 
