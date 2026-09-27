@@ -305,11 +305,12 @@ plan and review round.
 
 | field | value |
 |---|---|
-| type | target | status | open — **1/7 at last measurement**; ~~legacy solves 3/7~~ **legacy measures 0/7 attributed, 1/7 self-reported** |
+| type | target | status | **met at 4/7 (2026-09-27 evening)** — was 1/7; ~~legacy solves 3/7~~ **legacy measures 0/7 attributed, 1/7 self-reported**. T-1's own ≥3/7 threshold is cleared; **T-1′ (≥5/7) is not** |
 | evidence | `docs/plans/2026-09-26-legacy-to-canonical-gap-analysis.md:13`; legacy figure corrected by `docs/research/2026-09-27-legacy-baseline-measured.md` |
 | provenance | measured |
 | note | Sprint 2′ **does not advance T-1** — `snowscan` stays unsolved behind `B-3`. Said plainly rather than implied. |
 | note | **Erratum 2026-09-27.** The ≥3/7 threshold was set to match legacy's recorded score; legacy is now measured at 0/7 attributed, so the *threshold's justification* is void even though the number stands. T-1 is superseded by **T-1′ (HTB ≥5/7)** and **T-2 (variations ≥5/7)** per the user's 2026-09-27 directive. Canonical at 1/7 is equal-or-ahead of legacy on both criteria — **there is no legacy capability to port**, so every remaining seat must come from new capability. |
+| note | **Update 2026-09-27 evening.** Three seats added by three new executors, each on a bug class no existing executor could express: `container_file_rop` (`snow_scan`), `eintr_accumulator_rop` (`ancient_interface`), `srop_symtab_pivot` (`sick_rop`). All confirmed at `SHELL_ACCESS` under the re-score harness's behavioural attribution. **4/7.** The remaining three (`sabotage`, `bon-nie-appetit`, `auth-or-out`) are PIE + Full RELRO + canary heap challenges; the bug is located in two of the three. Deficiencies, measurement gaps and the per-target blockers are recorded in `docs/process/2026-09-27-deferred-deficiencies.md`. |
 
 #### M-1a — per-target corpus regression gate
 
