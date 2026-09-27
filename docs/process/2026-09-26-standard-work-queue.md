@@ -374,6 +374,28 @@ length where the wrapper reads it) and to assert the syscall sequence rather tha
 only the final shell, so a chain that silently degrades to `read(0,0,0)` cannot
 read as "no offset candidate verified".
 
+**Update, 2026-09-27 — the staging defect is a CLASS with ≥3 instances, not one line**
+(measured; surfaced by peer review R3 finding 9). Every `SigreturnFrame` in the
+multi-stage path sets `rax` for a syscall while pointing `rip` at a *function entry*
+rather than a syscall *instruction*, so the syscall it staged never executes:
+
+| frame | sets | points `rip` at | cite | consequence |
+|---|---|---|---|---|
+| `frame1` | `rax = SYS_mprotect` | `vuln_func` | `:991,996` | `mprotect` never runs |
+| `frame2` | `rax = SYS_read` | `vuln_func` | `:1010,1014` | the `/bin/sh` plant never runs |
+
+Plus a separate continuation bug: `frame1.rsp = rw_target + 0x400` (`:998`), so after
+the `syscall; ret` gadget completes it returns through an **unstaged word** on the
+newly-writable page — nothing placed a return target there.
+
+**Consequence for the exit.** Repairing the argument staging alone would witness
+`read(...,15) = 15` and syscall 15 and still crash before stage 2. The exit therefore
+requires the trace **and** the stage transition **and** an attributed shell in ≥2/3
+reps, and the repair must specify for every frame the complete continuation state:
+syscall RIP, post-syscall return word, RSP location, re-entry, and where the next
+chain is staged. My earlier characterisation of this item as "diagnosed to two lines"
+is **withdrawn** — the confidence attached to the `sick_rop` seat was overstated.
+
 **Measured.** `sick_rop` is 4832 bytes / **26 instructions**. The complete set of
 instructions touching `rax`:
 

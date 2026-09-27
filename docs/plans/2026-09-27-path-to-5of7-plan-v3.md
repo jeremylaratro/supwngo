@@ -17,6 +17,34 @@ user's sign-off.**
 |---|---|---|---|
 | v1 | Daybreak Blue, xhigh | NOT-APPROVED (4C/4H) | Premise invalid — "every unsolved target has PIE/a canary" was a correlation, not a diagnosis. Its best seat (GAP-R) was a capability that already existed. **Superseded, not revised.** |
 | v2 | Sol 5.6, xhigh | NOT-APPROVED (5C/4H) | **Sequencing affirmed** ("the high-level measure → diagnose → implement ordering is sound") but **not enforced**. Measurement path runs the legacy engine; ablation was at the wrong granularity; every red-proof was one-sided. **Revised into v3.** |
+| v3 | Daybreak Blue, xhigh | NOT-APPROVED (4C/6H/1M) | **Ledgers affirmed as honest, not under-claimed.** Remaining findings are all one class: the executable **gates are gameable**. Adopted as §4.5. Two of my claims corrected (§3.1, §6.1). **Round 3 of 3 — see the escalation below.** |
+
+### Escalation, recorded at the 3-round cap
+
+Round 3 was the last. The standing rule is that a 4th round escalates the design
+rather than patching it, and this review made the right escalation obvious by
+separating two things I had been treating as one:
+
+> "The problem is not refusal to guarantee research success; it is that the executable
+> gates still permit unreliable scoring, post-implementation corpus definition, route
+> substitution, and cross-commit aggregation."
+
+The plan's **substance** is sound; its **scoring apparatus** is not. Those block
+different things. So:
+
+- **The spikes (§7) start now.** No reviewer can tell me whether `bon-nie-appetit` is
+  exploitable — only a spike can. Three rounds have produced a much better measurement
+  apparatus and **zero additional solved targets**, which is the gate the user actually
+  set.
+- **A spike cannot be gamed by a weak gate**, because its deliverable is a working
+  reference exploit or nothing. The spikes are exactly the work that does not need the
+  hardening to land first.
+- **The §4.5 gate requirements are required before any number is reported as a score**,
+  and are implemented alongside the spikes. They gate *claiming* a result, not
+  *producing* one. Nothing here waives them.
+
+**The user's target is fixed at ≥5/7 on both gates and is not subject to revision by
+this plan** (reaffirmed by the user, 2026-09-27).
 
 v2 is revised rather than superseded because the reviewer explicitly endorsed its
 ordering principle and attacked its *enforcement*. That is patchable inside the
@@ -76,6 +104,16 @@ satisfies T-1's "without legacy fallback" is a non-sequitur.
 legacy success is labelled `f"legacy:{...}"` (`cli.py:3362`), and the only technique
 string recorded anywhere in the run is `ret2libc_leak` ×3. **No target was credited
 to legacy. 1/7 stands.**
+
+> **Erratum (R3 finding 10).** I wrote that "the legacy engine ran on all six
+> non-solving targets." That **exceeds the artifact** and is narrowed: legacy
+> demonstrably ran on the **four** targets whose runs completed, and was **reachable
+> and may have contaminated the timing** on the two that timed out — those reps were
+> SIGKILLed with no JSON, so the recorded legs carry `level=None technique=None` and no
+> phase evidence either way. The conclusion is unaffected: those timings must be
+> discarded. Recording `engine_phase` transitions, and including the last phase in a
+> graceful timeout report, is added to this sprint's exit so the question becomes
+> answerable rather than arguable.
 
 **What does not.** Every diagnosis drawn from the timings:
 
@@ -197,6 +235,29 @@ this project has hit repeatedly, and I produced the inverse of it.
 | Sprint 1 budgets | a truncated technique reports *truncated*, distinguishably | **at least one bounded technique completes normally** |
 | Sprint 3 | chain degraded to `read(0,0,0)` fails loudly | attributed shell in ≥2/3 reps (§6) |
 
+### 4.5 Gate requirements adopted from R3 (required before any score is reported)
+
+R3's nine gate findings are adopted verbatim in substance. None is waived; all are
+implemented alongside the spikes rather than ahead of them (see the escalation in §1).
+
+| # | requirement | why the current gate fails without it |
+|---|---|---|
+| G-a | **Fail-closed T-1 reducer**: immutable manifest of exactly seven names + SHA-256 hashes, exactly three completed reps per target, `successes/reps ≥ 2/3`, missing/timeout/parse legs counted **red**, and a **nonzero exit unless the absolute score is ≥5/7** | today `verdict()` marks SOLVED on any two successes regardless of total reps, so **2/10 would pass a "≥2/3" bar**; targets come from an unpinned symlink dir; `--target` accepts an arbitrary subset; the script always exits zero, even at 0/7 |
+| G-b | **Positive control for the canonical-only path** (Rocket or a canonical synthetic fixture), plus an asserted attempt census | a canonical-only entry point that performs **no attempts at all** would exclude legacy, emit no `legacy:` technique, and let the ledger be "updated" — the Sprint −1 exit as written cannot tell that apart from success |
+| G-c | **Two independent ablation gates**: target-chain ablation (does the corpus member *require* the primitive?) **and** engine-route knockout (disable exactly one *executed* branch) | CORPUS1 ablates hand-written reference chains and **never executes supwngo** (`benchmark/ablation/ablate.py:10,19`). Target necessity and engine-route necessity are different questions and I had conflated them |
+| G-d | **Same-executor sibling positive**: under `srop/read_return_wrapper` knockout, a `srop/pop_rax` fixture must still solve **and report `srop/pop_rax`** | v3's control only required an *unrelated* class to stay green, which a switch that disables the whole `SropExecutor` satisfies |
+| G-e | **Bind the mechanism ID at branch selection** to the successful attempt, receipt and artifact — not at executor entry | an ID assigned at entry would label a `pop_rax` solve as `read_return_wrapper`. Attempts currently carry only a `technique` field (`contracts.py:428`), so this binding is new work |
+| G-f | **One class ↔ one named HTB target/mechanism**, pre-registered with generators, axes and counts *after* the spikes and *before* implementation | "exact class→variant census" is otherwise satisfiable by picking seven *favourable* classes after diagnosis, unrelated to the five required seats |
+| G-g | **Key every result** to engine commit, dirty-tree state, target/variant hashes, manifest hash, harness hash, config; any engine or harness change invalidates **both** ledgers; one terminal acceptance command on one clean frozen commit runs both gates | otherwise Rocket is held from a historical run, Sick ROP measured later, heap routes later still — and the combined ledger could read ≥5/7 when **no single build ever achieved either score** |
+| G-h | **Sealing is one-shot and commit-bound**: record the frozen engine SHA before materializing hidden seeds; any engine change after reveal permanently invalidates that matrix | "separate branch, never merged" is **not sealing** — the branch is readable, and reveal→fail→tune→re-freeze satisfies every branch rule while turning the acceptance set into a development set |
+| G-i | **One typed image-base accessor**, raw-key access prohibited outside it, every inventoried producer *and* applicable consumer tested, plus a structural test that the obsolete keys are absent from production consumers | I-11's exit as written ("affect *an* executor") passes while `needs_leak()` still reads `binary_base`, handoff still reads `pie`, ret2libc still reprobes privately, and tcache still refuses all PIE |
+| G-j | **Provenance must be derived by canonical execution**, not supplied by the test: feed raw ambiguous target output through `run_dynamic_profile` and the live leak stage, including a heap pointer deliberately sharing a symbol's low 12 bits | a typed classifier can pass §4.4's pair by honouring test-provided `CODE`/`HEAP` labels while the real profiler only ever receives a bare integer scraped from output (`profile_stage.py:174`) — and the symbol matcher really does accept matching low 12 bits alone (`rop_techniques.py:119`) |
+| G-k | **Budget report completeness defined mechanically**: for the exact ordered registry snapshot, every eligible/forced technique has exactly one terminal record (completed / skipped+reason / errored / truncated) with start/end/deadline, reconciled to the registry census | otherwise Sprint 1 can report one cheap completion and one dummy truncation, omit the expensive techniques, and call the report "complete" |
+| G-l | **A NO-GO requires reproducible negative evidence**: routes enumerated, artifacts showing where each fails, the exact invariant that makes the route impossible, and independent review of that invariant. **"Not found" is `undetermined`, not NO-GO** | as written, all five spikes could close NO-GO on "no terminal target found" after an incomplete search, collapsing implementation scope and jumping straight to the "expand or BLOCKED" branch |
+
+G-l is the one that protects the user's target: without it, the spikes could
+manufacture the very outcome §8 exists to prevent.
+
 ---
 
 ## 5. Sprint 1 — budget discipline
@@ -231,13 +292,28 @@ a second, independent defect** I verified:
   bytes(frame)` (`rop_techniques.py:940`), but `sick_rop`'s `read` is a
   stack-argument wrapper reading `rsi`/`rdx` from `[rsp+8]`/`[rsp+16]` — the zeroed
   head of the frame. It executes `read(0,0,0)` → returns 0, never 15.
-- **Defect B (stage transition).** In the no-`/bin/sh` path, `frame1.rax =
-  SYS_mprotect` but `frame1.rip = vuln_func` (`rop_techniques.py:991,996`). After
-  `rt_sigreturn` restores the frame, **no `syscall` instruction executes**, so
-  `mprotect` never runs. `rip` must reach the syscall gadget.
+- **Defect B (stage transition) — a CLASS, not a line.** In the no-`/bin/sh` path,
+  `frame1.rax = SYS_mprotect` but `frame1.rip = vuln_func`
+  (`rop_techniques.py:991,996`). After `rt_sigreturn` restores the frame, **no
+  `syscall` instruction executes**, so `mprotect` never runs. **`frame2` has the
+  identical defect**: `frame2.rax = SYS_read` with `frame2.rip = vuln_func`
+  (`:1010,1014`), so that read never executes either.
+- **Defect C (unstaged continuation).** `frame1.rsp = rw_target + 0x400` (`:998`), so
+  once the `syscall; ret` gadget completes, it returns through an **unstaged word** on
+  a freshly-writable page. Nothing put a return target there.
+
+> **Erratum (R3 finding 9).** I told the user this was "diagnosed to two lines."
+> That was too strong. It is **one defect class with at least three instances** —
+> every `SigreturnFrame` that sets `rax` for a syscall must set `rip` to a syscall
+> *instruction*, not to a function entry — plus a separate unstaged-continuation bug.
+> Repairing only A and B still crashes before stage 2. The end-to-end shell exit
+> catches this, so it is not a false-solve risk; but the *confidence* attached to the
+> `sick_rop` seat was overstated and is corrected here.
 
 Repairing only A would witness syscall 15 and still not solve the target — exactly
-the intermediate-witness trap.
+the intermediate-witness trap. The repair must therefore specify, for **every** frame,
+the complete continuation state: syscall RIP, the post-syscall return word, RSP
+location, re-entry point, and where the next chain is staged.
 
 **Exit (restored to the queue's strength):** the required syscall trace **and** a
 successful stage transition **and** an attributed shell in **≥2/3 T-1 reps**.
