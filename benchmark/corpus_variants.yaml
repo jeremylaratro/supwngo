@@ -1,0 +1,185 @@
+# Challenge-variation corpus manifest: container-file metadata-sized overflow.
+#
+# WHAT THIS CORPUS MEASURES, AND WHAT IT DOES NOT
+#
+# Measures: whether a solve capability GENERALISES across the particulars of one
+# vulnerability category. The CATEGORY IS HELD CONSTANT across every target -- a
+# buffer sized from one parsed metadata field and filled from an unrelated length
+# ("until EOF"), with nothing comparing the two -- and each variant changes
+# exactly one particular a target-shaped implementation is likely to have baked
+# in. A per-target difference is therefore attributable to that particular, not
+# to a different bug.
+#
+# This is the corpus whose absence made T-2 (">=5/7 on challenge variations")
+# unmeasurable; see docs/process/2026-09-27-deferred-deficiencies.md section 3.1.
+#
+# Does NOT measure: anything about heap bugs, other categories, or the HTB
+# targets themselves. It also does not claim the variants are equally hard for a
+# human -- only that each is exploitable by the same primitive, which is proven
+# rather than asserted (below).
+#
+# VALIDATED BEFORE USE (`measured` 2026-09-27)
+#
+#   benchmark/reference_exploits/container_variants_reference.py
+#
+# derives each target's frame geometry under gdb and lands a ROP chain on the
+# saved return address. Result: all five positives produce a shell; the negative
+# control does not, under a byte-identical attack. The failure mode of the
+# control is diagnostic rather than incidental -- the positives print a clobbered
+# size field (0x41414141) and then a shell banner, while the control prints its
+# real size field (400) and exits, i.e. its bounded loop stopped before reaching
+# any of the locals. Per the project's validation-first rule, the oracle was shown
+# able to go RED both ways before any pipeline result was trusted against it.
+#
+# BUILD
+#
+#   SUPWNGO_BENCH_CORPUS=benchmark/corpus_variants benchmark/build_all.sh
+#
+# build_all.sh has no case entry for these directories and so reaches them
+# through its fail-closed `cflags` path. Protections are declared per target in
+# its own `cflags` file and are identical across the family on purpose: the
+# variable under study is the container and the frame, not the mitigations.
+#
+# A NOTE ON THE FIXTURES THEMSELVES
+#
+# The anchor originally passed the FILE* into the parsing function as a
+# parameter. gcc spills parameters to the LOWEST stack slots, which put the file
+# handle below the buffer-base slot, so a linear overflow destroyed the loop's own
+# file handle before it could reach the shift point -- making the anchor strictly
+# harder than the target it was meant to reproduce. The measured target
+# (snow_scan) does its fopen inside the same function as the VLA, which gives the
+# handle a high slot at rbp-0x8. All six fixtures were changed to match. The
+# lesson is recorded here because it is not visible in the sources: for this
+# category the fixture's GEOMETRY, not just its source shape, decides whether the
+# category's primitive applies at all.
+
+category: container_file_metadata_sized_overflow
+
+# The primitive every positive target here is exploitable by, stated once.
+primitive: >-
+  The fill loop reloads its base pointer and its index from stack slots on every
+  iteration, so a plain linear overflow destroys its own control state before
+  reaching the saved return address. Writing one byte at the base-pointer slot
+  rewrites the LOW BYTE of that pointer, shifting all subsequent writes forward
+  by delta and leaving the addresses in between never written. Size delta so the
+  skipped window covers the FILE* and the index and both survive; the chain then
+  lands on the saved return address. Only the low byte is writable, so delta is
+  (base_low + chosen) mod 256 -- which is why the primitive is probabilistic
+  under ASLR and needs a ret-sled or a retry loop rather than an exact offset.
+
+targets:
+  # ---- fixed point. Reproduces the shape of the measured HTB target as closely
+  #      as a standalone file can, so a variant failure can be told apart from a
+  #      corpus-wide mistake. NOT a capability claim: this shape already solved.
+  - slug: container_10_bmp_baseline
+    technique: container_file_rop
+    difficulty: easy
+    hand_verified: true
+    must_solve: true
+    container: bmp
+    extension_gate: ".bmp"
+    accept_window: [400, 900]
+    size_field_offset: 34
+    varies: nothing (anchor)
+    geometry: {off_p: 504, off_f: 528, off_i: 540, off_rip: 600}
+    solve_path: >-
+      .bmp gate, biSizeImage in 400..900, biWidth == biHeight, VLA sized from
+      biSizeImage, fill loop driven by EOF. The base-shift primitive applies
+      directly.
+
+  # ---- variation rows: each breaks exactly one thing an implementation shaped
+  #      around the single measured target is likely to have baked in.
+  - slug: container_11_bmp_wide_range
+    technique: container_file_rop
+    difficulty: easy
+    hand_verified: true
+    must_solve: true
+    container: bmp
+    extension_gate: ".bmp"
+    accept_window: [2048, 8192]
+    size_field_offset: 34
+    varies: the accept window
+    geometry: {off_p: 2152, off_f: 2176, off_i: 2188, off_rip: 2248}
+    solve_path: >-
+      Identical to the anchor except the accept window. An implementation
+      carrying a built-in list of size values lifted from one target ("try 400,
+      then 900, then 512") never passes this validator and fails before the
+      overflow is reachable. Requires deriving or probing the window.
+
+  - slug: container_12_bmp_deep_frame
+    technique: container_file_rop
+    difficulty: medium
+    hand_verified: true
+    must_solve: true
+    container: bmp
+    extension_gate: ".bmp"
+    accept_window: [400, 900]
+    size_field_offset: 34
+    varies: the buffer-to-frame distance
+    geometry: {off_p: 904, off_f: 928, off_i: 940, off_rip: 1000}
+    solve_path: >-
+      The buffer is allocated at TWICE the declared size -- an ordinary thing for
+      a real parser to do. The distance from the buffer's base to the slots that
+      matter is no longer "the declared size plus a small constant", so an
+      implementation searching a narrow band around the declared size never lands
+      on the base-pointer slot. Requires reading the frame geometry out of the
+      function.
+
+  - slug: container_13_wav_riff
+    technique: container_file_rop
+    difficulty: medium
+    hand_verified: true
+    must_solve: true
+    container: riff_wave
+    extension_gate: ".wav"
+    accept_window: [600, 1400]
+    size_field_offset: 40
+    varies: the container format
+    geometry: {off_p: 696, off_f: 720, off_i: 732, off_rip: 792}
+    solve_path: >-
+      RIFF/WAVE rather than BMP: different magic, different extension, size field
+      at offset 40, and a cross-field consistency check (byte_rate ==
+      sample_rate * block_align) in place of the square-dimensions check. An
+      implementation with one hardcoded envelope builder emits raw bytes for
+      every other extension and the target's own validator rejects them, so the
+      failure LOOKS like "not vulnerable" when it is really "could not construct
+      a container".
+
+  - slug: container_14_raw_no_ext
+    technique: container_file_rop
+    difficulty: medium
+    hand_verified: true
+    must_solve: true
+    container: private_scan_header
+    extension_gate: null
+    accept_window: [1024, 1536]
+    size_field_offset: 8
+    varies: extension gating and header discoverability
+    geometry: {off_p: 1080, off_f: 1104, off_i: 1116, off_rip: 1176}
+    solve_path: >-
+      No extension gate at all, and a 16-byte private header (magic "SCAN", a
+      version that must be 1, the size field, a data offset). Nothing about the
+      container is derivable from a table of known formats, so an implementation
+      that mines candidate extensions from the target's strings finds nothing and
+      must still proceed by reading the checks out of the binary.
+
+  # ---- negative control. MUST NOT SOLVE.
+  - slug: container_90_neg_bounded
+    technique: null
+    difficulty: n/a
+    hand_verified: true
+    must_solve: false
+    container: bmp
+    extension_gate: ".bmp"
+    accept_window: [400, 900]
+    size_field_offset: 34
+    varies: the bug is fixed
+    geometry: {off_p: 504, off_f: 528, off_i: 540, off_rip: 600}
+    solve_path: >-
+      NONE. Byte-for-byte the anchor except that the fill loop also compares its
+      index to the size it allocated. Everything an implementation keys on is
+      still present -- the .bmp gate, the accept window, the square check, the VLA
+      sized from metadata, the base pointer and index in stack slots, the
+      EOF-driven read -- so a success here means the corpus is reporting that
+      REACHING the parser counts as exploiting it, and invalidates every positive
+      result beside it.

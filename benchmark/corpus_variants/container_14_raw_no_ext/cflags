@@ -1,0 +1,20 @@
+# Protections for the container-overflow variant corpus. Held IDENTICAL across
+# every target in this family on purpose: the *container and frame shape* is the
+# only variable, so a protection difference would confound the measurement.
+#
+# -fno-stack-protector  matches the measured target: snow_scan's vulnerable
+#                       function has ZERO fs:0x28 references (its 302 canary
+#                       refs are all in statically-linked libc), so the real
+#                       challenge had no canary in the way either.
+# -no-pie               fixed gadget addresses, as in the target
+# -static               the syscall chain this category needs requires
+#                       pop rax/rdi/rsi/rdx + syscall gadgets, which a small
+#                       dynamically-linked -O0 binary does not have
+# -O0                   the whole primitive depends on the fill loop reloading
+#                       its base pointer and index from stack slots each
+#                       iteration; at higher -O they live in registers and the
+#                       target silently stops being in this category
+-fno-stack-protector
+-no-pie
+-static
+-O0

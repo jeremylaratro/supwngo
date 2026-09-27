@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `benchmark/corpus_variants/` — the first **challenge-variation** corpus: six
+  targets in one vulnerability category (a buffer sized from one parsed metadata
+  field, filled from an unrelated length, with nothing comparing the two). The
+  category is held constant and each variant changes exactly one particular a
+  target-shaped implementation is likely to have baked in: the accept window
+  (`container_11`), the buffer-to-frame distance (`container_12`), the container
+  format (`container_13`), extension gating and header discoverability
+  (`container_14`), against an anchor (`container_10`) that reproduces the
+  measured HTB target, plus a negative control (`container_90`) whose fill loop
+  is bounded and which must not solve. Manifest in `benchmark/corpus_variants.yaml`;
+  built by `SUPWNGO_BENCH_CORPUS=benchmark/corpus_variants benchmark/build_all.sh`
+  through that script's fail-closed `cflags` path. This closes the measurement gap
+  that made T-2 (">=5/7 on challenge variations") unmeasurable rather than merely
+  unmet — see `docs/process/2026-09-27-deferred-deficiencies.md` §3.1.
+- `benchmark/reference_exploits/container_variants_reference.py` — a
+  deterministic reference exploit that validates the above corpus as an oracle
+  before anything is measured against it. It derives each target's frame geometry
+  under gdb rather than searching a band, and pins the stack (ASLR off, matched
+  argv and environment between probe and attempt) so the primitive's one random
+  quantity is known. Measured 2026-09-27: all five positives yield a shell, the
+  negative control does not, under a byte-identical attack — and the control's
+  failure is diagnostic rather than incidental (positives print a clobbered size
+  field `0x41414141` then a shell banner; the control prints its real size field
+  and exits, its bounded loop having stopped before any local was reached).
 - `srop_symtab_pivot` technique executor
   (`supwngo/exploit/pipeline/executors/srop_nowrite_techniques.py`): SROP against
   an image with **no writable segment at all** — two LOAD segments (`R`, `R E`),

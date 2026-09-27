@@ -22,3 +22,11 @@ results_*/
 
 # run_bench.py's concurrency lock (see corpus_lock()) is runtime state.
 corpus*/.run_bench.lock
+
+# Container-overflow variant family: same rule again (built via
+# SUPWNGO_BENCH_CORPUS=benchmark/corpus_variants benchmark/build_all.sh, which
+# reaches these through its `cflags` fail-closed path). Sources + flags tracked,
+# binaries and flag.txt not.
+corpus_variants/*/*
+!corpus_variants/*/*.c
+!corpus_variants/*/cflags
