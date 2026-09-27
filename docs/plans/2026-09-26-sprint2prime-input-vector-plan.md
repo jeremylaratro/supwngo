@@ -822,3 +822,514 @@ that possibility is not abstract.
 It is a contract plus an advisory probe, both proven in isolation. Whether a
 file-vector target can actually be solved is decided by the wiring layer, and remains
 unproven until M-4 is measured there.
+
+---
+
+## Wave-1 wiring: measured defect — the declared vector does not reach the spawn
+
+**Status: `measured`, 2026-09-26, before any wave-1 commit.**
+
+Wave 1 of the wiring layer (`--input-vector`/`--input-name`, `context.delivery_spec`,
+`PipelineVerifier.resolve_delivery_spec()`, and the central refusal gate) stores and
+resolves a `DeliverySpec` correctly, and refuses every non-allowlisted technique under a
+file sink. It does **not** make file delivery happen, because the spec never reaches a
+spawn site.
+
+**Sweep.** Match identity: `delivery_spec|resolve_delivery_spec|DeliverySpec` over all
+`*.py` excluding `tests/` and `contracts.py` (the defining module). Production hits are
+confined to four files — `orchestrator.py`, `verifier.py`, `core/context.py`, and
+`analysis/vector_probe.py` (comment only). **`exploit/delivery.py`,
+`exploit/verification.py`, and `exploit/pipeline/templates.py` have zero hits**, so no
+code that actually launches the target consults the spec.
+
+**Behavioral proof (not inference).** `variable_overwrite` — an allowlisted technique —
+run against the `file_vector_gate` fixture, whose gate is reachable *only* through the
+file, once with no vector declared and once with `input_vector="file-argv"`,
+`input_name="payload.bin"`:
+
+| declared vector | outcome | `failure_reason` |
+|---|---|---|
+| none (stdin) | FAILED | `exhausted 10 candidate values x 14 buffer sizes (1 recovered…` |
+| `file-argv` | FAILED | **byte-identical** |
+
+The payload went to stdin in both runs. The fixture is the M-4 baseline gate precisely
+because it cannot be solved over stdin, so an identical failure is proof the declaration
+changed nothing.
+
+**Why this matters more than a missing feature.** The two allowlisted techniques are
+*exactly* the ones that silently deliver to the wrong channel, which inverts the
+`--input-vector` help text: it promises `file-argv` "writes the payload to a file whose
+path is passed via argv" and that "every other technique refuses cleanly rather than
+silently falling back to stdin." Today the *refusing* set is honest and the *allowlisted*
+set is the silent fallback. This is the same silent-failure class that got Method B
+rejected in §4 and that the `build_argv` hardening (T1) closed five instances of — a
+declaration accepted, then quietly ignored.
+
+**Consequence for sequencing.** Wave 1 must not ship on its own with that help text.
+Two admissible options:
+
+- **(chosen) Land wave 2 and commit the capability as one change.** `deliver_parts()`
+  file mode plus both `verification.py` paths producing identical file bytes, so the
+  declaration is honored at the spawn. One coherent commit — "honor an operator-declared
+  delivery vector" — and no commit in history in which the tool accepts a file vector and
+  delivers over stdin.
+- **(not taken) Commit wave 1 first with the gate refusing file sinks outright**, help
+  text corrected to match, then lift the refusal in wave 2. Honest at every commit and it
+  protects the work sooner, but it adds a refusal plus a test asserting it, both deleted
+  within the same `## [Unreleased]` block, and the changelog would state a limitation and
+  retract it before release. **What would flip the choice:** wave 2 proving harder than
+  scoped (e.g. the two `verification.py` paths not reconcilable to identical bytes) — then
+  wave 1 ships behind the outright refusal rather than being held uncommitted.
+
+**Generalizable lesson, third recurrence of the same shape.** A wiring layer that
+resolves a value correctly is not a wiring layer that *uses* it. The wave-1 test suite is
+green and its 26 tests are sound: they assert storage, call-time resolution, refusal, and
+containment — every property except the one a user cares about. No test asked "does the
+payload actually arrive through the declared channel," and the reachability sweep that
+would have caught it was run *before* wave 1 (finding zero consumers, as expected) and not
+re-run *after*. **Re-run the reachability sweep after adding the consumer, not only before.**
+
+### Wave 2 spec — make the declared vector reach the spawn
+
+Scope: the `PipelineVerifier.verify_payload` path only, which is the path both
+allowlisted techniques use (`stack_techniques.py:125`, `:214`, `:234` all call
+`verifier.verify_payload(self.name, payload + b'\n')`).
+
+**Sub-component 1 — `ExploitVerifier` learns a generic spawn shape, not a sink.**
+Two new parameters, deliberately carrying no knowledge of `DeliverySpec`:
+`argv: Optional[List[str]] = None` (`None` → `[self.binary_path]`, today) and
+`stdin_payload: bool = True` (`False` → stdin receives `b""`). Both spawn paths honor
+them. **The layering choice:** `verification.py` sits *below* the pipeline layer that
+owns the contract — `pipeline/verifier.py` imports `verification.py`, so importing
+`pipeline/contracts.py` back into it would invert the dependency. Passing a prepared
+argv + a stdin flag keeps contract knowledge in the layer that already has it. *Option
+not taken:* duck-typing a spec object into `verification.py` as `Any` (the precedent
+`context.py` set for the same layering reason). Rejected because `verification.py` would
+then branch on sinks in two places, and the "identical bytes" invariant would be
+asserted twice instead of once. *What would flip it:* a second consumer needing the
+spec's own methods deeper down.
+
+**Sub-component 2 — the newline asymmetry is the real hazard.** Path 1 is
+`subprocess.run(input=payload)`; path 2 is `p.sendline(payload)`, which **appends
+`\n`**. For stdin that asymmetry is long-standing and harmless. For a file sink it would
+make the same payload produce two different files, so the fallback path would sometimes
+solve and sometimes not, nondeterministically by which path ran. Therefore
+`stdin_payload=False` must make path 2 **not call `sendline` at all** rather than send
+something adjusted — a flag that merely swaps `sendline` for `send` would still leave two
+code paths free to drift. The file is written once, before either path spawns.
+
+**Sub-component 3 — `PipelineVerifier.verify_payload` owns materialization.** Resolve
+the spec; non-file sink → `argv=None, stdin_payload=True`, byte-identical to today. File
+sink → write `spec.materialize([payload])` to `binary_dir / spec.payload_filename`,
+compute `argv = spec.build_argv(binary_path, payload_value=<that path>)`, pass
+`stdin_payload=False`. Back up and restore any pre-existing file at that path: a target
+may legitimately declare a fixed path that ships with the challenge, and this method runs
+once per candidate — tens to hundreds of times per target — so an unrestored overwrite
+would corrupt the target directory for every later attempt and for the benchmark corpus.
+
+**Sub-component 4 — `templates.py` is refused, not half-built.** The generic
+`build_script()` path calls `open_target()` (`script_builder.py:88-98`), which spawns the
+target *before* the body computes the payload; a file sink cannot be expressed without
+restructuring that ordering, and it has 13 consumers. Wave 2 documents the refusal. The
+consequence is explicit and must be stated in the changelog: a *generated exploit script*
+for a file-sink target is not produced by this wave, only a verified in-pipeline solve.
+
+**Test plan.** (a) Regression: same suite command before and after, counts read off the
+output directly. (b) New behavior: the end-to-end gate is `file_vector_gate`, whose win
+condition is reachable **only** through the file — asserted UNSOLVED with the default
+vector and SOLVED with `file-argv`. (c) Red-proofs: the identical-bytes property proven
+by mutating `stdin_payload=False` to still call `sendline` and showing the byte-equality
+test goes RED; the default-unchanged property proven by mutating the non-file branch to
+pass a non-`None` argv and showing an existing test goes RED.
+
+**The falsifiability risk in (b), named up front.** A solve gate can pass for the wrong
+reason if the fixture is solvable by any route other than the file. That is why the
+negative half of the gate — unsolvable with the default vector — is load-bearing and must
+be asserted in the same test, not assumed from an earlier run. Both halves together are
+what make the gate a discriminator; either alone is a decoration.
+
+### Wave 2 REVISION 1 — after peer review (Daybreak Blue, `xhigh`), round 1 of 3
+
+Verbatim review: `docs/plans/2026-09-26-wave2-design-review-daybreak.md`. Verdict
+**NOT-APPROVED**: 2 Critical, 3 High, 3 Medium. Every finding below was **verified on
+disk before being accepted** — the reviewer is not taken at face value.
+
+**ERRATUM to the wave-2 spec above.** Sub-component 4 justified refusing script
+generation by citing `build_script()` / `open_target()` (`script_builder.py:88-98`) and
+its 13 consumers. That is the wrong function for this path. The allowlisted executors
+reach `generate_success_script()` (`orchestrator.py:441`, taken when
+`partial_artifacts["exploit_script"]` is empty, which is the normal case for executors
+that verify a raw payload in-process), and its template is
+`templates.py:172-178`: `io = process(BINARY)` then `io.sendline(PAYLOAD)` — stdin-only,
+no argv, no file. The refusal as written therefore pointed at a path these techniques
+never take, and would have left the real one untouched. Corrected below.
+
+| # | Finding | Verified how | Disposition |
+|---|---|---|---|
+| C1 | `argv` sink is neither delivered nor refused | **Independently measured by me before the review landed**: `mech_argv_payload` with `input_vector="argv"` vs default → byte-identical `failure_reason` | ACCEPTED — implement, don't refuse |
+| C2 | A verified file solve still emits a stdin-only exploit script and `solve` reports a working artifact saved | Read `orchestrator.py:428-443` and `templates.py:163-182` | ACCEPTED — implement an argv/file-aware template |
+| H1 | Both CLI legacy fallbacks drop the vector | `grep -n "EnhancedAutoExploiter("` → **four** sites: 306, 392, **2762**, **3309**; the last two are the post-canonical-failure fallback | ACCEPTED |
+| H2 | Target can mutate the payload file between spawn 1 and the fallback spawn | Reasoned from `verify_payload`'s two-path structure; the file is shared | ACCEPTED — re-materialize before each spawn |
+| H3 | Restore must include restoring **nonexistence** | A left-behind `input.dat` would make a later default run differ | ACCEPTED — this one can contaminate the benchmark corpus |
+| M1 | A typo'd sink is classified non-file and falls through to stdin | This is the latent gap I recorded myself before the review | ACCEPTED — validate the sink before classifying |
+| M2 | `subprocess.run(input=b"")` gives EOF; an unsent pwntools stdin stays open | Correct; affects contract wording, not file bytes | ACCEPTED as wording |
+| M3 | `--input-name` alone is accepted and discarded | Engine builds a spec only when `input_vector is not None` | ACCEPTED |
+
+**A finding the review did NOT make, and the reason M-4 could not have reached 6/6.**
+`mech_flag_style.c` takes its file via `-f FILE`, not bare `argv[1]`. Wave 1 builds the
+template itself from a fixed mapping (`SINK_FILE_ARGV` → `("{payload_file}",)`), and
+`grep -n "argv_template|payload_arg|input-argv|input_argv" supwngo/cli.py` returns
+**nothing** — so there is no way for an operator to express `-f @@` at all. Flag-style
+file arguments (`-f`, `-c`, `--input`) are at least as common as bare `argv[1]`, so this
+is a transport-generality gap, not a fixture quirk. Wave 2 adds `--input-argv` taking a
+template with `{payload_file}`/`@@`/`{payload_arg}` tokens, which `DeliverySpec` already
+understands. Found by validating the six M-4 fixtures *before* trusting the gate that
+depends on them, per the standing rule that every custom assessment is proven able to
+fail first.
+
+**Why the match identity failed twice.** Wave 1's construction-site sweep matched
+`CanonicalAutopwnEngine(` and found 3 sites, all threaded. The same defect existed for
+`EnhancedAutoExploiter(` and the sweep could not see it, because the identity named *one
+class* rather than the property that mattered: **every engine that delivers a payload**.
+A sweep is only as general as its match identity, and a narrow identity carrying a broad
+negative is the failure this effort has now hit three times.
+
+**Revised scope.** The honest consequence is that "wave 2" is the sprint, not a wave:
+(1) `ExploitVerifier` gains keyword-only `argv=None` / `stdin_payload=True` (tested with
+`argv is None`, never truthiness) plus a pre-spawn hook so bytes are re-materialized
+before *each* spawn; (2) `PipelineVerifier.verify_payload` validates the sink first, then
+handles `argv` (latin-1 byte token, loud refusal on embedded NUL — it cannot be
+represented in an OS argv) and both file sinks, with backup/restore that restores
+nonexistence in a `finally`; (3) the success-script template becomes vector-aware so the
+saved artifact actually runs; (4) the two legacy fallbacks refuse loudly under a
+non-default vector instead of "succeeding" over stdin; (5) `--input-name`/`--input-argv`
+without a compatible vector is rejected at construction; (6) `--input-argv` is added.
+
+**Gate hardening accepted from review answer (d).** The end-to-end gate uses a
+**randomized** payload filename held constant across the negative and positive runs,
+drives `CanonicalAutopwnEngine` directly, and asserts `technique_used ==
+"variable_overwrite"` plus the exact captured flag string — so it cannot pass by keying
+off a hardcoded fixture name. Separate tests cover the forced fallback path,
+`file-fixed`, cleanup/restoration, and the artifact being runnable.
+
+### Wave 2 REVISION 2 — after round-2 implementation-diff review (round 2 of 3)
+
+Verbatim: `docs/plans/2026-09-26-wave2-impl-review-r2-daybreak.md`. **NOT-APPROVED**:
+2 Critical, 2 High, 2 Medium, plus six test defects. Round-1 closure confirmed by the
+reviewer for H1/H2/H3/M2/M3; **C1, C2, and M1 are NOT closed.** All verified on disk.
+
+**Answered by CLASS, with the sweep and its match identity.**
+
+**Class 1 — "the central gate only knows about file sinks" (closes C1 + M1).** The gate
+tests `is_file_sink(delivery_spec.sink)`, so `SINK_ARGV` passes through to every executor,
+including script-based ones that deliver over stdin (`verify_script()` never resolves the
+spec; `fmtstr_write_gate` probes stdin directly at `fmtstr_techniques.py:102`). A target
+exploitable over stdin would then report SUCCESS under `--input-vector argv` without ever
+using argv — and a late-bound typo'd sink takes the same route, which is why M1 is not
+closed either: `verify_payload` validates the sink, but script executors never enter that
+method. **Sweep** (match identity: `is_file_sink(` across `supwngo/`) → 2 call sites, both
+changed to "any sink that is not `SINK_STDIN`". The allowlist and the sink validation both
+move into the gate, so the property is "no technique outside `FILE_DELIVERY_ALLOWLIST`
+runs under ANY non-stdin vector," not "…under a file vector." M-4 is unaffected because
+`variable_overwrite` is allowlisted.
+
+**Class 2 — "the sentinel swap replaces the whole token" (closes H1).** `contracts.py:363`
+is `tok.replace("{payload_file}", …)`, i.e. replacement **inside** a token is a supported
+form, so `--input={payload_file}` and `--data={payload_arg}` are legal templates. Both the
+verifier (`_verify_argv_sink`) and the script generator (`_render_argv_literal`) replace
+the entire token when it merely *contains* the sentinel, silently discarding the
+`--input=` prefix. For argv that corrupts the launch itself; for files it makes
+verification pass and the saved artifact fail. **Sweep** (match identity: `sentinel in tok`
+/ any whole-token substitution) → 2 sites, both changed to substitute within the token and
+preserve surrounding bytes.
+
+**Class 3 — "non-stdin artifacts are silently inert" (closes C2).** The generated argv
+branch connects to `REMOTE_HOST` and never sends `PAYLOAD`; the file branch writes a local
+file and then connects remotely without transferring it. Local verification passes and the
+saved script sends zero bytes. Remote delivery of a file/argv vector is a genuinely
+unsolved problem (it needs a transfer channel), so the honest fix is a **loud refusal in
+the generated script's remote branch**, not silence.
+
+**Class 4 — "the contract permits what the code discards" (H2).** `contracts.py:244-247`
+states that `SINK_STDIN` may carry a non-empty `argv_template` and that "stdin delivery
+and an argv template are orthogonal, not mutually exclusive." The stdin branch ignores
+`argv_template` entirely in both the verifier and the generator. Honored rather than
+rejected, because the contract already chose: empty template → `argv=None` (the
+byte-identical default, unchanged), non-empty → `build_argv()`.
+
+**Class 5 — `delivered_bytes` exists to stop exactly this reconstruction (M2).** The
+generator hardcodes `PAYLOAD + b"\n"`. That is correct for the two stock executors today —
+the reviewer confirms it — but `AttemptRecord.delivered_bytes` was added precisely so the
+artifact would not re-derive delivery bytes by convention. Set it on success and prefer it
+in the non-stdin branches. **The stdin branch must keep using `PAYLOAD` + `sendline()`**:
+feeding it `delivered_bytes` (which already ends in `\n`) would make `sendline` append a
+second newline and break the byte-identical pin.
+
+**Class 6 — six tests that pass while the capability is absent.** This is the
+"validation that cannot fail" class again, and it is the most valuable part of the review.
+The mechanism test never *executes* the generated artifact, so C2 was completely untested
+by a suite that was fully green. The identical-bytes test watches its own callback rather
+than the child. Three cleanup tests pass if materialization never happened, because an
+untouched original already equals the expected final bytes — an absence assertion whose
+subject was never proven to exist. Each is re-specified to assert the child's own
+observable effect (its flag, its output), not the harness's.
+
+**One reviewer expectation I am NOT adopting, with the reason.** Round 1's answer (d)
+asked that the payload filename be "held constant across the negative and positive runs."
+That is unachievable as stated and the reviewer notes the tension itself: the negative run
+uses the default vector, and `input_name` without a file vector is now a hard `ValueError`
+(M3's own fix), so the name cannot be passed to the negative engine at all. Replacing it
+with two controls that ARE achievable: (i) the default-vector negative, which establishes
+that stdin cannot reach the gate, and (ii) a same-vector, same-filename negative whose
+file carries the wrong gate value (`0xDEADBEEF`), which establishes that the win is
+attributable to payload content rather than to the channel merely existing. Together these
+bound the claim more tightly than a shared filename would have.
+
+### Class 1 verification — the C1 fix shipped as an UNMEASURED CLAIM, now closed
+
+**Measured, 2026-09-26.** After the Class 1 fix landed and the whole vector suite was
+green (154 passed across five files), I red-proofed the gate by reverting only C1's
+semantics:
+
+```
+-  if delivery_spec.sink != SINK_STDIN:
++  if delivery_spec.sink in (SINK_FILE_ARGV, SINK_FILE_FIXED):
+```
+
+Valid Python, every name in scope, nothing else touched — exactly the wrong-but-present
+mutation the standing rule requires. **All 37 tests in the delivery file stayed GREEN.**
+The C1 fix was present in the code and covered by nothing that could fail.
+
+The reason is structural and worth naming: every one of the six mechanism solves drives
+`variable_overwrite`, which is **on** `FILE_DELIVERY_ALLOWLIST`, so the gate is a no-op in
+all of them. C1's defect is about techniques that are *not* on the allowlist reaching their
+executor under a non-stdin vector — `fmtstr_write_gate` and `stack_shellcode` in
+particular, which are script-based, never resolve the delivery spec, and could therefore
+report SUCCESS over stdin under a declared argv vector. No test exercised that shape at
+all.
+
+Added `TestNonStdinVectorRefusesNonAllowlistedTechniques` (6 tests): the refusal
+parametrized over **all three** non-stdin sinks, plus two positive controls — the
+allowlisted pair must NOT be refused (a gate that refused everything would satisfy the
+refusal assertions while destroying the feature), and a declared `stdin` vector must refuse
+nothing (the regression that would matter most, since widening the gate from file-sinks to
+all-non-stdin sinks is what could have caught the default path).
+
+**Red-proof of the new gates:** the same mutation now yields **exactly 1 failure — the
+`argv` case — with both file cases and both controls green.** Precisely attributable: the
+mutation removes only C1's semantics and only the argv gate detects it.
+
+**Two invalid red-proofs I discarded before this one, both mine.** (1) My first mutation
+replaced the first regex match without verifying where it landed; 7 tests went red and I
+could not attribute the red to the gate. (2) My second substituted `is_file_sink(...)`,
+which is **no longer imported** after the Class 1 edit (it survives only in comments), so
+the mutation raised `NameError` and reddened all six mechanisms uniformly — a broken
+module, not a semantic revert. **A mutation that breaks import or resolution is not a
+wrong-but-present mutation, and a red it produces measures nothing.** Verify the mutation
+diff and that the module still imports before trusting the red.
+
+**Residual gap, recorded rather than closed.** The embedded-token form (`--input=@@`) is
+proven by (a) a unit gate asserting the child's own `cmdline` keeps the `--input=` prefix,
+(b) a gate on the generated script text, and (c) my one-off end-to-end run against a
+purpose-built `--input=FILE` target, which solved and whose saved artifact replayed and won.
+It is **not** covered by a committed compiled fixture, because adding a 13th fixture ripples
+into the foundation suite's exhaustive `EXPECTED_VERDICTS == FIXTURE_NAMES` table and would
+require measuring its probe verdict. Stated as a gap, not implied to be covered.
+
+---
+
+## Wave 3 — answering round 3 (the last of the 3-round budget)
+
+Review verbatim: `docs/plans/2026-09-26-wave2-impl-review-r3-daybreak.md` (NOT-APPROVED,
+0 Critical, 3 High, plus 6 "tests that can pass without the named capability").
+Round 3 is the final round; per the standing rule a 4th round escalates the design
+rather than patching, so every class below is either **fixed** or **dispositioned with
+its sweep** in this wave — nothing is carried as an unmeasured claim.
+
+### Disposition table
+
+| Finding | My verdict after reading the code | Action |
+|---|---|---|
+| H1 repeated placeholder → silently wrong artifact | **CONFIRMED, blocking** | fix F1 |
+| H2 non-stdin verification vs. artifact disagree about fd 0 | **CONFIRMED as a defect, but PRE-EXISTING and family-wide, not introduced by wave 2** | gap G-W3-1 + parity test, not blocking |
+| H3 file-materialization failure reported as an exploitation failure | **CONFIRMED, blocking** | fix F3 |
+| 6 test-strength items | accepted in full | T1–T6 |
+| (found by me, not by the review) remote refusal in the file branch runs AFTER the payload file is written | **CONFIRMED, blocking** — it leaves a winning payload file in the binary's directory, the exact hazard `_verify_file_sink`'s `finally` exists to prevent | fix F4 |
+| (found by me) duplicated `# Class 5:` comment block in `templates.py`; stale "materialized later (a later wave's scope)" comment in `orchestrator.py` | cosmetic | fix F5 |
+
+### F1 — repeated placeholders (closes H1)
+
+`measured` — `templates.py:142` reads `prefix, suffix = tok.split(sentinel, 1)`. The
+`maxsplit=1` is the whole defect: `DeliverySpec.build_argv()` substitutes with
+`str.replace()` (**all** occurrences, `contracts.py:363`) and
+`PipelineVerifier._verify_argv_sink` uses `tok.split(sentinel)` with **no** maxsplit
+followed by `payload.join(...)` — so for a token containing the placeholder twice the
+verifier launches `b"X:X"` while the generated artifact launches
+`PAYLOAD + b":<leftover-uuid-hex>"`. The leftover is a *random* sentinel, so the
+artifact is not merely different, it is nondeterministic.
+
+Fix: render **every** occurrence, with the same "one definition of where the payload
+goes" discipline already used for `_render_argv_literal` — split on all occurrences and
+interleave `payload_expr` between the literal pieces. A token equal to the sentinel
+still renders as `payload_expr` alone (no wasted `b""`).
+
+### H2 — fd 0, and why it is not blocking
+
+`measured` sweep — **match identity**: for every one of the four sinks, compare (a) what
+`ExploitVerifier.verify_payload`'s subprocess path does to the child's stdin, (b) what
+`_verify_with_pwntools` does, (c) what the generated artifact does.
+
+- `SINK_STDIN` (**the pre-existing default, unchanged by wave 2**):
+  `subprocess.run(input=payload)` → the child sees the payload **and then EOF**; the
+  artifact does `io.sendline(PAYLOAD); io.interactive()` → stdin stays **open**.
+- the three non-stdin sinks: `subprocess.run(input=b"")` → **immediate EOF**; the
+  artifact spawns and goes straight to `io.interactive()` → stdin stays **open**.
+
+The divergence the review names is therefore the *same* divergence the stdin default has
+always had — the payload bytes differ, the fd-0 lifecycle does not. It is a pre-existing
+class, inherited by the new sinks, not introduced by them. Two further facts decide the
+disposition:
+
+1. The stdin script is **pinned byte-identical** to HEAD's generator by
+   `TestDefaultUnchanged::EXPECTED_STDIN_SCRIPT`. "Fixing" fd 0 for the non-stdin sinks
+   alone would leave the default with the defect and make the sinks disagree with each
+   other — trading one drift for another.
+2. An unconditional `io.shutdown("send")` in the non-stdin branches would **break the
+   canonical pipeline's primary oracle**: `PipelineVerifier.verify_script` feeds
+   `echo <receipt-token>` into the artifact's *own* stdin and relies on
+   `io.interactive()` forwarding it to a spawned shell to earn `SHELL_ACCESS`. Closing
+   the child's stdin starves that signal.
+
+**Option not taken:** select the artifact's fd-0 discipline from the recorded
+verification level (`SHELL_ACCESS` ⇒ keep stdin open, `FLAG_CAPTURED` ⇒ shut down send),
+which would reproduce whichever spawn path actually won. Rejected for this wave because
+it plumbs the verification level into script generation for a defect that is not new, and
+because it would still leave the stdin default on the old discipline. **What would flip
+it:** a corpus or fixture target that waits for EOF on stdin before opening its declared
+input — that turns the latent class into a measured loss and justifies the plumbing.
+
+Recorded instead as **G-W3-1** (gap, not a managed risk: it is measured and named), with
+a **parity test** asserting that all four sinks share one fd-0 discipline, so a future
+partial fix cannot land silently.
+
+### F3 — delivery failure must be loud (closes H3)
+
+`measured` — `_verify_file_sink` hands `_materialize` to `ExploitVerifier` as
+`pre_spawn`; `verify_payload` calls it inside its `try`, and
+`except Exception as e: result.notes.append(...); return result` (verification.py:308)
+converts an unwritable directory into an ordinary unsuccessful verification. The run then
+reports "no combination was confirmed" — i.e. *the payload was wrong* — for a run in
+which no payload was ever delivered.
+
+Fix: materialize **once, eagerly, in `_verify_file_sink`, outside the verifier's `try`**,
+before constructing `ExploitVerifier`. An `OSError` there propagates as itself. The
+`pre_spawn` re-materialization stays (a first execution can truncate or unlink its own
+input file, and a fallback spawn must not see the mutated file), but by then the eager
+write has already proven the path writable. The `finally` cleanup must now also cover the
+eager write, so a failure between the write and the verifier still restores the directory.
+
+### F4 — remote refusal before the file write
+
+The file-sink branch writes `payload_path` and *then* raises the remote refusal. A user
+who sets `REMOTE_HOST` gets the exception **and** a winning payload file left in the
+binary's directory — which is precisely what makes a later default-vector run win
+spuriously. Move both branches' `REMOTE_HOST` refusal to the top of the body.
+
+### T1–T6 — closing the "passes without the capability" set
+
+| id | review item | change |
+|---|---|---|
+| T1 | C1 enumerates 4 hand-picked names | derive the parametrization from `build_default_registry().names() - FILE_DELIVERY_ALLOWLIST` so the gate cannot be hard-coded to a subset |
+| T2 | positive control only exercises `variable_overwrite` | parametrize the control over **both** allowlist members |
+| T3 | `delivered_bytes` asserted only for `variable_overwrite` | assert it for both stock allowlisted executors |
+| T4 | remote refusals asserted by source text only | **execute** the generated script with `REMOTE_HOST`/`REMOTE_PORT` populated and assert the named `RuntimeError`, so `if REMOTE_HOST and False:` cannot pass |
+| T5 | stdin real-spawn test observes only the last writer and accepts either encoding | observe **both** writers and pin the encoding |
+| T6 | embedded-placeholder artifacts inspected, not run | **execute** them, including the repeated-placeholder form F1 fixes |
+
+### Red-proof obligation for this wave
+
+Each of F1, F3, F4 gets a mutation that is **wrong-but-present** (the module still
+imports and resolves) and must turn its own test RED and nothing else:
+
+- F1: restore `maxsplit=1`.
+- F3: move the eager `_materialize()` back inside the verifier's `try`.
+- F4: move the `REMOTE_HOST` refusal back below the file write.
+
+A mutation that breaks import or name resolution measures nothing — that lesson is
+already recorded above and applies here.
+
+---
+
+## M-1b — the challenge-alike variation benchmark (USER DIRECTIVE, 2026-09-26)
+
+> "Make sure we not only do per target benchmark but the challenge-alike variations"
+
+M-1a (the existing per-target corpus gate: 13/13 eligible SUCCESS at 5/5 reps with the
+2 known VOID corpus faults, compared **per target**) proves nothing regressed. It cannot
+prove the wave's *capability*, because **every target in `benchmark/corpus/` takes its
+payload on stdin** — the input vector was never a corpus dimension. So M-1a is a
+regression gate only, and a second gate is required.
+
+### What the harness already gives us (`measured`, read from `benchmark/run_bench.py`)
+
+- `Corpus(root=..., manifest=...)` is already parameterised, and `--corpus-root` /
+  `--manifest` are already CLI options (used today by `benchmark/corpus_r2`). A third
+  corpus reuses the **same** verdict machinery — same per-run secret flag
+  (`mint_secret_flag`), same fail-closed `build_with_secret` provisioning, same
+  independent re-execution of the generated artifact as a fresh subprocess, same
+  VOID/SUCCESS/PARTIAL/FAILED ladder. That is what makes M-1b comparable to M-1a
+  instead of a second, softer harness.
+- `build_all.sh` already honours `SUPWNGO_BENCH_CORPUS` and already documents that an
+  alternate corpus "needs its own entries" in its per-target flags `case`.
+
+### The one harness gap (`measured`)
+
+`run_supwngo(binary_abs, timeout, extra_args)` takes `extra_args`, but nothing in the
+manifest can supply them per target — so a corpus cannot declare
+`--input-vector`/`--input-name`/`--input-argv`. M-1b needs an **optional** per-target
+`cli_args:` key, defaulting to empty, so `corpus.yaml` and `corpus_r2.yaml` runs stay
+byte-identical.
+
+### The matrix — vulnerability held constant, ingress varied
+
+Each variation reuses an existing corpus target's vulnerability verbatim and changes
+**only how the payload gets in**, so a per-variant comparison isolates the transport.
+
+| slug | base vuln | ingress mechanism | declared vector |
+|---|---|---|---|
+| `01_win_stdin_baseline` | ret2win (corpus 15) | stdin | *(none)* — control proving the variation corpus agrees with M-1a |
+| `02_win_file_argv_bare` | ret2win | `fopen(argv[1])` + `fread` | `file-argv` |
+| `03_win_file_argv_flag` | ret2win | `-f FILE` | `file-argv` + `--input-argv "-f @@"` |
+| `04_win_file_argv_embedded` | ret2win | `--input=FILE` | `file-argv` + `--input-argv "--input={payload_file}"` |
+| `05_win_file_fixed` | ret2win | `fopen("input.dat")`, no argv | `file-fixed` |
+| `06_win_argv_direct` | ret2win | `strcpy(buf, argv[1])` | `argv` |
+| `07_win_line_text` | ret2win | `fgets` from the file (stops at `\n`) | `file-argv` |
+| `08_varov_file_argv` | variable_overwrite gate | `fread` from `argv[1]` | `file-argv` |
+| `09_negidx_file_argv` | negative-index write (corpus 14) | `fread` from `argv[1]` | `file-argv` |
+
+### Negative controls — the matrix must be able to go RED
+
+Per the standing rule that a custom assessment is validated **before** the tests that
+trust it, the matrix ships with targets that must **not** score SUCCESS:
+
+| slug | why it must fail | expected |
+|---|---|---|
+| `90_neg_argv_echo_no_open` | takes a path in `argv[1]` and never opens it — nothing the file sink writes can reach memory | FAILED under `file-argv` |
+| `91_neg_config_flag_stdin_payload` | `argv` is an unrelated config flag and the payload is on stdin | SUCCESS on stdin, **FAILED** when `file-argv` is declared |
+
+An all-SUCCESS matrix with these two present is a broken harness, not a win.
+
+### Why M-1b runs AFTER Sprint 2′'s commit, not before
+
+The harness's SUCCESS verdict **re-executes the generated artifact as a fresh
+subprocess** and refuses to trust autopwn's self-report. Round-3 H1 (confirmed above) is
+precisely a defect in the generated artifact for embedded/repeated placeholders — so
+`04_win_file_argv_embedded` would under-report for a cause already known and already
+being fixed in Wave 3. Measuring first would produce a number to be thrown away.
+
+Sequence: Wave 3 fixes → red-proofs → targeted suite → full suite → **M-1a** → commit →
+then M-1b as its own sprint (its own plan section, its own review round, its own branch),
+because it adds a corpus, a manifest key, and builder entries.
+
+**Status: SPECIFIED, NOT MEASURED.** Recorded here so it is a named, scheduled gate
+rather than an unmeasured claim.
