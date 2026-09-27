@@ -256,6 +256,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shown in full `pwn` output too.
 
 ### Fixed
+- `variable_overwrite` no longer abandons its entire candidate sweep when one
+  candidate cannot be carried by the declared delivery transport. It swept gate
+  constants smallest-first and called the verifier with no exception handling, so
+  the verifier's correct refusal to place a NUL byte in an argv token aborted the
+  whole technique on an early candidate and never reached the NUL-free constant
+  that wins — reporting `ERROR` with an empty reason, which made the argv
+  transport look non-functional. A new `contracts.payload_representable(sink,
+  payload)` now owns the rule: the verifier asks it and raises, and the executor
+  asks it first and prunes, reporting how many candidates it could not attempt so
+  a shortened search is distinguishable from an exhausted one. Found by the
+  ingress corpus, which M-1a structurally could not have caught — every target in
+  `benchmark/corpus/` reads stdin, so the argv path is unreachable from it.
 - Generated exploit scripts no longer corrupt argv tokens that contain the payload
   placeholder more than once. `DeliverySpec.build_argv()` substitutes every
   occurrence and the verifier splits on every occurrence, but the script renderer

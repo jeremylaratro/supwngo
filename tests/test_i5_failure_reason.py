@@ -69,7 +69,9 @@ import pytest
 
 from supwngo.core.binary import Binary
 from supwngo.core.context import ExploitContext
-from supwngo.exploit.pipeline.contracts import AttemptOutcome, AttemptRecord
+from supwngo.exploit.pipeline.contracts import (
+    SINK_STDIN, AttemptOutcome, AttemptRecord, DeliverySpec,
+)
 from supwngo.exploit.pipeline.executors.heap_and_bypass import ScanfCanaryBypassExecutor
 from supwngo.exploit.pipeline.executors.stack_techniques import (
     MAGIC_VALUES,
@@ -156,6 +158,15 @@ class TestFixtureIsGenuine:
 # ---------------------------------------------------------------------------
 
 class _NeverWinsVerifier:
+    def resolve_delivery_spec(self):
+        """I-7: the executor asks which sink it will deliver over so it can
+        prune candidates the transport cannot carry. This double stands in for
+        the real PipelineVerifier, whose own resolution defaults to stdin when
+        no spec has been set, so that is what it returns."""
+        return DeliverySpec(
+            sink=SINK_STDIN, payload_filename="", argv_template=()
+        )
+
     def verify_payload(self, technique: str, payload: bytes):
         return SimpleNamespace(success=False)
 

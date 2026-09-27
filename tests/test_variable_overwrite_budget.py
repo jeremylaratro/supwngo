@@ -33,7 +33,9 @@ import pytest
 
 from supwngo.core.binary import Binary
 from supwngo.core.context import ExploitContext
-from supwngo.exploit.pipeline.contracts import AttemptOutcome
+from supwngo.exploit.pipeline.contracts import (
+    SINK_STDIN, AttemptOutcome, DeliverySpec,
+)
 from supwngo.exploit.pipeline.executors.input_shape_techniques import (
     FALLBACK_MAGIC_VALUES,
     comparison_immediates,
@@ -139,6 +141,15 @@ class TestCapIsEnforcedAgainstARealBinary:
         calls: list[bytes] = []
 
         class _CountingVerifier:
+            def resolve_delivery_spec(self):
+                """I-7: the executor asks which sink it will deliver over so it can
+                prune candidates the transport cannot carry. This double stands in for
+                the real PipelineVerifier, whose own resolution defaults to stdin when
+                no spec has been set, so that is what it returns."""
+                return DeliverySpec(
+                    sink=SINK_STDIN, payload_filename="", argv_template=()
+                )
+
             def verify_payload(self, technique, payload):
                 calls.append(payload)
                 class _R:
@@ -168,6 +179,15 @@ class TestTruncationIsReportedNotSilent:
     def test_failure_reason_states_how_many_candidates_were_not_tried(
             self, many_constants_binary):
         class _NeverWins:
+            def resolve_delivery_spec(self):
+                """I-7: the executor asks which sink it will deliver over so it can
+                prune candidates the transport cannot carry. This double stands in for
+                the real PipelineVerifier, whose own resolution defaults to stdin when
+                no spec has been set, so that is what it returns."""
+                return DeliverySpec(
+                    sink=SINK_STDIN, payload_filename="", argv_template=()
+                )
+
             def verify_payload(self, technique, payload):
                 class _R:
                     success = False
@@ -187,6 +207,15 @@ class TestTruncationIsReportedNotSilent:
         anything was dropped. Prevents the message becoming boilerplate that is
         emitted regardless of what happened."""
         class _NeverWins:
+            def resolve_delivery_spec(self):
+                """I-7: the executor asks which sink it will deliver over so it can
+                prune candidates the transport cannot carry. This double stands in for
+                the real PipelineVerifier, whose own resolution defaults to stdin when
+                no spec has been set, so that is what it returns."""
+                return DeliverySpec(
+                    sink=SINK_STDIN, payload_filename="", argv_template=()
+                )
+
             def verify_payload(self, technique, payload):
                 class _R:
                     success = False
@@ -218,6 +247,15 @@ class TestFailureReasonStaysClearOfTheScriptAuditVocabulary:
         assert rb._SCRAPES_BINARY_RE.search("ran objdump on it")
 
         class _NeverWins:
+            def resolve_delivery_spec(self):
+                """I-7: the executor asks which sink it will deliver over so it can
+                prune candidates the transport cannot carry. This double stands in for
+                the real PipelineVerifier, whose own resolution defaults to stdin when
+                no spec has been set, so that is what it returns."""
+                return DeliverySpec(
+                    sink=SINK_STDIN, payload_filename="", argv_template=()
+                )
+
             def verify_payload(self, technique, payload):
                 class _R:
                     success = False

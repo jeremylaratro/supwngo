@@ -325,6 +325,89 @@ plan and review round.
 
 ## Appendix A — items added after the queue's first publication
 
+#### I-7 — an undeliverable candidate aborted the whole sweep instead of being pruned — **CLOSED**
+
+| field | value |
+|---|---|
+| type | bug |
+| relevance | 5 — it made an entire delivery transport read as non-functional |
+| complexity | 1 — the search continues past an infeasible candidate instead of dying on it |
+| priority | **P1** |
+| lane | now (closed same day it was found) |
+| status | **closed** |
+| provenance | **measured 2026-09-27**, run `20260927-124751Z` |
+| exit | met — `24_ingress_argv_direct` solves at `offset=64 magic=0x5afef11e`, provenance `recovered_immediate` |
+
+**How it was found.** By the ingress corpus on its first clean run, which is the
+concrete argument for having built it: row `24_ingress_argv_direct` scored
+`FAILED (0/5 reps)` while the other four new transports scored `SUCCESS (5/5)`.
+M-1a structurally could not have found this — every target in `benchmark/corpus/`
+reads stdin, so the argv gate is unreachable from that corpus.
+
+**Root cause.** `VariableOverwriteExecutor` swept candidate gate constants and
+called `verifier.verify_payload` with no exception handling
+(`stack_techniques.py:121-125` at `8d76e14`). `PipelineVerifier` correctly refuses
+a NUL-bearing payload on `SINK_ARGV` — an argv token is a NUL-terminated C string
+at the syscall boundary — but that `ValueError` propagated out of the sweep.
+Candidates are ordered smallest-first, so a small recovered immediate (or the
+fallback `0x1337` → `37 13 00 00`) killed the technique on an early candidate and
+`0x5AFEF11E`, which is NUL-free and wins, was never reached. The technique
+reported `ERROR` with an **empty** `failure_reason`, so the run was also
+undiagnosable from its own report.
+
+**Fix.** A single predicate, `contracts.payload_representable(sink, payload)`, now
+owns the rule. The verifier asks it and raises; the executor asks it first and
+prunes, counting what it pruned and reporting the count in `failure_reason` — an
+exhausted search and a search that could not attempt N candidates over this
+transport are different results, and the second is a transport limit rather than
+an absent gate constant.
+
+**The option not taken:** wrapping `verify_payload` in `except ValueError`. One
+source of truth, and it would absorb future undeliverability reasons for free —
+but `build_argv()`'s five configuration gates raise the same type, so a
+misconfigured spec would be silently recorded as an exhausted search. That is the
+same failure mode that made an invalid manifest row read as "the argv transport
+does not work" earlier the same day. What would flip the decision: enough
+distinct undeliverability reasons to make a predicate unwieldy, at which point a
+dedicated exception type (not bare `ValueError`) becomes the better carrier.
+
+**Red-proofed.** Deleting the prune fails
+`test_it_reaches_a_later_candidate_after_pruning_an_earlier_one` and
+`test_an_exhausted_argv_sweep_reports_how_many_it_could_not_try` (2 failed, 9
+passed) on the assertion that the executor handed the verifier bytes the sink
+cannot carry. A first draft of that test was **vacuous** — it used `0xdeadbeef`,
+which sits at index 1 in `FALLBACK_MAGIC_VALUES`, ahead of the NUL-bearing
+`0x1337` at index 4, so the sweep won before reaching the candidate it was
+supposed to prune and passed with the prune deleted. Fixed by selecting a winner
+that sits after it, plus
+`test_the_ordering_this_module_depends_on_still_holds` to keep a future reorder
+from quietly restoring the tautology.
+
+**Left open deliberately.** `Ret2WinExecutor` has the same shape — it packs a
+64-bit win address, which for a non-PIE binary always contains NUL bytes, so
+`ret2win` is genuinely undeliverable over `SINK_ARGV` rather than merely
+mispruned. That wants a clear SKIP with a stated reason, not a prune, and it is
+not what the measurement demonstrated. Filed as **I-8** rather than fixed here.
+
+#### I-8 — `ret2win` over `SINK_ARGV` should SKIP with a reason, not sweep and fail
+
+| field | value |
+|---|---|
+| type | issue |
+| relevance | 2 — affects report honesty, not any solve: the technique cannot work over this sink either way |
+| complexity | 1 |
+| priority | **P3** |
+| lane | document-and-move-on |
+| status | open |
+| provenance | **inferred 2026-09-27** — reasoned from the pack width, not observed in a run |
+| exit | `ret2win` on `SINK_ARGV` reports SKIPPED naming the 64-bit-address/NUL reason, instead of exhausting a sweep it could never win |
+
+A 64-bit win address packs with high NUL bytes for any realistic non-PIE image
+base, so every candidate is unrepresentable in an argv token. After I-7 the
+sweep now prunes them all and reports an exhausted search with a full prune
+count, which is accurate but reads as a failed attempt rather than an
+inapplicable technique.
+
 #### I-6 — walkthrough libc resolution is session-state dependent, and fails silently
 
 | field | value |
