@@ -2653,8 +2653,37 @@ def _render_handoff_report(report) -> None:
     "--all-strategies", "all_strategies", is_flag=True,
     help="Attempt every registered technique, bypassing applicability gates",
 )
+@click.option(
+    "--input-vector",
+    type=click.Choice(["stdin", "argv", "file-argv", "file-fixed"]),
+    default=None,
+    help="Operator-declared payload transport (default: stdin, today's only "
+         "behavior). NEVER auto-detected: the advisory probe's verdict is "
+         "never used to pick a sink, only this flag can. 'argv' places the "
+         "payload itself as an argv token; 'file-argv' writes the payload to "
+         "a file whose path is passed via argv; 'file-fixed' writes it to a "
+         "fixed path the target opens itself. Only variable_overwrite/"
+         "ret2win can deliver via a file sink -- every other technique "
+         "refuses cleanly rather than silently falling back to stdin.",
+)
+@click.option(
+    "--input-name", "input_name", type=str, default=None,
+    help="Payload filename for a file sink (--input-vector file-argv/"
+         "file-fixed). Its extension can be load-bearing -- some targets "
+         "gate on it before ever opening the file.",
+)
+@click.option(
+    "--input-argv", "input_argv", type=str, default=None,
+    help="Override the argv template for --input-vector file-argv/"
+         "file-fixed/argv (whitespace-split, e.g. '-f @@'). Understands "
+         "'{payload_file}', AFL's '@@' alias, and '{payload_arg}'. Needed "
+         "for flag-style file arguments (-f FILE, --input FILE) that a "
+         "bare argv[1] can't express. Omit to keep the default template "
+         "for the declared vector.",
+)
 @click.pass_context
-def autopwn(ctx, binary, output, timeout, offset, libc, json_output, strategy, all_strategies):
+def autopwn(ctx, binary, output, timeout, offset, libc, json_output, strategy, all_strategies,
+            input_vector, input_name, input_argv):
     """
     Automatic exploitation - try multiple techniques automatically.
 
@@ -2716,6 +2745,9 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output, strategy, a
             libc_path=libc,
             strategy=strategy,
             force_all=all_strategies,
+            input_vector=input_vector,
+            input_name=input_name,
+            input_argv=input_argv,
         )
         if offset:
             engine.context.offset = offset
@@ -2734,19 +2766,34 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output, strategy, a
             signal.signal(signal.SIGTERM, prev_handler)
 
     if not engine.successful and not _timeout_interrupted:
-        with console.status("Canonical pipeline did not solve — trying legacy engine..."):
-            try:
-                from supwngo.exploit.enhanced_auto import EnhancedAutoExploiter
-                legacy = EnhancedAutoExploiter(bin_obj, libc_path=libc)
-                legacy.run()
-                if legacy.successful:
-                    engine.successful = True
-                    engine.technique_used = f"legacy:{legacy.technique_used}"
-                    engine.exploit_script = legacy.exploit_script or legacy.exploit_template
-                    engine.context.verification_level = legacy.verification_level
-                    engine.context.captured_flag = legacy._captured_flag
-            except Exception:
-                pass
+        from supwngo.exploit.pipeline.contracts import SINK_STDIN
+        if input_vector is not None and input_vector != SINK_STDIN:
+            # W4/T4: EnhancedAutoExploiter is stdin-only and cannot honor a
+            # declared file/argv vector. Falling back to it here would let a
+            # legacy stdin technique "solve" a target whose declared route
+            # was never actually honored, and report overall success anyway
+            # -- laundering a result through the one engine that structurally
+            # cannot deliver via the requested channel. Refuse loudly rather
+            # than threading the vector into an engine that can't use it.
+            console.print(
+                f"\n[yellow]Skipping legacy fallback: --input-vector "
+                f"{input_vector!r} was declared, but the legacy engine is "
+                "stdin-only and cannot honor it.[/yellow]"
+            )
+        else:
+            with console.status("Canonical pipeline did not solve — trying legacy engine..."):
+                try:
+                    from supwngo.exploit.enhanced_auto import EnhancedAutoExploiter
+                    legacy = EnhancedAutoExploiter(bin_obj, libc_path=libc)
+                    legacy.run()
+                    if legacy.successful:
+                        engine.successful = True
+                        engine.technique_used = f"legacy:{legacy.technique_used}"
+                        engine.exploit_script = legacy.exploit_script or legacy.exploit_template
+                        engine.context.verification_level = legacy.verification_level
+                        engine.context.captured_flag = legacy._captured_flag
+                except Exception:
+                    pass
 
     if json_output:
         try:
@@ -3064,7 +3111,10 @@ def explain(ctx, binary, output, family, offset, no_probe, libc, remote, markdow
     )
 
 
-def _guided_fallback(engine, binary: str, libc: Optional[str], timeout: float):
+def _guided_fallback(engine, binary: str, libc: Optional[str], timeout: float,
+                     input_vector: Optional[str] = None,
+                     input_name: Optional[str] = None,
+                     input_argv: Optional[str] = None):
     """Phase 6 guided fallback mode: present the failed/partial run's
     `blocking_unknowns`, let the user supply ONE of them, and retry.
 
@@ -3120,7 +3170,16 @@ def _guided_fallback(engine, binary: str, libc: Optional[str], timeout: float):
 
     bin_obj = Binary.load(binary)
     with console.status("Retrying with the supplied fact..."):
-        new_engine = CanonicalAutopwnEngine(bin_obj, timeout=timeout, libc_path=libc)
+        # Thread the operator-declared vector through the retry. Omitting it
+        # here would silently revert a declared file/argv sink to stdin on
+        # the guided retry -- the exact silent stdin fallback the delivery
+        # design forbids, and which --input-vector's own help text promises
+        # does not happen.
+        new_engine = CanonicalAutopwnEngine(
+            bin_obj, timeout=timeout, libc_path=libc,
+            input_vector=input_vector, input_name=input_name,
+            input_argv=input_argv,
+        )
         new_engine.run(known_facts={fact_key: value})
 
     if new_engine.successful:
@@ -3164,8 +3223,37 @@ def _guided_fallback(engine, binary: str, libc: Optional[str], timeout: float):
     "--all-strategies", "all_strategies", is_flag=True,
     help="Attempt every registered technique, bypassing applicability gates",
 )
+@click.option(
+    "--input-vector",
+    type=click.Choice(["stdin", "argv", "file-argv", "file-fixed"]),
+    default=None,
+    help="Operator-declared payload transport (default: stdin, today's only "
+         "behavior). NEVER auto-detected: the advisory probe's verdict is "
+         "never used to pick a sink, only this flag can. 'argv' places the "
+         "payload itself as an argv token; 'file-argv' writes the payload to "
+         "a file whose path is passed via argv; 'file-fixed' writes it to a "
+         "fixed path the target opens itself. Only variable_overwrite/"
+         "ret2win can deliver via a file sink -- every other technique "
+         "refuses cleanly rather than silently falling back to stdin.",
+)
+@click.option(
+    "--input-name", "input_name", type=str, default=None,
+    help="Payload filename for a file sink (--input-vector file-argv/"
+         "file-fixed). Its extension can be load-bearing -- some targets "
+         "gate on it before ever opening the file.",
+)
+@click.option(
+    "--input-argv", "input_argv", type=str, default=None,
+    help="Override the argv template for --input-vector file-argv/"
+         "file-fixed/argv (whitespace-split, e.g. '-f @@'). Understands "
+         "'{payload_file}', AFL's '@@' alias, and '{payload_arg}'. Needed "
+         "for flag-style file arguments (-f FILE, --input FILE) that a "
+         "bare argv[1] can't express. Omit to keep the default template "
+         "for the declared vector.",
+)
 @click.pass_context
-def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, walkthrough, strategy, all_strategies):
+def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, walkthrough, strategy, all_strategies,
+          input_vector, input_name, input_argv):
     """
     One command: binary in, working exploit (or a clear explanation why
     not) out.
@@ -3234,6 +3322,8 @@ def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, 
         engine = CanonicalAutopwnEngine(
             bin_obj, timeout=timeout, libc_path=libc,
             strategy=strategy, force_all=all_strategies,
+            input_vector=input_vector, input_name=input_name,
+            input_argv=input_argv,
         )
         try:
             engine.run()
@@ -3250,22 +3340,36 @@ def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, 
     # Legacy engine fallback: if the canonical pipeline failed, try the
     # legacy EnhancedAutoExploiter which uses more aggressive heuristics.
     if not engine.successful and not _timeout_interrupted:
-        with console.status("Canonical pipeline did not solve — trying legacy engine..."):
-            try:
-                from supwngo.exploit.enhanced_auto import EnhancedAutoExploiter
-                legacy = EnhancedAutoExploiter(bin_obj, libc_path=libc)
-                legacy.run()
-                if legacy.successful:
-                    engine.successful = True
-                    engine.technique_used = f"legacy:{legacy.technique_used}"
-                    engine.exploit_script = legacy.exploit_script or legacy.exploit_template
-                    engine.context.verification_level = legacy.verification_level
-                    engine.context.captured_flag = legacy._captured_flag
-            except Exception:
-                pass
+        from supwngo.exploit.pipeline.contracts import SINK_STDIN
+        if input_vector is not None and input_vector != SINK_STDIN:
+            # W4/T4: see the matching guard in `autopwn` -- EnhancedAutoExploiter
+            # is stdin-only and cannot honor a declared file/argv vector, so a
+            # legacy stdin "solve" here would report success without ever
+            # honoring the declared route.
+            console.print(
+                f"\n[yellow]Skipping legacy fallback: --input-vector "
+                f"{input_vector!r} was declared, but the legacy engine is "
+                "stdin-only and cannot honor it.[/yellow]"
+            )
+        else:
+            with console.status("Canonical pipeline did not solve — trying legacy engine..."):
+                try:
+                    from supwngo.exploit.enhanced_auto import EnhancedAutoExploiter
+                    legacy = EnhancedAutoExploiter(bin_obj, libc_path=libc)
+                    legacy.run()
+                    if legacy.successful:
+                        engine.successful = True
+                        engine.technique_used = f"legacy:{legacy.technique_used}"
+                        engine.exploit_script = legacy.exploit_script or legacy.exploit_template
+                        engine.context.verification_level = legacy.verification_level
+                        engine.context.captured_flag = legacy._captured_flag
+                except Exception:
+                    pass
 
     if interactive and not engine.successful and not _timeout_interrupted:
-        engine = _guided_fallback(engine, binary, libc, timeout)
+        engine = _guided_fallback(engine, binary, libc, timeout,
+                                  input_vector=input_vector, input_name=input_name,
+                                  input_argv=input_argv)
 
     if json_output:
         try:

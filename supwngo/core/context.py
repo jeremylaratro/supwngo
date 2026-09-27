@@ -266,6 +266,26 @@ class ExploitContext:
     # as `Any` here for the same import-layering reason).
     attempts: List[Any] = field(default_factory=list)
 
+    # Operator-declared payload transport (Sprint 2' wiring layer, W1,
+    # docs/plans/2026-09-26-sprint2prime-input-vector-plan.md, REVISION 3 +
+    # "New obligation for the wiring layer"). At runtime this is a
+    # `supwngo.exploit.pipeline.contracts.DeliverySpec` (typed `Any` here for
+    # the same import-layering reason as `verification_level` above -
+    # `contracts.py` lives under `supwngo.exploit`, and a real default
+    # instance cannot be constructed at class-definition time without a
+    # non-TYPE_CHECKING import of it, which the module-level layering note
+    # forbids).
+    #
+    # `None` is the default and means EXACTLY "no vector was declared" -
+    # every consumer must treat it identically to `DeliverySpec()`
+    # (`SINK_STDIN`, empty `argv_template`), i.e. today's only behavior:
+    # stdin-only delivery, unmodified argv. This field is set ONLY by an
+    # explicit operator option (engine `input_vector=`/CLI `--input-vector`)
+    # - never by `supwngo.analysis.vector_probe.classify_input_vector()`,
+    # whose verdict is advisory-only and must never be assigned here (see
+    # that module's docstring and constraint 1 of the wiring task).
+    delivery_spec: Optional[Any] = None
+
     # --- Runtime profile: behavior discovered by running/probing the
     # target before or while attempting techniques. Formalizes what used to
     # be `EnhancedAutoExploiter`'s private `BinaryProfile` dataclass.

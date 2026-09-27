@@ -99,8 +99,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/research/2026-09-26-snowscan-bmp-format-gate.md`). `AttemptRecord`
   gains an optional `delivered_bytes` field recording the exact bytes handed
   to the target, needed because some executors verify `payload + b"\n"` but
-  store `payload` without it. Foundation layer only — no pipeline call site
-  consumes `DeliverySpec` yet (see
+  store `payload` without it. Shipped as a foundation layer with no pipeline
+  consumer; the `--input-vector` wiring below is the first one (see
   `docs/plans/2026-09-26-sprint2prime-input-vector-plan.md`, REVISION 3).
 - `supwngo/analysis/vector_probe.py` (new): `classify_input_vector()`, an
   **advisory-only** 4-stage behavioral probe that reports whether a
@@ -160,6 +160,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It records *why* the stage fired and nothing more. None of this can affect
   exploitation outcomes, because the probe remains advisory and cannot commit
   a `DeliverySpec`.
+- `--input-vector {stdin,argv,file-argv,file-fixed}` and `--input-name` on
+  `autopwn` and `solve`: the operator declares how the target takes its input,
+  and the pipeline honours that declaration instead of assuming stdin. This is
+  the first consumer of `DeliverySpec`, and the declaration is **operator-only**
+  by design — `classify_input_vector()` is advisory and is never consulted to
+  choose a sink, so no probe verdict can redirect a working stdin target. The
+  declared spec lives on `ExploitContext.delivery_spec` and is resolved at call
+  time via `PipelineVerifier.resolve_delivery_spec()` (the verifier holds a
+  context reference rather than a copy, so a spec set after construction is
+  still seen). Omitting the flags leaves every existing spawn site
+  byte-identical: no vector declared means `delivery_spec is None`, which
+  resolves to the default `DeliverySpec()` and `SINK_STDIN`.
+- Techniques that cannot yet deliver through a file are refused explicitly
+  rather than silently run against the wrong channel. When a file sink is
+  declared, any technique outside `FILE_DELIVERY_ALLOWLIST`
+  (`variable_overwrite`, `ret2win`) records a `SKIPPED` attempt naming the
+  reason. The gate sits ahead of both `is_applicable()` and `attempt()` and is
+  deliberately **not** bypassable by `--force-all`, because forcing a technique
+  onto a channel it cannot reach yields a misleading failure, not a result. A
+  `ValueError` from `build_argv()` is contained the same way — e.g.
+  `--input-vector file-fixed` without `--input-name` produces one recorded
+  refusal per technique instead of a traceback.
+- `--input-vector`/`--input-name` now actually reach the spawn
+  (docs/plans/2026-09-26-wave2-design-review-daybreak.md, "Wave 2 REVISION 1"):
+  wave 1 stored and resolved a declared `DeliverySpec` but never delivered it,
+  so a declared vector produced a byte-identical failure to the stdin
+  default. `ExploitVerifier` (`exploit/verification.py`) gains a generic,
+  sink-agnostic spawn shape — `argv` (`str`/`bytes` tokens, homogenized to
+  bytes via `os.fsencode` if any token is `bytes`), `stdin_payload` (whether
+  the payload reaches fd 0), and `pre_spawn` (called before each of its two
+  spawn paths, `subprocess.run` and the pwntools `process(...)` fallback) —
+  and `PipelineVerifier.verify_payload()` translates the resolved sink into
+  that shape: `SINK_ARGV` places the raw payload bytes (never a `str` — a
+  latin-1 `str` argv token is silently corrupted by UTF-8 re-encoding on
+  exec, measured in `tests/test_input_vector_fixture_validation.py`) as an
+  argv token via a throwaway-sentinel substitution into `build_argv()`,
+  refusing a NUL byte in the payload (unrepresentable in argv); the two file
+  sinks materialize the payload to `Path(binary_path).parent /
+  spec.payload_filename` via `pre_spawn` (re-written before **each** spawn,
+  since the first execution can truncate/rewrite/unlink its own input file),
+  and back up/restore the target path in a `finally` — including restoring
+  *nonexistence* — so a run never leaves behind a file that could make a
+  later default-vector run against the same binary directory win spuriously.
+- Generated exploit scripts (`generate_success_script`,
+  `exploit/pipeline/templates.py`) are now vector-aware instead of always
+  stdin-only. A verified SUCCESS over a file sink emits a script that writes
+  `PAYLOAD` to the target's payload path and spawns
+  `process([BINARY, <path>])` (or `process(BINARY)` for `file-fixed`); over
+  `SINK_ARGV` it spawns `process([BINARY, PAYLOAD])` with `PAYLOAD` as bytes,
+  no `sendline`. The stdin case is byte-for-byte what this function always
+  generated (verified by diffing output before/after). Both new branches
+  append the trailing `\n` the allowlisted executors add before verifying
+  (recovered via `sendline()`'s implicit newline on the stdin path; explicit
+  `PAYLOAD + b"\n"` where there is no `sendline()` to lean on), so the
+  replayed bytes match what was actually verified.
+- `--input-argv` on `autopwn` and `solve`: a whitespace-split argv template
+  (supporting `{payload_file}`, AFL's `@@` alias, and `{payload_arg}`) for
+  flag-style file arguments the fixed per-sink defaults can't express, e.g.
+  `--input-vector file-argv --input-name p.bin --input-argv "-f @@"` launches
+  `[binary, "-f", "<dir>/p.bin"]`. Threaded through
+  `CanonicalAutopwnEngine(input_argv=...)` and the guided-fallback's second
+  engine construction. Omitting it keeps wave 1's fixed per-sink defaults
+  exactly.
+- `CanonicalAutopwnEngine` now rejects operator option combinations that
+  would otherwise be silently ignored: `--input-name` with an
+  `--input-vector` that has no file sink to name (`None`/`stdin`/`argv`),
+  and `--input-argv` with an `--input-vector` that never places anything in
+  argv (`None`/`stdin`). Each `ValueError` names the offending combination
+  and the fix, rather than the option quietly having no effect.
 
 ### Changed
 - `analyze` command is now a thin alias for `pwn --analyze-only`. All analysis
@@ -167,6 +236,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shown in full `pwn` output too.
 
 ### Fixed
+- Generated exploit scripts no longer corrupt argv tokens that contain the payload
+  placeholder more than once. `DeliverySpec.build_argv()` substitutes every
+  occurrence and the verifier splits on every occurrence, but the script renderer
+  split only on the first — so a legal template such as
+  `--data={payload_arg}:{payload_arg}` was verified as `b"X:X"` while the generated
+  artifact carried `PAYLOAD` followed by a *leftover internal sentinel*, making the
+  replay both wrong and nondeterministic. Every occurrence is now rendered.
+- A payload file that cannot be written is now reported as a delivery failure
+  instead of an exploitation failure. The file sinks handed materialization to
+  `ExploitVerifier` as its pre-spawn hook, where a blanket `except Exception`
+  turned an unwritable binary directory into an ordinary unsuccessful
+  verification — so the run concluded that payload candidates had failed for a
+  run in which no payload was ever delivered. The first write now happens
+  outside that handler and raises naming the sink, the path, and the fact that
+  nothing was measured.
+- Generated file-sink scripts refuse remote mode *before* writing the payload
+  file rather than after. Raising after the write left a winning payload in the
+  binary's own directory, which is exactly what makes a later default-vector run
+  against that directory win spuriously.
+- `--input-vector`/`--input-name` are no longer dropped when the guided fallback
+  retries. `_guided_fallback()` constructs a second `CanonicalAutopwnEngine`, and
+  it passed only `timeout` and `libc_path`, so an `autopwn --interactive` run that
+  reached the fallback silently reverted the declared vector to stdin — the exact
+  silent-stdin failure the flag exists to prevent, and one its help text promises
+  against. All three construction sites now receive the declaration, and a test
+  asserts the site count so a fourth cannot be added unthreaded.
+- `autopwn`/`solve`'s post-canonical-failure legacy fallback
+  (`EnhancedAutoExploiter`, stdin-only) no longer silently launders a
+  declared, non-stdin `--input-vector`. Previously, once the canonical
+  pipeline gave up, the legacy engine ran anyway against the operator's
+  actual target with no way to honor the declared vector — a run that
+  correctly refused every technique for lacking a file/argv delivery path
+  could still end with a stdin-only legacy attempt against the same binary.
+  Both legacy-fallback sites in `cli.py` now skip the legacy engine and print
+  a one-line explanation when a non-stdin vector is declared, instead of
+  threading the vector into an engine that cannot use it.
 - Win function detection in canonical pipeline now uses `WinFunctionFinder`
   (expanded name list + call-graph + file-ops detection) as fallback when the
   fast symbol-table scan misses. Previously, `profile_stage.py` had a narrower
@@ -181,6 +286,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   descending (tiebreak: priority ascending) instead of priority number alone.
   Previously, VARIABLE_OVERWRITE (conf=0.5, pri=1) ranked above ROP_EXECVE
   (conf=0.8, pri=2) despite lower confidence.
+- `CanonicalAutopwnEngine`'s central delivery-refusal gate (`_attempt_techniques`,
+  `docs/plans/2026-09-26-wave2-impl-review-r2-daybreak.md`, "Wave 2 REVISION 2"
+  Class 1 / review finding C1) now validates `delivery_spec.sink` against the
+  four recognized `SINK_*` constants *first*, recording SKIPPED and refusing
+  rather than falling through to stdin treatment for any unrecognized sink.
+  Separately, the `FILE_DELIVERY_ALLOWLIST = {variable_overwrite, ret2win}`
+  check now applies to **every** non-stdin sink, not only file sinks —
+  previously `SINK_ARGV` bypassed the gate entirely, so a target only
+  solvable over stdin could report SUCCESS under `--input-vector argv`
+  without argv ever having been used (script-based executors never resolve
+  the delivery spec at all).
+- Fixed prefix/suffix loss when an argv template embeds the payload
+  placeholder mid-token (e.g. `--data={payload_arg}`, `--input=@@`) rather
+  than as a bare token (Class 2 / H1). `PipelineVerifier._verify_argv_sink()`
+  and `templates.py`'s `_render_argv_literal()` previously replaced the
+  WHOLE token whenever it merely *contained* the placeholder, silently
+  discarding the literal prefix from both the launched argv and the
+  generated replay script's source. Both now split on the placeholder and
+  reassemble the literal pieces around the payload.
+- Generated replay scripts (`generate_success_script`) for the
+  `argv`/`file-argv`/`file-fixed` sinks now RAISE a clear `RuntimeError`
+  naming the vector when `REMOTE_HOST` is set, instead of silently
+  connecting to a remote target and delivering nothing (Class 3 / C2) --
+  there is no transfer channel to place a local file's bytes, or an argv
+  token, into a remote process's launch. The stdin branch is unaffected and
+  still supports `--remote`.
+- `SINK_STDIN` now honors a non-empty `argv_template` (e.g. an unrelated
+  `--config profile.cfg` flag pair) in both `PipelineVerifier.verify_payload()`
+  and `generate_success_script()` (Class 4 / H2) -- the payload still reaches
+  the target via stdin, but the launch argv now reflects the declared
+  template. An empty template (the default) is unaffected, byte-for-byte.
+- `AttemptRecord.delivered_bytes` is now set by `VariableOverwriteExecutor`
+  and `Ret2WinExecutor` (all three SUCCESS call sites) to the exact bytes
+  handed to `verify_payload()` (`payload + b"\n"`), and `generate_success_script()`'s
+  `argv`/file-sink branches now prefer it over reconstructing
+  `payload + b"\n"` by convention, falling back to the reconstruction only
+  when a producer hasn't set it (Class 5 / M2). The stdin branch is
+  untouched -- it recovers the newline via `sendline()`, and feeding it
+  `delivered_bytes` would double it.
 
 ### Changed
 - `SeccompAction` enum in `seccomp.py` now uses canonical kernel BPF constants
