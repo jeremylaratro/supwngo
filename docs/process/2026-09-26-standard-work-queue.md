@@ -274,10 +274,11 @@ plan and review round.
 
 | field | value |
 |---|---|
-| type | target | status | open — **1/7 at last measurement**; legacy solves 3/7 |
-| evidence | `docs/plans/2026-09-26-legacy-to-canonical-gap-analysis.md:13` |
+| type | target | status | open — **1/7 at last measurement**; ~~legacy solves 3/7~~ **legacy measures 0/7 attributed, 1/7 self-reported** |
+| evidence | `docs/plans/2026-09-26-legacy-to-canonical-gap-analysis.md:13`; legacy figure corrected by `docs/research/2026-09-27-legacy-baseline-measured.md` |
 | provenance | measured |
 | note | Sprint 2′ **does not advance T-1** — `snowscan` stays unsolved behind `B-3`. Said plainly rather than implied. |
+| note | **Erratum 2026-09-27.** The ≥3/7 threshold was set to match legacy's recorded score; legacy is now measured at 0/7 attributed, so the *threshold's justification* is void even though the number stands. T-1 is superseded by **T-1′ (HTB ≥5/7)** and **T-2 (variations ≥5/7)** per the user's 2026-09-27 directive. Canonical at 1/7 is equal-or-ahead of legacy on both criteria — **there is no legacy capability to port**, so every remaining seat must come from new capability. |
 
 #### M-1a — per-target corpus regression gate
 
@@ -717,3 +718,49 @@ exactly (1 failed, 51 passed), so the pinning is load-bearing and the gate is no
 a failure of *delivery/measurement* rendered as a failure of *the thing being measured*.
 H3 was fixed in production because it sat in the sprint's own code path; this one is
 filed with its evidence.
+
+---
+
+#### D-1 — the legacy fallback's value is now an open decision, not an assumption
+
+| field | value |
+|---|---|
+| type | issue (decision owed) |
+| relevance | **4** — it does not change any score, but it decides whether a second exploitation engine stays on the operator path, and that engine is a live source of measurement contamination (see `I-13`) |
+| complexity | 2 — the measurement is done; what remains is a recorded decision plus, if removal is chosen, deleting one block in each of two CLI commands |
+| priority | **P2** |
+| lane | later — **must not** ride along with any sprint that is being scored, because removing it changes the operator path mid-measurement |
+| status | open |
+| provenance | **measured 2026-09-27**, `docs/research/2026-09-27-legacy-baseline-measured.md` |
+| exit | a recorded decision — keep, remove, or demote to an explicit `--legacy` opt-in — with the reason stated. "Keep because it might help" does not satisfy this; the measurement says it does not help on these seven targets. |
+
+**Measured.** `EnhancedAutoExploiter` was run alone against all seven HTB targets with
+a probe validated in both directions (negative control `/bin/true` → `NOT_SOLVED`;
+positive control `benchmark/corpus/15_win_function` → `ret2win`/`FLAG_CAPTURED`). It
+scored **0/7** under attributed crediting and **1/7** under the self-report criterion
+the withdrawn "3/7" figure used. Two targets (`ancient_interface`, `auth-or-out`)
+consumed the full 600 s timeout.
+
+**Why this is a decision and not a fix.** Three facts pull in different directions and
+none of them is mine to weigh unilaterally:
+
+1. The fallback adds **no measured solve** on this corpus, and it is reached on every
+   canonical failure (`cli.py:3393`, `cli.py:2799`), so it costs wall-clock on exactly
+   the runs that are already slowest.
+2. It is the mechanism behind `I-13` — it contaminated per-target timings and forced
+   `--no-legacy` to exist so measurement could be structural.
+3. But "0/7 on seven HTB targets" is **not** "worthless in general". The corpus is seven
+   binaries; absence of benefit here is weak evidence about an arbitrary operator target,
+   and `--no-legacy` already removes it from every *measured* path.
+
+**Option not taken, and what would flip it.** I did not remove the fallback. Removing a
+working operator code path on the strength of a seven-binary corpus would be scope creep
+past what the measurement supports, and `--no-legacy` already closes the measurement
+hole that actually mattered. What would flip it: a run of the ingress/variation corpora
+showing the fallback also contributes nothing there, or a demonstration that its
+unconditional invocation is what pushes a target over the harness timeout — either
+would make removal a correctness fix rather than a preference.
+
+**Deliberately not in scope here:** the fallback's *own* robustness. Per the standing
+exclusion, hardening the tool is out of scope; this item is about whether the path
+should exist at all.

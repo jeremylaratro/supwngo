@@ -7,6 +7,13 @@ Closes: **G-1**, **B-1** (Sprint 1), **G-2** (Sprint 2). Defers **G-3** to a
 spike. Target: **T-1** — canonical solves ≥3/7 HTB targets without legacy
 fallback.
 
+> **ERRATUM, 2026-09-27.** The ≥3/7 threshold was set to match a legacy baseline that
+> has since been measured at **0/7** attributed / **1/7** self-reported. The threshold
+> stands as a number; its justification does not, and it is superseded by the user's
+> ≥5/7 target on both the HTB and variation gates. Nothing in this plan may be framed
+> as *porting* legacy capability — there is none to port. See
+> `docs/research/2026-09-27-legacy-baseline-measured.md`.
+
 ---
 
 ## Pre-registered benefit metrics (Phase 8 contract)
@@ -63,6 +70,9 @@ committed on a branch, so `main` is still the honest pre-change tree.
 - **Baseline**: canonical 1/7 (`rocket_blaster_xxx` via `ret2libc_leak`),
   `recorded` from this session's forced-strategy matrix.
 - **Direction**: must increase. T-1 wants ≥3/7.
+  (**Erratum 2026-09-27:** superseded by the user's ≥5/7; the ≥3/7 figure's derivation
+  from legacy is void — legacy measures 0/7 attributed. See
+  `docs/research/2026-09-27-legacy-baseline-measured.md`.)
 
 ### M-3 (cost guard) — worst-case `variable_overwrite` spawn count
 

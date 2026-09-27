@@ -15,6 +15,13 @@ Baseline: canonical 1/7, legacy 3/7 (`recorded`,
 `docs/plans/2026-09-26-retest-sprint-map.md` §Results and this session's
 forced-strategy matrix).
 
+> **ERRATUM, 2026-09-27 — the legacy half of this baseline is withdrawn.** Measured
+> directly: legacy scores **0/7** attributed / **1/7** self-reported. The ≥3/7
+> *threshold* still stands as written, but its **justification is void** — ≥3/7 was
+> chosen to match legacy, never derived from the targets' difficulty. T-1 is in any
+> case superseded by the user's ≥5/7 target on both HTB and variation gates. See
+> `docs/research/2026-09-27-legacy-baseline-measured.md`.
+
 ## Gaps (missing capability)
 
 ### G-1 — variable_overwrite cannot recover a gate constant absent from the folklore list

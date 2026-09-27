@@ -83,6 +83,18 @@ TOUT=timed out, OK+=success, BAD=invalid JSON
 
 **3/7 solved by legacy engine.**
 
+> **ERRATUM, 2026-09-27 — this figure is withdrawn.** The legacy engine has since been
+> measured directly on all seven targets with a probe validated in both directions, and
+> it scores **0/7** under attributed crediting (shell or reproduced planted flag) and
+> **1/7** under this report's own `OK+ = exploiter.successful` criterion. Only `sick_rop`
+> reproduced; `rocket_blaster_xxx` returned `NOT_SOLVED` in 65.7 s and
+> `ancient_interface` timed out at 600.1 s. Note also that the `exploit --auto` runs
+> behind this table were supplemental to the main harness (see §Overview) and **no
+> artifact for them survives** in `results-20260926-094216/`, so the figure cannot be
+> reconstructed. The disagreement on those two targets is unexplained and is not
+> attributed to a defect in this report. Full measurement, controls, and consequences:
+> `docs/research/2026-09-27-legacy-baseline-measured.md`.
+
 ### Manual solve with --libc flag (user-reported)
 
 | Binary             | Success | Technique     | Notes                          |
@@ -94,6 +106,11 @@ TOUT=timed out, OK+=success, BAD=invalid JSON
 ### Critical Gaps
 
 1. **Canonical pipeline solves 0/7 targets vs legacy engine's 3/7.**
+   > **ERRATUM, 2026-09-27:** the comparison is withdrawn and its sign is reversed.
+   > Legacy measures **0/7** attributed / **1/7** self-reported; canonical measures
+   > **1/7** attributed. Canonical is equal-or-ahead on both criteria, so the premise
+   > below — that legacy holds capability worth merging in — does not hold. See
+   > `docs/research/2026-09-27-legacy-baseline-measured.md`.
    The canonical `CanonicalAutopwnEngine` has stricter precondition gates than
    the legacy `AutoExploiter`, resulting in more SKIPs and fewer attempts. The
    legacy engine tries techniques more aggressively. The CLI deconfliction task
@@ -202,6 +219,9 @@ TOUT=timed out, OK+=success, BAD=invalid JSON
 ### High Priority (directly impacts solve rate)
 1. **Merge legacy and canonical engines** (queued: CLI deconfliction)
    — Legacy AutoExploiter solves 3/7 vs canonical's 0/7
+   > **ERRATUM, 2026-09-27 — this recommendation is void.** It rests on the withdrawn
+   > 3/7 figure. Legacy measures 0/7 attributed, so there is no capability surplus to
+   > merge in. See `docs/research/2026-09-27-legacy-baseline-measured.md`.
 2. **Improve ret2win detection** — scan for functions that reference flag strings
    (`./flag.txt`, `flag`, etc.) via cross-reference, not just function name matching
 3. **Fix SROP gate for stack-writable targets** — when binary has `read` syscall

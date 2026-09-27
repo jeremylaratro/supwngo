@@ -61,3 +61,10 @@ read() calls, and the verification subprocess's stdin piping doesn't match.
 
 Re-run `--all-strategies` on all three targets after each sprint.
 Target: canonical solves ≥3/7 without legacy fallback.
+
+> **ERRATUM, 2026-09-27.** ≥3/7 was chosen to match legacy's recorded score. Legacy has
+> now been measured at **0/7** attributed / **1/7** self-reported, so that derivation is
+> void; the operative target is the user's **≥5/7 on HTB and ≥5/7 on challenge-alike
+> variations**. This document's framing as a *port* is also withdrawn — legacy holds no
+> capability surplus to transfer. See
+> `docs/research/2026-09-27-legacy-baseline-measured.md`.

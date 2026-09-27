@@ -89,6 +89,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   more aggressive heuristics and solved 3/7 HTB targets where the canonical
   pipeline solved 0/7. The winning technique is prefixed with `legacy:` in
   the output (e.g. `legacy:variable_overwrite`).
+  **Erratum (2026-09-27):** the "3/7" in the line above is withdrawn. Measured
+  directly, the legacy engine scores 0/7 on the HTB targets under attributed
+  crediting and 1/7 under the self-report criterion the original figure used.
+  The fallback's behaviour is unchanged; only the claim about its value is.
+  See `docs/research/2026-09-27-legacy-baseline-measured.md`.
 
 - `--strategy <name>` flag on `solve` and `autopwn`: attempt only the named
   technique, bypassing applicability gates. Validates the name against the

@@ -44,6 +44,14 @@ the 2026-09-27 session named legacy's three solves as `sick_rop`,
 `explain` command, not about solving. The legacy solve set is `sick_rop`,
 `rocket_blaster_xxx`, `ancient_interface` (same report, lines 74-84).
 
+> **Second erratum, 2026-09-27 — the whole `legacy` column above is withdrawn.** The
+> legacy engine has now been measured directly rather than read from the retest report:
+> it scores **0/7** attributed and **1/7** under the retest's own self-report criterion.
+> Only `sick_rop` keeps a ✓ (and only as `CLAIMED_UNATTRIBUTED`, `OUTPUT_MATCH`);
+> `rocket_blaster_xxx` → `NOT_SOLVED` (65.7 s) and `ancient_interface` → `TIMEOUT`
+> (600.1 s). The `canonical` column is unaffected. See
+> `docs/research/2026-09-27-legacy-baseline-measured.md`.
+
 ---
 
 ## 2. Measurement H — re-score the 7 HTB challenges
@@ -215,6 +223,10 @@ stated, each with provenance:
 
 1. Canonical's HTB solve count, per target, with technique and verification
    level — compared to the recorded 1/7 and to legacy's 3/7.
+   > **ERRATUM, 2026-09-27:** drop the legacy comparison, or state it as the measured
+   > **0/7 attributed / 1/7 self-reported**. Comparing an attributed canonical count
+   > against legacy's unattributed self-report was never like-for-like. See
+   > `docs/research/2026-09-27-legacy-baseline-measured.md`.
 2. Per class, whether the technique survives challenge variation, or is tuned to
    one shape. A class that solves its fixed point and fails every variant is the
    finding this exercise exists to produce.
