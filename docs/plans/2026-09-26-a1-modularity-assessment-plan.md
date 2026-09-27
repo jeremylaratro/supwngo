@@ -351,3 +351,208 @@ prints the numbers so a reader can re-rank.
 
 Revision 2 goes to round 2. Round budget: 1 spent, **2 remain**. A-1 still changes **no
 production code**; T-A2′ is the mechanical guard on that.
+
+---
+
+# REVISION 3 — after round-2 peer review (NOT-APPROVED)
+
+Review: `docs/plans/2026-09-26-a1-plan-review-r2-sol.md` (Sol 5.6, xhigh; 3 Critical,
+3 High, 2 Medium). **All eight accepted.** C3 is the important one and it is correct: I
+broke my own held-out validation by writing the answer down.
+
+**Round budget: 2 spent, 1 remains.**
+
+## R3.1 — Each probe's behavioural contract, stated inline (C1)
+
+R2.1 froze probe *names* but P2 still said "per B-3 §2", which requires a two-format
+registry — so one analyst counts BMP plus wiring and another counts registry + BMP + WAV +
+shared finalisation, both faithfully. And P3 was textually satisfiable by an allowlist edit
+alone, though its executor also hardcodes stdin.
+
+**Fix — each probe now states its own contract inline, and nothing is by reference.**
+Every probe declares: entry point, target state, payload byte domain, the verifier receipt
+it must produce, whether the generated artifact must replay, its negative control, and an
+explicit **included/excluded** list for CLI surface, registry, second formats, and engine
+selection. Base SHA remains `37a8d9b`.
+
+| probe | contract (abbreviated; full form in the deliverable) | explicitly EXCLUDED |
+|---|---|---|
+| P1 `SINK_ENV` | `--input-vector env --input-name VAR`; `ret2win` payload (arbitrary bytes incl. NUL); verifier receipt records `delivered_bytes`; artifact must replay | any second env-like sink; sockets |
+| P2 BMP envelope | `DeliverySpec.container="bmp"` wraps a `ret2win` payload for a `file-argv` sink; one format only | **the registry abstraction, WAV, and shared finalisation** |
+| P3 `negative_index_write` on `file-argv` | allowlist membership **and** the executor's hardcoded stdin delivery both changed; receipt proves file delivery | new techniques; other executors |
+| P4 third oracle | "target wrote a named file" selectable beside the existing two; one oracle | changing either existing oracle's semantics |
+| P5 engine interface | both engines reachable behind one interface, **zero** call-site `if` on engine type, all 5 construction sites converted | behaviour changes in either engine |
+
+**"Mandatory function"** is now defined alongfile and decision point: a function whose body
+must change for the contract's behaviour to hold — not a function merely called.
+
+## R3.2 — A genuinely independent second derivation (C2)
+
+R2.2's two derivations shared my own candidate-file universe, so a file I never considered
+(`templates.py`, in the review's example) appears in neither and exact equality passes
+vacuously. Proving RED by deleting a known entry only tests the comparator.
+
+**Fix:**
+
+1. **The second derivation is produced by a peer model that is not shown my candidate
+   set** — it receives only the probe contract and the repo, and traces from entry point to
+   observable output. The two sets are compared **only after both exist**, and their
+   **union is adjudicated** with a written reason per disputed file.
+2. **A concealed-ground-truth validation case** proves the procedure detects omissions: one
+   probe is run against a *completed* change whose true mandatory set is known but withheld
+   from both derivations until they are registered. If the procedure misses a file the real
+   change required, the procedure is reported as inadequate rather than its output
+   published.
+
+## R3.3 — A5 was not held out, because I disclosed the answer (C3)
+
+The review is right, and this is a self-inflicted defect: Revision 2 wrote *"it touched
+**exactly one production file** (`executors/stack_techniques.py`)"* into the plan, and §1
+had already listed Sprint 2′'s eight files by name. A method returning one arbitrary file
+for Sprint 1 and eight arbitrary files for Sprint 2′ would pass a count gate while naming
+every seam wrongly.
+
+**Fix:**
+
+- **Sprint 1 (`ae0cd73`) and Sprint 2′ are relabelled `calibration`.** Their answers are
+  public in this document; they can tune the method, never validate it.
+- **A5′ — a genuinely blind held-out case.** Selected now by a stated rule, *before* any
+  prediction, with **only its SHA and subject recorded and its diff deliberately not
+  inspected**:
+
+  > **Rule:** the most recent `feat:` commit touching `supwngo/exploit/pipeline/` that is
+  > an ancestor of `ae0cd73`.
+  > **Result: `1e26373` — "feat: add --strategy and --all-strategies flags to solve and
+  > autopwn".**
+
+  Its file/function/decision-point **identities** are pre-registered as a prediction, then
+  the diff is unblinded once and scored by **precision and recall** against an
+  independently adjudicated mandatory set. Counts alone do not score; identities do.
+- If the prediction is registered after any inspection of `1e26373`'s diff, A5′ is void and
+  must be reported void. The honesty of this gate is the gate.
+
+## R3.4 — Threshold precedence, and single-probe seams can be defects (H1)
+
+R2.7's triggers overlapped: five probes each implicating one distinct expensive seam fired
+**both** "null result" (no seam in ≥2 probes) and "Method B required" (≥4 seams, no
+overlap), and every such seam was auto-classified `right seam` merely because one probe
+sampled its axis.
+
+**Fix — explicit precedence and a cost ceiling:**
+
+1. **Method B first.** If probes implicate ≥4 distinct seams with no overlap, the
+   whole-graph view runs **before** any null or defect decision. A diffuse result is never
+   resolved by declaring adequacy.
+2. **Null requires more than non-overlap.** Permitted only after every probe's mandatory
+   cost is **≤2 files and ≤1 decision point** *and* every seam is classified intrinsic with
+   a reason. Non-overlap alone is not sufficient.
+3. **A single-probe seam can be a `modularity defect`** if its own mandatory cost exceeds
+   that ceiling — recurrence is evidence, not a requirement.
+4. Reductions in **functions or decision points** count, not only files.
+
+## R3.5 — Benefit is a vector, not a sum (H2)
+
+R2.8 added files + functions + decision points into one number — dimensionally invalid —
+and deduplicated recurring future edits, so a proposal removing the *same* edit from all
+five probes scored one unit while a proposal removing two decision points from one probe
+outranked it.
+
+**Fix:** benefit is reported as a **per-probe vector** — (file-edit *occurrences*,
+function-edit *occurrences*, decision points) — with **occurrences counted per probe, not
+deduplicated**, against a separate one-time implementation-cost vector. Ranking is
+**Pareto**; where Pareto leaves ties, weights are pre-registered with a sensitivity check.
+No scalar score appears anywhere.
+
+## R3.6 — The scope gate's untracked baseline (H3)
+
+`git ls-files --others --exclude-standard` emits **leaf paths**, not the three directory
+names I baselined, so R2.3's four-entry baseline would leave T-A2′ permanently red — and
+prefix-exempting the directories would let `tests/htb-targets/new_file.py` hide behind the
+baseline.
+
+**Fix — T-A2″** snapshots the **exact leaf-path output** at sprint start into a recorded
+manifest and asserts `current_untracked − baseline_untracked == ∅`. No directory is ever
+treated as a wildcard. The comparison is set difference over exact paths, stated in the
+test.
+
+## R3.7 — Deliverable location and the null branch's wording (M1, M2)
+
+- **M1:** the queue exit requires the assessment under **`docs/research/`**. T-A3 now gates
+  that the final artifact exists at `docs/research/<date>-a1-modularity-assessment.md` and
+  that its path is recorded beside the queue closure. Appending to this plan does not
+  satisfy A-1.
+- **M2:** the null branch may no longer assert *"Sprint 2′'s eight files were the one-time
+  price of a new axis"* as fact. It reports that the evidence is **consistent with** an
+  axis-specific cost, labels that `inferred`, and lists competing explanations — and it may
+  not be stated at all until Method B has resolved a diffuse result.
+
+## R3.8 — Status
+
+Revision 3 goes to round 3, the final round. A-1 still changes **no production code**;
+T-A2″ is the mechanical guard.
+
+---
+
+# ESCALATION — round 3 exhausted, design escalated, NOT implemented
+
+Review: `docs/plans/2026-09-27-a1-plan-review-r3-sol.md` (Sol 5.6, xhigh; 3 Critical,
+3 High, 2 Medium). **Round budget: 3 of 3 spent.**
+
+The reviewer names three separate recurrences — C1 is *"the same defect class as R2 C3
+recurring again"*, C2 is *"the third occurrence of the R1 C1 / R2 C1 defect"*, and H2
+*"repeats R1 H4 and R2 H1"* — and in each case recommends escalating the design rather than
+patching. **A-1 is therefore NOT implemented** and returns to planning.
+
+## The two defects that decide it
+
+**1. A5′ was still not held out, for a reason I should have caught.** `1e26373` is an
+**ancestor of the probe base SHA `37a8d9b`**, so its implementation is already present in
+the tree the prediction is made from. Grepping the current tree for `--strategy` yields the
+answer directly; precision and recall would score perfectly while predicting nothing from
+the pre-change architecture. Recording only the SHA was not enough — **the code was in the
+room.**
+
+Escalated design: the evaluator must be isolated to the commit's **parent tree**, with no
+descendant-tree and no history access, given a **fully frozen behavioural contract** rather
+than a subject line, and a **separate custodian** unblinds and scores. That needs a second
+party by construction; it is not a wording change.
+
+**2. The probe contracts were post-hoc, three rounds running.** Deferring each contract's
+"full form" to the deliverable means the contract can be narrowed to fit whatever the trace
+found — and both derivations then agree because they share the retrospectively narrowed
+contract.
+
+Escalated design: an **immutable preregistration phase** that publishes and hashes every
+probe's complete contract *before* any tracing, with the deliverable forbidden from
+completing or reinterpreting them.
+
+## Also blocking, and mechanical
+
+**P1's contract is impossible.** It required arbitrary payload bytes *including NUL*
+through an environment variable, but POSIX environment entries are NUL-terminated and
+Python raises `ValueError: embedded null byte`. No implementation could satisfy it, so
+"5/5 probes" was unreachable — or an analyst silently adds encoding and changes the
+capability being measured. P1 must freeze an environment-safe byte domain or pick a
+binary-safe sink.
+
+**P2 is incompatible with its own calibration target.** R3.1 excluded the registry, WAV and
+shared finalisation from P2; B-3 necessarily includes all three. Scoring P2 against B-3
+would report missing identities that P2 was told to omit.
+
+**Ranking remains undefined.** "Pareto, then pre-registered weights, and no scalar score"
+does not produce a reproducible ordering — Pareto-incomparable proposals get no order, and
+weights chosen after seeing the vectors justify any preferred answer.
+
+**Provenance, again:** hypothetical probe costs are `inferred`/`predicted`, not `measured`,
+however many derivations agree. Two analysts agreeing about a counterfactual is still a
+counterfactual.
+
+## Honest accounting
+
+A-1's difficulty is not the analysis — it is that **a self-assessment of one's own
+architecture, validated by predictions one can check in advance, has no honest gate without
+a second party.** Three rounds converged on that. The escalated design needs an isolated
+evaluator and a custodian, which is a materially different sprint from "read the code and
+write a finding".
+
+**Status: NOT APPROVED, NOT IMPLEMENTED, returned to planning.**

@@ -387,3 +387,259 @@ VOID. Three states, not two.
 ## R2.10 — Status
 
 Revision 2 goes to round 2. Round budget: 1 spent, **2 remain**.
+
+---
+
+# REVISION 3 — after round-2 peer review (NOT-APPROVED)
+
+Review: `docs/plans/2026-09-26-m1b-plan-review-r2-sol.md` (Sol 5.6, xhigh; 2 Critical,
+3 High, 4 Medium). **All nine accepted.** Both Criticals were verified by me against the
+code first; both are real, and one of them shows Revision 2's own "fix" was harmful.
+
+**Round budget: 2 spent, 1 remains.** Revision 3 is the last revision before either
+implementation or escalation.
+
+**USER DECISION (2026-09-27):** M-1b's scope is **widened** to add a delivery-aware
+wrong-payload control. §2's out-of-scope clause is amended in R3.2 accordingly.
+
+## R3.1 — Row 06's gate value was winnable by filler alone (Critical 1)
+
+`verified by inspection`: `VariableOverwriteExecutor`'s filler byte is literally `b"A"`
+(= `0x41`) — `executors/stack_techniques.py:205`, `:235`, and most directly `:123`:
+`payload = b'A' * buf_size + struct.pack('<I', magic)`.
+
+Revision 2 chose row 06's win condition as `== 0x41414141`. **A filler-only payload of
+sufficient length therefore wins**, writing `0x41414141` into the adjacent variable
+without the comparison constant ever being recovered or appended. T-V6 (the NUL-free
+check) passes, because filler is NUL-free. The row would have scored SUCCESS while
+proving nothing about payload construction — a trivially-solvable target reached **through
+the very sink under test**.
+
+**Fix (two parts, both required):**
+
+1. **Row 06's gate value is `0x42434445`** — NUL-free *and* containing no `0x41` byte, so
+   filler cannot forge it. Generalised as a rule, since this trap is not row-specific:
+   **every variable-overwrite variant's gate value must contain no byte equal to the
+   executor's filler byte and no NUL.**
+2. **T-V6′** (replaces T-V6): assert the generated payload is NUL-free **and** that the
+   gate value shares no byte with the filler. Red-proof: set the gate value back to
+   `0x41414141` → must fail.
+
+## R3.2 — Delivery-aware per-row discrimination (Critical 1, second half; round-1 Critical 2 recurrence)
+
+Round-1 Critical 2 said the inherited controls do not exercise the declared ingress.
+Revision 2 did not fix it, and the review is right that the 90/91 pairs are not a
+substitute: they discriminate *targets*, not *payloads*. The harness's existing
+`negative_control()` launches only `[binary]` with stdin fillers — it never materialises a
+payload file, never uses the declared argv template, and so cannot tell a correct payload
+from any non-empty one delivered the same way.
+
+**§2 amendment (user decision).** Formerly out of scope: "changing `run_bench.py`'s
+verdict ladder, secret-flag provisioning, VOID detection, or independent re-execution."
+Now out of scope: **the verdict ladder, secret-flag provisioning, and independent
+re-execution remain untouched.** *Adding a new control* is in scope. The distinction is
+load-bearing: M-1b stays comparable to M-1a because SUCCESS still means exactly what it
+meant, and a new control can only ever *remove* a success, never create one.
+
+**V4 (new sub-component) — `wrong_payload_control()` in `benchmark/run_bench.py`:**
+for each required row, after a SUCCESS is credited, deliver a **same-length payload of
+wrong bytes** through the **exact same `DeliverySpec`** — same sink, same
+`payload_filename`, same argv template — and require it does **not** disclose the flag.
+
+| outcome | meaning |
+|---|---|
+| correct payload discloses the flag **and** same-length wrong payload does not | row is **DISCRIMINATING** — credited |
+| both disclose the flag | row is **VOID** (`corpus_payload_blind`) — a corpus fault of mine, not a success |
+| correct payload does not disclose | ordinary FAILED |
+
+- **T-V10 (new):** a deliberately payload-blind target (discloses on any non-empty file)
+  must be classified `corpus_payload_blind`, **not** SUCCESS. Red-proof: disable the
+  wrong-payload control → the blind target must score SUCCESS, proving the control is
+  what catches it.
+- **M-1a re-run is mandatory** after V4 and compared per target, since V4 touches shared
+  harness code.
+
+## R3.3 — Two core families, not one shared core (Critical 2)
+
+R2.6's "one shared vulnerable core across every row" is incompatible with a matrix
+spanning two techniques: ret2win overwrites a saved return address and reaches a win
+symbol; variable_overwrite corrupts an adjacent variable past a comparison gate. Enforced
+literally it rejects correctly-authored targets; enforced loosely it proves nothing.
+
+**Fix — two families, each internally pinned and each with its own fixed point:**
+
+| family | rows | fixed point |
+|---|---|---|
+| **ret2win core** | `01`(fp), `02`, `03`, `04`, `05`, `07` | `01_win_stdin_baseline` — byte-identical to corpus `15_win_function` |
+| **variable_overwrite core** | `06`, `08`, `09` + **`00_varov_stdin_baseline`** (new, non-required) | `00_varov_stdin_baseline` |
+
+Within each family, T-V4′ mechanically compares buffer geometry, vulnerable read length,
+gate/win path, and effective compiler flags. **Across** families nothing is compared —
+that comparison was the defect. The new `00` fixed point is non-required (it is a control,
+not a capability claim) but its absence makes the variable-overwrite family unanchored, so
+it is mandatory for the PASS condition's *hygiene* clause.
+
+## R3.4 — A committed reducer, because a PASS condition nobody executes is prose (High 1)
+
+R2.9's PASS/FAIL/INCONCLUSIVE rules live only in this document. `run_bench.py`'s
+`write_summary()` knows nothing about them, so running only rows `02–09` would print
+"7/7 SUCCESS" with `90p` and `91b` simply absent, and nothing would convert missing legs
+into INCONCLUSIVE.
+
+**V5 (new sub-component) — `benchmark/m1b_gate.py`**, committed, which reads a report and
+emits **one** three-state verdict after validating: the exact required slug census; each
+control's expected status; per-family core evidence; both fixed points; every row
+DISCRIMINATING per R3.2; and no VOID or fail-closed build.
+
+- **T-V11 (new):** removing **each** leg in turn — every required row, every control, each
+  fixed point — must produce INCONCLUSIVE or FAIL, never PASS. Parametrised over the legs
+  so a new leg cannot be added without a removal case.
+
+## R3.5 — T-V9 must compare `build_argv()`, not `to_dict()` (High 2)
+
+`verified by inspection`: `_normalize_argv_template` is called at `contracts.py:256` into a
+**local** variable, and `DeliverySpec` is frozen — so the stored `argv_template` retains
+`@@` and any serialisation of it differs from `{payload_file}` even though both produce
+identical launch argv.
+
+**Corrected:** T-V9 compares **`build_argv(binary_path, payload_value)` output** for
+`("-f", "@@")` versus `("-f", "{payload_file}")` with the same payload path; they must be
+equal. `to_dict()` is **not** asserted to canonicalise, because it does not and this plan
+does not propose changing it. Revision 2's version of T-V9 would have rejected correct
+behaviour.
+
+## R3.6 — Controls need complete, valid, matched configurations (High 3)
+
+Revision 2 left `--input-name` off control 90 while requiring 90p to work. Control 90
+would then be refused for an **invalid `DeliverySpec`** and record the required FAILED
+without ever launching with a payload file — passing the pair while proving nothing.
+
+**Fix:** every control carries complete CLI arguments; `90` and `90p` have **identical
+valid `DeliverySpec`s** and identical build flags, differing only in the causal branch that
+reads the file; and **FAILED is only accepted for `90` with positive evidence that it
+launched with the materialised file present** (recorded from the launch argv and the file's
+existence). A refusal-to-launch is **INCONCLUSIVE**, not FAILED.
+
+## R3.7 — Control 91's positive leg needs a real config argument (Medium 1)
+
+As written, a target that runs the stdin vulnerability when `argc == 1` and exits whenever
+any argument is present satisfies the 91 pair — so no run ever demonstrates an argv config
+file coexisting with stdin payload delivery. The CLI also rejects `--input-argv` with the
+stdin vector, so there is no way to express it today.
+
+**Fix — V6 (new):** an optional manifest key **`target_argv:`** (default `[]`) supplying
+*static* arguments always passed to the target, independent of payload delivery. `91a` then
+runs with a real `--config profile.cfg` **and** the stdin sink; `91b` changes **only** the
+payload sink. Same empty-default discipline and byte-identical-run obligation as `cli_args:`
+(T-V0 extends to cover it).
+
+## R3.8 — Workspace staging must be source-only (Medium 2)
+
+`verified by inspection` from the review's citation: `_run_one_isolated()`
+(`run_bench.py:1218`) creates a private TMPDIR but keeps using the **persistent corpus
+target directory** as cwd. A naive `copytree(target_dir, rep_dir)` would copy a seeded
+stale `input.dat` into the "fresh" workspace and reproduce the VOID exactly.
+
+**Fix:** per-rep staging copies a **source-only allowlist** (the `.c` source and its
+`cflags`), builds inside a newly-empty rep directory, and **asserts the declared payload
+path is absent** before the controls run. **T-V8′** seeds the stale winning file in the
+*persistent/prior* workspace — not the freshly created one — because seeding the fresh
+workspace would test nothing.
+
+## R3.9 — Reliability comparison and provenance (Medium 3, Medium 4)
+
+- **Fixed point:** exact equality of two 5-rep reliability values is flaky (a documented
+  delivery race gives 5/5 vs 4/5 on identical code). **Pre-registered rule:** the fixed
+  point holds if row `01` and corpus `15` both score **≥4/5**, and **both observed rates
+  are reported**. Exact equality is not required and never was the point.
+- **Provenance, corrected throughout:** facts established by reading code are
+  **`verified by inspection`**, not `measured`. `measured` is reserved for archived
+  executions with inputs and outputs. This applies to R2.1, R2.2, R3.1, R3.5, R3.8 — all
+  relabelled — and to the harness's private-cwd behaviour, which R2.3 wrongly treated as
+  proven by a run banner.
+
+## R3.10 — Revised PASS condition (supersedes R2.9)
+
+**M-1b PASSES iff `benchmark/m1b_gate.py` returns PASS**, which requires all of:
+
+1. **Capability:** `02, 03, 04, 05, 06, 08, 09` all SUCCESS **and** all DISCRIMINATING
+   (R3.2).
+2. **Controls:** `90` FAILED *with launch evidence*; `90p` SUCCESS; `91a` SUCCESS;
+   `91b` FAILED.
+3. **Fixed points:** `01` and corpus `15` both ≥4/5 with both rates reported; `00`
+   SUCCESS; per-family core evidence intact (R3.3).
+4. **Hygiene:** no row VOID — including no `corpus_payload_blind`.
+5. **No regression:** M-1a unchanged per target after V0/V4/V6.
+
+**INCONCLUSIVE** on any absent leg, any fail-closed build, any VOID, or any control that
+failed to launch. `07` is reported separately and is not part of any clause.
+
+## R3.11 — Status
+
+Revision 3 goes to round 3, the final round. If round 3 surfaces another recurrence of the
+payload-blind class, the standing rule applies: **escalate the design rather than patch
+the gate a fourth time**, and M-1b returns to planning instead of implementation.
+
+---
+
+# ESCALATION — round 3 exhausted, design escalated, NOT implemented
+
+Review: `docs/plans/2026-09-27-m1b-plan-review-r3-daybreak.md` (Daybreak Blue, xhigh;
+2 Critical, 5 High, 1 Medium). Reviewer rotated from Sol 5.6 so no single model is
+permanently this plan's reviewer.
+
+**Round budget: 3 of 3 spent.** The reviewer's opening line is the finding that matters:
+*"The payload-blind defect has recurred, so the plan's own escalation rule applies."*
+R3.11 committed to exactly that, so **M-1b is NOT implemented** and returns to planning.
+
+## Why a fourth revision would have been the wrong move
+
+The payload-blind class has now survived three fixes:
+
+| round | my fix | how it was defeated |
+|---|---|---|
+| 1 | negative controls + VOID detection | controls never exercise the declared ingress |
+| 2 | 90/91 target pairs | they discriminate *targets*, not *payloads* |
+| 3 | wrong-payload control preserving the `DeliverySpec` | the `DeliverySpec` is not the whole execution — `independent_verify()` also injects `VERIFY_STDIN` (`run_bench.py:721`), so a target that needs *both* a non-empty file and stdin is credited DISCRIMINATING while ignoring file contents |
+
+Each round I enumerated "the parts of the execution that must match", and each round the
+review found a part I had left out — stdin, then static argv, then auxiliary files, cwd and
+environment. **The design was wrong, not the wording:** an enumeration of what must match
+can always be short by one item.
+
+## The escalated design (for the re-plan, not for this sprint)
+
+1. **Launch-recipe replay, not spec preservation.** Capture **one complete launch recipe**
+   from the credited run — exact exec argv, stdin transcript, cwd, environment, static
+   argv, and the materialised file set with hashes — then replay it with **only the payload
+   bytes changed**. This inverts the design: nothing is enumerated as relevant, everything
+   is recorded and exactly one variable moves. That is a controlled experiment and it
+   cannot be short by one item.
+2. **One control-result contract for every expected-negative leg** — valid configuration,
+   payload materialised, exec observed, target liveness observed, flag absent — replacing
+   the per-control exceptions that let round-2 High-3 recur as round-3 High-3. A refusal to
+   launch is INCONCLUSIVE, never FAILED.
+3. **Evidence binding.** Reports must carry source, cflags, compiler argv and built-binary
+   hashes per rep, so the reducer validates *what was executed* rather than the current
+   workspace — otherwise swapping sources after the run still passes.
+4. **A strict two-digit slug grammar.** `verified by inspection`: `build_all.sh` strips
+   exactly `[0-9][0-9]_` (`build_all.sh:55`) while `Corpus.binary_name()` partitions on the
+   first `_` (`run_bench.py:252`), so `90p`, `91a`, `91b` are **structurally unbuildable** —
+   they would have become provisioning VOIDs and M-1b could never have passed. Slugs become
+   `90_`, `91_`, `92_`, `93_`.
+5. **A golden-report PASS case.** T-V11 only removed legs, which a reducer returning
+   INCONCLUSIVE forever also satisfies. The re-plan needs a complete report that must PASS,
+   then per-predicate mutations that must not.
+6. **Row 07's gate membership stated once, mechanically** — it is currently required by the
+   core clause, exempted from the gate clauses, and untested for absence.
+
+## Honest accounting
+
+M-1b began as "a corpus plus one optional manifest key". The escalated design is
+harness engineering: recipe capture, replay, evidence hashing, a committed reducer, and a
+control contract. **That is a different sprint than the one planned**, and saying so is
+cheaper than discovering it during implementation.
+
+**Status: NOT APPROVED, NOT IMPLEMENTED, returned to planning.** The ingress corpus itself
+(V1/V2/V3) is unaffected by every finding above and remains the one part that could ship
+under a narrowed claim.
