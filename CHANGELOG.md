@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `--no-legacy` flag on `autopwn` and `solve`: disables the legacy
+  `EnhancedAutoExploiter` fallback entirely for a canonical-only run —
+  `EnhancedAutoExploiter` is never instantiated, even if the canonical
+  pipeline fails. Exists for measurement: `scripts/htb_rescore.py` (the
+  canonical-engine re-score harness) was silently measuring
+  canonical+legacy combined because `solve` always fell back to the legacy
+  engine on canonical failure, making per-target runtimes and the solved
+  count unusable for diagnosis.
+- `solve`'s JSON output gains a `"legacy_fallback"` key: an explicit record
+  of whether the legacy fallback block ran, one of `"disabled"`
+  (`--no-legacy` was passed), `"not_reached"` (canonical succeeded or the
+  run was interrupted), `"skipped_vector"` (a non-stdin `--input-vector`
+  was declared), or `"ran"` (the legacy engine was actually instantiated).
+  Replaces an inference from the absence of a `legacy:` prefix on
+  `technique` with a positive fact; `"ran"` is recorded before
+  `legacy.run()` is called, so a legacy engine that raises can't hide that
+  it ran. `autopwn`'s JSON output gains the same key.
 - Ingress-variation benchmark corpus (`benchmark/corpus_vectors/`, manifest
   `benchmark/corpus_vectors.yaml`): eight targets that hold the vulnerability
   constant — a struct pinning an overwrite gate at offset 64 — and vary only how
@@ -256,6 +273,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shown in full `pwn` output too.
 
 ### Fixed
+- `scripts/htb_rescore.py`: passes `--no-legacy` so its measurement is
+  canonical-only, hard-errors a rep if a `legacy:`-prefixed technique or a
+  non-`disabled`/`not_reached` `legacy_fallback` ever appears anyway
+  (`verdict()` now has a `HARNESS_ERROR` state that overrides
+  `SOLVED`/`NOT_SOLVED`/`INCONCLUSIVE`), and replaces `subprocess.run(...,
+  timeout=...)` (which SIGKILLs the child, giving the CLI's SIGTERM report
+  handler no chance to run) with `Popen` + `communicate()` that sends
+  SIGTERM first and only escalates to SIGKILL if the process doesn't exit,
+  so a timed-out rep can still report which techniques were attempted.
+  Also corrects the module docstring's claim that omitting `--libc`
+  disables the legacy fallback — it never gated it; the fallback is now
+  disabled structurally by `--no-legacy`, and `--libc` is withheld for the
+  separate reason that a solve needing an operator-supplied libc measures
+  the operator, not the tool.
 - `variable_overwrite` no longer abandons its entire candidate sweep when one
   candidate cannot be carried by the declared delivery transport. It swept gate
   constants smallest-first and called the verifier with no exception handling, so

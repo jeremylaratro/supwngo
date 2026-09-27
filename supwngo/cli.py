@@ -2681,9 +2681,15 @@ def _render_handoff_report(report) -> None:
          "bare argv[1] can't express. Omit to keep the default template "
          "for the declared vector.",
 )
+@click.option(
+    "--no-legacy", "no_legacy", is_flag=True,
+    help="Canonical-only run, for measurement: if the canonical pipeline "
+         "fails, do NOT fall back to the legacy EnhancedAutoExploiter. "
+         "The legacy engine is never instantiated in this mode.",
+)
 @click.pass_context
 def autopwn(ctx, binary, output, timeout, offset, libc, json_output, strategy, all_strategies,
-            input_vector, input_name, input_argv):
+            input_vector, input_name, input_argv, no_legacy):
     """
     Automatic exploitation - try multiple techniques automatically.
 
@@ -2765,35 +2771,47 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output, strategy, a
         finally:
             signal.signal(signal.SIGTERM, prev_handler)
 
+    legacy_fallback = "not_reached"
     if not engine.successful and not _timeout_interrupted:
-        from supwngo.exploit.pipeline.contracts import SINK_STDIN
-        if input_vector is not None and input_vector != SINK_STDIN:
-            # W4/T4: EnhancedAutoExploiter is stdin-only and cannot honor a
-            # declared file/argv vector. Falling back to it here would let a
-            # legacy stdin technique "solve" a target whose declared route
-            # was never actually honored, and report overall success anyway
-            # -- laundering a result through the one engine that structurally
-            # cannot deliver via the requested channel. Refuse loudly rather
-            # than threading the vector into an engine that can't use it.
-            console.print(
-                f"\n[yellow]Skipping legacy fallback: --input-vector "
-                f"{input_vector!r} was declared, but the legacy engine is "
-                "stdin-only and cannot honor it.[/yellow]"
-            )
+        if no_legacy:
+            # Canonical-only mode (measurement): skip the fallback entirely.
+            # `EnhancedAutoExploiter` must never be imported/instantiated here.
+            legacy_fallback = "disabled"
         else:
-            with console.status("Canonical pipeline did not solve — trying legacy engine..."):
-                try:
-                    from supwngo.exploit.enhanced_auto import EnhancedAutoExploiter
-                    legacy = EnhancedAutoExploiter(bin_obj, libc_path=libc)
-                    legacy.run()
-                    if legacy.successful:
-                        engine.successful = True
-                        engine.technique_used = f"legacy:{legacy.technique_used}"
-                        engine.exploit_script = legacy.exploit_script or legacy.exploit_template
-                        engine.context.verification_level = legacy.verification_level
-                        engine.context.captured_flag = legacy._captured_flag
-                except Exception:
-                    pass
+            from supwngo.exploit.pipeline.contracts import SINK_STDIN
+            if input_vector is not None and input_vector != SINK_STDIN:
+                # W4/T4: EnhancedAutoExploiter is stdin-only and cannot honor a
+                # declared file/argv vector. Falling back to it here would let a
+                # legacy stdin technique "solve" a target whose declared route
+                # was never actually honored, and report overall success anyway
+                # -- laundering a result through the one engine that structurally
+                # cannot deliver via the requested channel. Refuse loudly rather
+                # than threading the vector into an engine that can't use it.
+                legacy_fallback = "skipped_vector"
+                console.print(
+                    f"\n[yellow]Skipping legacy fallback: --input-vector "
+                    f"{input_vector!r} was declared, but the legacy engine is "
+                    "stdin-only and cannot honor it.[/yellow]"
+                )
+            else:
+                with console.status("Canonical pipeline did not solve — trying legacy engine..."):
+                    try:
+                        from supwngo.exploit.enhanced_auto import EnhancedAutoExploiter
+                        # Recorded before construction, not after: a constructor
+                        # that raises still means the legacy engine was reached,
+                        # and the enclosing `except Exception: pass` must not be
+                        # able to make that read as "not_reached".
+                        legacy_fallback = "ran"
+                        legacy = EnhancedAutoExploiter(bin_obj, libc_path=libc)
+                        legacy.run()
+                        if legacy.successful:
+                            engine.successful = True
+                            engine.technique_used = f"legacy:{legacy.technique_used}"
+                            engine.exploit_script = legacy.exploit_script or legacy.exploit_template
+                            engine.context.verification_level = legacy.verification_level
+                            engine.context.captured_flag = legacy._captured_flag
+                    except Exception:
+                        pass
 
     if json_output:
         try:
@@ -2807,6 +2825,7 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output, strategy, a
             "verified": engine.context.verification_level.name if engine.context.verification_level else "NONE",
             "flag": engine.context.captured_flag,
             "technique": engine.technique_used,
+            "legacy_fallback": legacy_fallback,
             "payload_length": len(engine.final_payload),
             "attempts": [a.to_dict() for a in engine.context.attempts],
             "profile": {
@@ -3251,9 +3270,15 @@ def _guided_fallback(engine, binary: str, libc: Optional[str], timeout: float,
          "bare argv[1] can't express. Omit to keep the default template "
          "for the declared vector.",
 )
+@click.option(
+    "--no-legacy", "no_legacy", is_flag=True,
+    help="Canonical-only run, for measurement: if the canonical pipeline "
+         "fails, do NOT fall back to the legacy EnhancedAutoExploiter. "
+         "The legacy engine is never instantiated in this mode.",
+)
 @click.pass_context
 def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, walkthrough, strategy, all_strategies,
-          input_vector, input_name, input_argv):
+          input_vector, input_name, input_argv, no_legacy):
     """
     One command: binary in, working exploit (or a clear explanation why
     not) out.
@@ -3339,32 +3364,48 @@ def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, 
 
     # Legacy engine fallback: if the canonical pipeline failed, try the
     # legacy EnhancedAutoExploiter which uses more aggressive heuristics.
+    # `legacy_fallback` is a positive record of what happened here (see
+    # the `"legacy_fallback"` key in the JSON result below) so a caller
+    # never has to infer non-execution from the absence of a `legacy:`
+    # prefix on `technique`.
+    legacy_fallback = "not_reached"
     if not engine.successful and not _timeout_interrupted:
-        from supwngo.exploit.pipeline.contracts import SINK_STDIN
-        if input_vector is not None and input_vector != SINK_STDIN:
-            # W4/T4: see the matching guard in `autopwn` -- EnhancedAutoExploiter
-            # is stdin-only and cannot honor a declared file/argv vector, so a
-            # legacy stdin "solve" here would report success without ever
-            # honoring the declared route.
-            console.print(
-                f"\n[yellow]Skipping legacy fallback: --input-vector "
-                f"{input_vector!r} was declared, but the legacy engine is "
-                "stdin-only and cannot honor it.[/yellow]"
-            )
+        if no_legacy:
+            # Canonical-only mode (measurement): skip the fallback entirely.
+            # `EnhancedAutoExploiter` must never be imported/instantiated here.
+            legacy_fallback = "disabled"
         else:
-            with console.status("Canonical pipeline did not solve — trying legacy engine..."):
-                try:
-                    from supwngo.exploit.enhanced_auto import EnhancedAutoExploiter
-                    legacy = EnhancedAutoExploiter(bin_obj, libc_path=libc)
-                    legacy.run()
-                    if legacy.successful:
-                        engine.successful = True
-                        engine.technique_used = f"legacy:{legacy.technique_used}"
-                        engine.exploit_script = legacy.exploit_script or legacy.exploit_template
-                        engine.context.verification_level = legacy.verification_level
-                        engine.context.captured_flag = legacy._captured_flag
-                except Exception:
-                    pass
+            from supwngo.exploit.pipeline.contracts import SINK_STDIN
+            if input_vector is not None and input_vector != SINK_STDIN:
+                # W4/T4: see the matching guard in `autopwn` -- EnhancedAutoExploiter
+                # is stdin-only and cannot honor a declared file/argv vector, so a
+                # legacy stdin "solve" here would report success without ever
+                # honoring the declared route.
+                legacy_fallback = "skipped_vector"
+                console.print(
+                    f"\n[yellow]Skipping legacy fallback: --input-vector "
+                    f"{input_vector!r} was declared, but the legacy engine is "
+                    "stdin-only and cannot honor it.[/yellow]"
+                )
+            else:
+                with console.status("Canonical pipeline did not solve — trying legacy engine..."):
+                    try:
+                        from supwngo.exploit.enhanced_auto import EnhancedAutoExploiter
+                        # Recorded before construction, not after: a constructor
+                        # that raises still means the legacy engine was reached,
+                        # and the enclosing `except Exception: pass` must not be
+                        # able to make that read as "not_reached".
+                        legacy_fallback = "ran"
+                        legacy = EnhancedAutoExploiter(bin_obj, libc_path=libc)
+                        legacy.run()
+                        if legacy.successful:
+                            engine.successful = True
+                            engine.technique_used = f"legacy:{legacy.technique_used}"
+                            engine.exploit_script = legacy.exploit_script or legacy.exploit_template
+                            engine.context.verification_level = legacy.verification_level
+                            engine.context.captured_flag = legacy._captured_flag
+                    except Exception:
+                        pass
 
     if interactive and not engine.successful and not _timeout_interrupted:
         engine = _guided_fallback(engine, binary, libc, timeout,
@@ -3383,6 +3424,7 @@ def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, 
             "verified": engine.context.verification_level.name if engine.context.verification_level else "NONE",
             "flag": engine.context.captured_flag,
             "technique": engine.technique_used,
+            "legacy_fallback": legacy_fallback,
             "output_path": str(output_path),
             "attempts": [a.to_dict() for a in engine.context.attempts],
             "handoff": handoff,

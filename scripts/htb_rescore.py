@@ -19,9 +19,15 @@ Success levels, in the order they are preferred:
                  targets that have no flag path compiled in at all.
   FLAG_CAPTURED  the per-rep secret was reproduced.
 
-`--libc` is deliberately NOT passed: T-1 says "without legacy fallback", the
-recorded 1/7 baseline did not pass it, and a solve that needs it measures the
-operator rather than the tool.
+The legacy fallback is disabled structurally, not by inference: every invocation
+passes `--no-legacy`, so `EnhancedAutoExploiter` is never instantiated, and each
+rep's parsed JSON is asserted to carry `legacy_fallback in ("disabled",
+"not_reached")` and a `technique` that never starts with `"legacy:"` -- a legacy
+result appearing here is a hard harness error, not a plain miss.
+
+`--libc` is withheld for a separate, unrelated reason: it does not gate the
+legacy fallback at all. It is omitted because a solve that needs an
+operator-supplied libc to succeed measures the operator, not the tool.
 """
 from __future__ import annotations
 
@@ -100,36 +106,69 @@ def run_rep(slug: str, binary: Path, timeout: int) -> dict:
         target.chmod(0o755)
 
         started = time.time()
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "supwngo.cli", "solve",
+             str(target), "--json", "--no-legacy"],
+            cwd=str(workspace),           # './flag.txt' is relative
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, "PYTHONPATH": str(REPO)},
+        )
+        timed_out = False
         try:
-            proc = subprocess.run(
-                [sys.executable, "-m", "supwngo.cli", "solve",
-                 str(target), "--json"],
-                cwd=str(workspace),           # './flag.txt' is relative
-                capture_output=True, text=True, timeout=timeout,
-                env={**os.environ, "PYTHONPATH": str(REPO)},
-            )
-            timed_out = False
-            stdout, stderr, rc = proc.stdout, proc.stderr, proc.returncode
-        except subprocess.TimeoutExpired as e:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
             timed_out = True
-            stdout = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
-            stderr = e.stderr.decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
-            rc = None
+            # SIGKILL (subprocess.run's default on timeout) never gives the
+            # CLI a chance to run its SIGTERM handler and emit a report, which
+            # is exactly what made the two timing-out targets undiagnosable.
+            # SIGTERM first, so a still-alive child gets to report; only
+            # escalate to SIGKILL if it doesn't wind down on its own.
+            proc.terminate()
+            try:
+                stdout, stderr = proc.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout, stderr = proc.communicate()
+        rc = proc.returncode
         elapsed = round(time.time() - started, 1)
 
         rep = {
             "slug": slug, "elapsed_sec": elapsed, "timed_out": timed_out,
             "returncode": rc, "level": None, "technique": None,
             "secret_reproduced": False, "shell_confirmed": False,
-            "parse_error": None,
+            "parse_error": None, "hard_error": None,
         }
-        if timed_out:
-            return rep
 
+        # Attempt to parse JSON even in the timeout case: a SIGTERM'd run can
+        # still have emitted a report on the way down, and that's exactly the
+        # diagnosis a plain "TIMEOUT" with nothing else threw away before.
         try:
             data = json.loads(stdout)
         except json.JSONDecodeError as e:
+            if timed_out:
+                # Nothing recoverable -- keep the existing TIMEOUT behaviour.
+                return rep
             rep["parse_error"] = f"{e} | stdout[:200]={stdout[:200]!r}"
+            return rep
+
+        # Canonical-only assertion. Every invocation above passes
+        # --no-legacy, so a legacy result appearing anyway means
+        # canonical-only measurement silently broke -- that is a hard
+        # harness error, never a plain miss, and must not be tolerated
+        # silently by folding it into NOT_SOLVED/INCONCLUSIVE.
+        technique = data.get("technique")
+        if isinstance(technique, str) and technique.startswith("legacy:"):
+            rep["hard_error"] = (
+                f"legacy technique {technique!r} appeared despite --no-legacy "
+                "-- canonical-only measurement is broken"
+            )
+            return rep
+        legacy_fallback = data.get("legacy_fallback")
+        if legacy_fallback is not None and legacy_fallback not in ("disabled", "not_reached"):
+            rep["hard_error"] = (
+                f"legacy_fallback={legacy_fallback!r} despite --no-legacy "
+                "-- canonical-only measurement is broken"
+            )
             return rep
 
         receipts: list[dict] = []
@@ -160,7 +199,12 @@ def run_rep(slug: str, binary: Path, timeout: int) -> dict:
 
 
 def verdict(reps: list[dict]) -> str:
-    """Three states. INCONCLUSIVE is not rounded in either direction."""
+    """Four states. INCONCLUSIVE is not rounded in either direction.
+    HARNESS_ERROR overrides all others: a rep that proves canonical-only
+    measurement broke must never be silently folded into a solved/not-solved
+    count."""
+    if any(r["hard_error"] for r in reps):
+        return "HARNESS_ERROR"
     counted = sum(1 for r in reps if r["level"] in ("SHELL_ACCESS", "FLAG_CAPTURED"))
     if counted >= 2:
         return "SOLVED"
@@ -199,6 +243,7 @@ def main() -> int:
     results = {"run": stamp, "reps": args.reps, "timeout": args.timeout,
                "targets": {}}
 
+    hard_errors: list[str] = []
     for slug, binary in tgts.items():
         reps = []
         for i in range(args.reps):
@@ -207,6 +252,10 @@ def main() -> int:
             print(f"  {slug} rep{i+1}: level={rep['level']} "
                   f"technique={rep['technique']} {rep['elapsed_sec']}s"
                   + (" TIMEOUT" if rep["timed_out"] else ""), flush=True)
+            if rep["hard_error"]:
+                msg = f"{slug} rep{i+1}: {rep['hard_error']}"
+                hard_errors.append(msg)
+                print(f"  HARD ERROR: {msg}", file=sys.stderr, flush=True)
         v = verdict(reps)
         results["targets"][slug] = {"verdict": v, "reps": reps}
         print(f"[{slug}] {v}", flush=True)
@@ -214,12 +263,21 @@ def main() -> int:
     solved = [s for s, r in results["targets"].items() if r["verdict"] == "SOLVED"]
     results["solved"] = sorted(solved)
     results["score"] = f"{len(solved)}/{len(results['targets'])}"
+    results["hard_errors"] = hard_errors
     print(f"\nSCORE {results['score']}  solved={results['solved']}")
 
     out = args.out or (REPO / "benchmark" / "results_htb" / f"{stamp}.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(results, indent=2))
     print(f"report: {out}")
+
+    if hard_errors:
+        print(
+            f"\n{len(hard_errors)} HARD ERROR(S): canonical-only measurement "
+            "broke -- see 'hard_errors' in the report. Do not trust this run's "
+            "score.", file=sys.stderr,
+        )
+        return 3
     return 0
 
 
