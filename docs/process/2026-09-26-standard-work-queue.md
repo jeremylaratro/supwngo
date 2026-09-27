@@ -93,6 +93,37 @@ owes before it can close.)*
 | owes | **plan is at Revision 1 and NOT-APPROVED — one review round outstanding.** Do not start implementation before it clears. |
 | blocked-by | Sprint 2′ commit |
 
+**Update, 2026-09-27 — the BMP envelope's accept rule is now measured exactly, and it is
+not what the error message says.** Reversed statically from `loadBitmap:0x402235`
+(`docs/research/2026-09-27-snow-scan-spike.md` §7.2):
+
+> accepted iff **`400 <= biSizeImage <= 900`** *and* **`biWidth == biHeight`**
+
+The dimensions are **never range-checked** — only compared to each other — and the
+`[400,900]` bound sits on `biSizeImage` (file offset 34), whose endpoints are `20×20` and
+`30×30`, which is where the message's "20x20 to 30x30" comes from. Two consequences for
+this item:
+
+1. **The synthesizer's constraint set is smaller than assumed.** It does not need to
+   reproduce a plausible image at all; it needs `bfType="BM"`, `biWidth == biHeight`,
+   `biSizeImage` in `[400,900]`, and a correct `bfOffBits`. The earlier "20×20, 8bpp,
+   54-byte header" recipe works, but it over-constrains — bit depth and dimensions are
+   free, which matters because **the envelope must not be pinned to the one shape that
+   happens to work** (the generalization mandate).
+2. **The envelope and the payload length are independent, and that is the bug.** The VLA
+   is sized from `biSizeImage` while the fill loop runs to **EOF** with no bound
+   (`main:0x402500-0x40252a`), so payload length is not constrained by the header at all.
+   A registry that sizes the payload to fit the declared image would *destroy* the
+   primitive. **The envelope's job here is to satisfy the header check and then get out of
+   the way** — worth stating in the design, because the intuitive implementation
+   (coherent container) is the wrong one.
+
+Re-triage: relevance **4 → 5**. B-3 is no longer only "what stands between a working file
+channel and `snowscan` solving" — the exploitation route behind it is now established
+(unbounded controlled stack write, no canary in `main`, static non-PIE), so the envelope
+is the remaining blocker on a *candidate seat*, not on a detection signal. Complexity
+stays **2**. `owes` is unchanged: the plan is still NOT-APPROVED at Revision 1.
+
 #### A-1 — modularity assessment of the canonical pipeline *(NEW — user directive, future sprint)*
 
 | field | value |
