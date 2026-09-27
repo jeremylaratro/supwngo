@@ -297,3 +297,166 @@ distinguish success from a convincing shell.
 **Not approved for implementation yet.** Revision 1 answers the review on paper; per
 the standing rule the revised plan goes back for one more round before code, and the
 review budget for this sprint is 3 rounds total.
+
+---
+
+# REVISION 2 — self-audit before round 2
+
+Revision 1 answered the round-1 review on paper. Re-reading it as a whole surfaced
+**four defects that the round-1 review could not have caught**, because three of them
+were *created* by Revision 1's own edits and the fourth is about where the target
+lives. They are fixed here, before spending round 2 on them.
+
+Review budget: round 1 spent. **Two rounds remain.** Revision 2 is what goes to round 2.
+
+## R2.1 — M-8′ was unsatisfiable for BMP (a contradiction introduced by Revision 1)
+
+Revision 1 did two incompatible things:
+
+- **R1.1** refuted the reviewer's pixel-array recommendation and chose the **trailer**
+  as the payload carrier, on measured evidence (8 KB trailer → SIGSEGV 8/20; pixel
+  *content* has no effect on the transcript).
+- **R1.2 finding 3** accepted the requirement that the BMP payload be **"recovered
+  from decoded pixel indices"** by an independent parser.
+
+A trailer-resident payload is not recoverable from decoded pixel indices. `measured`
+2026-09-26, Pillow 12.3.0, a hand-built 20×20/8bpp BMP with an 83-byte trailer:
+
+| envelope | Pillow opens | pixel bytes returned | trailer recoverable from pixels |
+|---|---|---|---|
+| no trailer | yes, `mode=L size=(20,20)` | 400 | n/a |
+| + 83-byte trailer | yes, `mode=L size=(20,20)` | **400** | **False** |
+
+The parser returns exactly the declared pixel array and discards the trailer. So M-8′
+could never have gone green for BMP, and the sprint would have discovered that only
+after building the writer.
+
+**This is a property of BMP, not a defect in the writer** — and saying so is the point.
+A trailer is by construction not parser-visible; demanding parser-visible carriage of a
+trailer is demanding a contradiction.
+
+### Fix: BMP carries the payload in two declared regions, each proving a different thing
+
+```
+[ 54-byte header ][ 256-entry palette ][ 400-byte pixel array ][ trailer ]
+                                        ^ parser-visible       ^ reachability
+                                          carriage region        region
+```
+
+| region | size | what it proves | proven by |
+|---|---|---|---|
+| pixel array | **400 bytes** (fixed by 20×20/8bpp) | **carriage** — an independent parser recovers these bytes byte-for-byte | Pillow `tobytes()` round trip |
+| trailer | size from C0's sweep | **reachability** — these bytes reach memory-unsafe code | crash ratio vs a 0-byte-trailer control |
+
+Placing a carriage-proof prefix in the pixel array costs nothing on the target side,
+because pixel content was `measured` to have no effect on its transcript (R1.1). The
+two regions are therefore complementary, not redundant: **neither region alone proves
+the capability**, and the plan now says which region proves which half instead of
+asking one metric to cover both.
+
+`capacity()` is now two numbers, not one: `parser_visible_capacity() -> 400` and an
+unbounded trailer. A payload longer than 400 bytes is **not** an error — its first 400
+bytes occupy the carriage region and the remainder the trailer. What *is* an error is
+claiming parser-visible carriage for more than 400 bytes.
+
+## R2.2 — `snowscan` is not version-controlled, so two gates cannot be permanent tests
+
+`measured`: `snowscan` lives at
+`tests/htb-targets/a12c736f-…/challenge/snowscan` and **`git ls-files` does not list
+it** — the whole `tests/htb-targets/` tree is untracked, and was deliberately excluded
+from the Sprint 2′ commit as an unversioned artifact. Revision 1 nonetheless wrote
+T-C6′ and T-C7 as if they were ordinary tests.
+
+They cannot be. A test that depends on an untracked binary passes on this machine,
+**errors or silently skips everywhere else**, and a silent skip is the failure mode
+this effort has already been bitten by.
+
+### Fix: split the gates by what they depend on
+
+| gate | depends on | form |
+|---|---|---|
+| T-C0…T-C5 | nothing outside the repo | **permanent tests**, run in the suite |
+| **T-C6′, T-C7** | the untracked `snowscan` | **recorded sprint gates**, run manually, cited by run ID + date, with a `pytest.importorskip`-style explicit skip carrying the reason when the binary is absent |
+
+The permanent suite therefore asserts **envelope correctness**, which is
+deterministic; the target-dependent reachability claim is a recorded measurement with
+its provenance, not a green checkmark in CI. Any Phase-8 claim citing T-C6′ must cite
+the run, per the standing provenance rule.
+
+**Option not taken:** commit a purpose-built corpus target that reproduces snowscan's
+four format gates, which would make reachability a permanent test. Rejected for this
+sprint — writing a target whose crash behaviour matches a real one is its own
+measurement problem, and a corpus target I author to be crashable proves the writer,
+not the capability. **What would flip it:** if the recorded gate proves too unstable
+to cite, a purpose-built target becomes the cheaper option.
+
+## R2.3 — "≥1 of N" is not a gate; nondeterminism needs a separation rule
+
+T-C6′ as written passes at **1/20**, which is indistinguishable from flake for a target
+whose crash is already known to be nondeterministic (8/20 at 8 KB). A gate whose pass
+condition overlaps its own noise floor is a decoration.
+
+### Fix: a three-state rule with a stated N and separation
+
+With `N = 20` reps, treating the trailer envelope as the test arm and the byte-identical
+0-byte-trailer envelope as the control arm:
+
+| outcome | condition | meaning |
+|---|---|---|
+| **PASS** | test ≥ 5/20 **and** control 0/20 | the trailer is attributably reaching unsafe code |
+| **INCONCLUSIVE** | test 1–4/20, **or** control ≥ 1/20 | do not claim reachability; re-measure or raise the trailer size |
+| **FAIL** | test 0/20 | the trailer is not reaching unsafe code at this size |
+
+The control arm is what makes the crash attributable to the payload rather than to a
+generally flaky target — a control that crashes at all voids the comparison, which is
+why `control ≥ 1/20` is INCONCLUSIVE and not simply ignored. Three states, not two,
+per the standing rule.
+
+`N = 20` is chosen because it is the N at which R1.1's measurement separated 8/20 from
+0/20; a smaller N is what produced R1.1's own retracted 64-byte result.
+
+## R2.4 — C0's sweep needs a budget and a stopping rule
+
+R1.1 made C0's crash-threshold sweep load-bearing but left it unbounded, while also
+establishing that every observation needs ~20 reps. A naive sweep is therefore
+hundreds of target executions with no stated end.
+
+### Fix
+
+- **Ladder, not a bisect.** Trailer sizes `0, 64, 256, 1024, 4096, 8192` — 6 points ×
+  20 reps = **120 executions**, bounded and stated. A bisect is what produced the
+  retracted 64-byte claim, because bisection assumes monotonicity that a
+  nondeterministic crash does not have.
+- **Stopping rule:** stop at the smallest size scoring ≥ 5/20 with the 0-byte control
+  at 0/20; that size is the template's trailer size.
+- **Three states again:** if no size in the ladder reaches 5/20, C0 reports
+  *no threshold in range* and B-3's reachability half is **not claimed** — the carriage
+  half (R2.1, parser round trip) still stands on its own, and the sprint ships as a
+  container registry without a reachability claim. This is the null result the plan is
+  willing to report rather than stretch the ladder until something crashes.
+
+## R2.5 — What Revision 2 does not change
+
+The eight accepted round-1 findings, the atomic `encode()` API (R1.4), the stated
+`_wrap`/`_finalize` invariant, the 8bpp lock and the 24bpp negative control (finding 7),
+the `ValueError` on a container over a non-file sink (finding 8), and the refusal to
+claim `snowscan` as solved (§2) all stand unchanged.
+
+Regression baseline is restated against the current measured numbers rather than §6's
+stale ones: full suite **1268 passed, 14 skipped, 14 deselected** (`measured`, post
+Sprint 2′), and the benchmark at **13/13 eligible SUCCESS 5/5 reps** with the 2 known
+corpus-fault VOIDs, compared per target.
+
+## R2.6 — Status
+
+**Still not approved for implementation.** Revision 2 goes to round 2. The three things
+to put in front of the reviewer, because they are where Revision 2 is most likely wrong:
+
+1. Does the two-region BMP split (R2.1) actually prove the capability, or does it prove
+   two unrelated half-facts that do not compose into "the container carries a payload
+   the consumer reads"?
+2. Is the PASS threshold of 5/20 with a 0/20 control (R2.3) defensible, or does an
+   attributable-crash gate need a real statistical test rather than a chosen cut point?
+3. Is demoting T-C6′/T-C7 to recorded manual gates (R2.2) an honest response to an
+   untracked dependency, or does it remove the only gate that would have caught a
+   container that passes every parser and still never reaches the target?
