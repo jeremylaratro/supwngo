@@ -92,16 +92,67 @@ def _require(path: Path) -> str:
     return str(path)
 
 
+def _resolve_libc(binary_path: str) -> str | None:
+    """Resolve the target's libc with ``ldd`` -- deterministically.
+
+    Left to itself, ``collect_facts`` resolves the libc through pwntools'
+    ``ELF.libc``, which reaches ``_patch_elf_and_read_maps``: pwntools patches
+    shellcode into the binary's entry point, **executes it**, and parses
+    ``/proc/self/maps``. On any failure that returns ``{}`` rather than
+    raising, so ``libc`` comes back ``None`` with no error anywhere -- and then
+    ``safe_linking`` is reported UNKNOWN and joins the "Could not determine"
+    list, changing the exact set this module asserts on.
+
+    Measured 2026-09-26: that resolution succeeds when this file runs alone and
+    returns empty in whole-suite session state, which made
+    ``test_the_final_summary_lists_what_could_not_be_determined`` fail only in
+    full-suite context. The assertion is right; the *input* was uncontrolled.
+    ``ldd`` is used here purely because it is deterministic and does not
+    execute the target. See issue I-6 in
+    docs/process/2026-09-26-standard-work-queue.md.
+    """
+    try:
+        done = subprocess.run(
+            ["ldd", binary_path], capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in done.stdout.splitlines():
+        if "libc.so" in line and "=>" in line:
+            candidate = line.split("=>", 1)[1].strip().split()[0]
+            if candidate and Path(candidate).is_file():
+                return candidate
+    return None
+
+
+def _facts_with_pinned_libc(target: Path):
+    """``collect_facts`` with the libc pinned, or an explicit skip.
+
+    Three states, not two: if ``ldd`` cannot name a libc then ``safe_linking``
+    genuinely cannot be measured and the undetermined set this module asserts
+    is not stable -- that is *inconclusive*, and saying so beats both a
+    spurious pass and a spurious failure.
+    """
+    path = _require(target)
+    libc = _resolve_libc(path)
+    if libc is None:
+        pytest.skip(
+            f"ldd resolved no libc for {Path(path).name}; safe-linking would be "
+            "UNKNOWN and the expected 'Could not determine' set is not stable"
+        )
+    return collect_facts(path, probe=True, libc_path=libc)
+
+
 @pytest.fixture(scope="module")
 def read_facts():
     """Facts for target 11, probed for real. Cached: the probe runs the binary."""
-    return collect_facts(_require(UAF_READ_TARGET), probe=True)
+    return _facts_with_pinned_libc(UAF_READ_TARGET)
 
 
 @pytest.fixture(scope="module")
 def write_facts():
     """Facts for target 12, probed for real."""
-    return collect_facts(_require(UAF_WRITE_TARGET), probe=True)
+    return _facts_with_pinned_libc(UAF_WRITE_TARGET)
 
 
 def _script_for(facts, directory: Path) -> Path:
