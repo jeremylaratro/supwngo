@@ -34,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to be ≥ `0x100`, so the `0x28` order size one might first reach for yields a
   reach **identical to the anchor** and the variant would silently not vary.
 
+  **This bought the sixth HTB solve.** `bon-nie-appetit` now SOLVED through the
+  sanctioned harness — `scripts/htb_rescore.py --target bon-nie-appetit --reps 3
+  --timeout 300`: **3/3** reps `level=SHELL_ACCESS technique=heap_strlen_ofb1` at
+  21.8 / 21.6 / 21.6 s. The default `--reps 3` matters and is not decoration:
+  `verdict()` requires `counted >= 2` for SOLVED, so `--reps 1` can never return it
+  (recorded as `I-25`). HTB moves **5/7 → 6/7**; the remaining target is
+  `auth-or-out`.
+
   The negative control keeps the **read** primitive and removes only the write
   (the edit length is clamped to the size recorded at allocation). `strlen()` still
   over-reads and `show` still leaks adjacent bytes, so an oracle that credits a
