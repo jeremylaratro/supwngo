@@ -69,3 +69,15 @@ corpus_prng/*/*
 corpus_inject/*/*
 !corpus_inject/*/*.c
 !corpus_inject/*/cflags
+
+# The two families opened from the 2026-09-27 HTB reversing outcome, same rule:
+#   corpus_envpath/  sabotage's class -- unbounded heap write into a putenv'd
+#                    environment string, finished through a relative system()
+#   corpus_objptr/   auth-or-out's class merged with G-8b -- indirect-call hijack
+#                    over a custom allocator whose size arithmetic wraps
+corpus_envpath/*/*
+!corpus_envpath/*/*.c
+!corpus_envpath/*/cflags
+corpus_objptr/*/*
+!corpus_objptr/*/*.c
+!corpus_objptr/*/cflags
