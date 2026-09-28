@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`objptr_hijack`'s walkthrough no longer claims a dispatch-table site it cannot
+  teach.** Adding `benchmark/corpus_finiarray/` gave the family a target whose
+  indirect call really does run through `.init_array`, so every earlier gate
+  passed — but geometry recovery returns a **negative** `table_buf_len` there, so
+  the `0 <= bias - k*scale <= buf - 8` index filter admits nothing and the emitted
+  step rendered `for k in ():`. A loop over an empty tuple parses, runs, reports no
+  error, and teaches nothing. Completeness now requires a non-empty candidate set
+  on the table shape, and the decline names the missing thing rather than reusing a
+  neighbouring gate's sentence. The write that actually reaches that table is a
+  bounded scalar store 81 slots away — `fini_array_write`'s route, not an indexed
+  fill. Pinned by a sub-second test asserting both directions, since the existing
+  guard only caught it through a multi-minute 150-ELF selection sweep.
+
 ### Added
 
 - **New category: allocation-size integer overflow** (`alloc_size_overflow`,

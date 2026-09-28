@@ -712,3 +712,60 @@ def test_the_proof_helper_is_defined_before_it_is_used(slug: str) -> None:
     assert code.index("def proved_shell(") < code.rindex("proved_shell("), (
         "`proved_shell` is used before it is defined"
     )
+
+
+def test_a_table_site_with_no_permitted_index_is_NOT_a_route() -> None:
+    """The empty-candidate defect, pinned cheaply.
+
+    `test_the_gate_stays_narrow` already catches this, but only by running full
+    selection over a 150+ ELF sweep, which takes minutes and states the failure as
+    "objptr_hijack won something". This says the specific thing in under a second.
+
+    The shape: `fini_12_init_array_reload` really does call indirectly through
+    `.init_array`, so the earlier gates all pass. Geometry recovery then returns a
+    NEGATIVE `table_buf_len`, so the `0 <= bias - k*scale <= buf - 8` filter admits
+    no index at all -- and the emitted step rendered `for k in ():`, a loop over an
+    empty tuple. That parses, runs, teaches nothing, and reports no error. The
+    write that actually reaches that table is a bounded scalar store 81 slots away,
+    which is `fini_array_write`'s route and not an indexed fill.
+
+    Asserted both ways round: the table shape must still work where an index DOES
+    land (`fnptr_13_unchecked_table_index`), or this guard would have been a way of
+    deleting the shape rather than bounding it.
+    """
+    path = os.path.join(
+        REPO, "benchmark", "corpus_finiarray",
+        "fini_12_init_array_reload", "fini_12_init_array_reload",
+    )
+    if not os.path.isfile(path):
+        pytest.skip("corpus_finiarray not built; run benchmark/build_all.sh")
+
+    a = objptr_hijack._Analysis(path)
+    assert a.is_table, (
+        "this target is only interesting to this test while it is still seen as a "
+        "table site -- if that changed, the guard below is no longer what declines it"
+    )
+    assert a.table_indices == (), (
+        f"the premise is gone: an index now lands ({a.table_indices}), so this "
+        "target no longer exercises the empty-candidate path"
+    )
+    assert a.complete is False, (
+        "a table site with no permitted index was claimed as a route; the emitted "
+        "step would render `for k in ():` and teach nothing"
+    )
+
+    reason = a.decline_reason
+    assert "dispatch table" in reason and "no index" in reason, (
+        f"the decline must name the missing thing, got: {reason!r}"
+    )
+    route = objptr_hijack.propose(collect_facts(path, probe=False))
+    assert route is not None and route.applicable is False
+    assert reason in route.rationale
+
+    # The other direction: a table site WITH a permitted index still claims.
+    ok = objptr_hijack._Analysis(_target("fnptr_13_unchecked_table_index"))
+    assert ok.is_table and ok.table_indices, (
+        "the table positive lost its indices, so the guard is now deleting the "
+        "shape instead of bounding it"
+    )
+    assert ok.complete is True
