@@ -95,6 +95,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failed the same way; reverted and re-confirmed clean. `python3 -m pytest
   tests/test_loop_counter_executor.py -q`: **42 passed**.
 
+- **New category: symlink-following writes** (`symlink_follow_write`, CWE-59).
+  A program makes a write it considers routine — logging, staging, caching — to
+  a name it builds itself inside a directory the operator already writes into,
+  and resolves that name with no `O_NOFOLLOW` and no prior
+  `lstat`/`stat`/`access` of it anywhere. Unlike `toctou_path_race`, this needs
+  **no window at all**: a symlink planted before the target even starts is
+  followed exactly once, on the target's own single write, so there is nothing
+  to race and nothing to synchronise with. The gate is one static,
+  defect-shaped fact — a `snprintf`-built path (≥ 2 fixed literal components)
+  handed to a write-capable `open`/`creat`/`fopen` with `O_CREAT` set,
+  `O_NOFOLLOW` clear, and **no** check-API call on that buffer anywhere in the
+  function — and it is built to structurally miss both of `toctou_path_race`'s
+  routes: route A needs a check-then-use pair (this category requires the
+  check be *absent*, full stop), and route B needs the path argument to trace
+  to a compile-time `rodata` literal (every write here traces to a stack
+  buffer, `("frame_addr", slot)`, by construction, since it is always
+  `snprintf`-assembled from ≥ 2 components).
+
+  Five positives hold the target's shape constant and vary only the write
+  mechanism: `open(O_TRUNC)`, `open(O_APPEND)`, a directory-component swap
+  (the swappable name is an intermediate `pending/`, not the leaf), `creat()`
+  (no flags parameter exists to carry `O_NOFOLLOW` even in principle), and
+  buffered `fopen(mode="w")` (stdio has no `O_NOFOLLOW` equivalent at any
+  mode). The task's originally-suggested fourth mechanism — `O_CREAT|O_EXCL`
+  surviving a preceding `unlink()` — does not hold under POSIX: `O_EXCL`
+  against an existing name (symlink or not) is an unconditional `EEXIST`
+  regardless of ordering, so making it "win" needs a genuine race between the
+  `unlink()` and the `open()`, which would make it a `toctou_path_race`
+  variant, not this category's no-race shape. `creat()` substitutes for it
+  (see `sym_13_creat_redirect.c`'s header for the full reasoning). The
+  negative control (`sym_90_neg_nofollow`) is the anchor with exactly one bit
+  added — `O_NOFOLLOW` — so its refusal is fully static, not merely a runtime
+  property a sweep has to discover.
+
+  A real corpus defect surfaced and was fixed before any of the numbers below
+  were trusted: the corpus's own gate-seeding write (`seed_gate()`, fixed
+  content, no attacker influence) was originally built with the identical
+  `snprintf` + `open(O_CREAT)` shape as the real vulnerable write, so the
+  analyser's function-order walk found it first — on every target, including
+  the control, whose actual `O_NOFOLLOW` fix was never even reached. Fixed at
+  the corpus level (fd-anchored `openat()`, mirroring `corpus_toctou`'s own
+  `toctou_90_neg_fd_anchored`), not by loosening the executor.
+
+  Measured through the real `autopwn` CLI (`benchmark/measure_family.py
+  benchmark/corpus_symlink --timeout 300 --jobs 3`): **5/5 positives
+  `FLAG_CAPTURED` by `symlink_follow_write` at 83.4–93.7 s**, and the negative
+  control declined after exhausting its budget (387.3 s wall time under
+  `--jobs 3`). Gate narrowness swept over the whole tree (`scripts/
+  gate_sweep.py symlink_write_techniques SymlinkFollowWriteExecutor
+  corpus_symlink`): **opened on exactly 5, all its own positives, 0 outside
+  the family, 0 raised**, correctly excluding its own control. Non-duplication
+  with `toctou_path_race` and `path_traversal_read` measured in **both**
+  directions (each executor's real `is_applicable` swept over the other's
+  corpus): 0 opens either way for either pairing.
+
+  Not added to `FIRST_TECHNIQUES` — ordering is deliberately left for a
+  separate decision.
+
 - **The teaching half of three categories that could only be solved, never
   explained** — walkthrough families for `off_by_one_guard`, `fini_array_write`
   and `alloc_size_overflow`. All three shipped working pipeline executors with no

@@ -1,0 +1,53 @@
+# Protections for the symlink-following-write corpus (CWE-59). Held IDENTICAL
+# -- byte-identical, not merely equivalent -- across every target in this
+# family on purpose: the *write mechanism that follows a planted symlink* is
+# the only variable, so a protection difference would confound the
+# measurement. The negative control shares this exact file too, which is what
+# makes its refusal attributable to the absence of the bug (O_NOFOLLOW is
+# present) rather than to different hardening.
+#
+# EVERY PROTECTION IS ON, AND NONE OF THEM MATTERS. That is the point of the
+# category, not an oversight -- exactly as in benchmark/corpus_toctou/, this
+# category is orthogonal to every memory-safety mitigation there is:
+#
+# -fstack-protector-all  a canary detects a corrupted return address in an
+#                        epilogue. Nothing in this category writes past a
+#                        buffer, so no frame is ever damaged and the check
+#                        always passes. The exploit is a symlink() call and a
+#                        line of text.
+# -pie -fPIE             PIE randomises where code and data live. No exploit
+#                        step here needs any address at all: the only
+#                        "payload" is a FILENAME planted ahead of time, and
+#                        there is no timing to get right either -- it just has
+#                        to exist before the program's open()/creat()/fopen()
+#                        call runs once.
+# -Wl,-z,relro,-z,now    Full RELRO write-protects the GOT after startup.
+#                        There is no GOT write in this category, no pointer
+#                        write of any kind; the program calls exactly the
+#                        functions it was linked against. It simply resolves
+#                        a NAME whose meaning an attacker changed in advance.
+# (NX)                   comes from the default ELF program headers; nothing
+#                        is ever executed from a data page, so it is
+#                        satisfied too.
+#
+# Building the family with the full modern set keeps "hardened" from being
+# quietly re-learned as "not exploitable" -- and here it is stronger than
+# that: it shows that for this category the entire memory-safety mitigation
+# stack is not merely insufficient, it is *irrelevant*, because none of it is
+# anywhere near the exploit's path.
+#
+# -O0                    load-bearing for the MEASUREMENT, not for the bug.
+#                        The executor derives the write's path build site by
+#                        matching the path ARGUMENT of the open/creat/fopen
+#                        call to the same frame slot the preceding snprintf()
+#                        wrote into (`lea -0xNN(%rbp)`); at higher -O the
+#                        buffer can live in a register or be folded away, and
+#                        the derivation would have nothing to match. The bug
+#                        itself -- resolving an attacker-plantable name with
+#                        no O_NOFOLLOW and no prior lstat -- is entirely
+#                        unaffected by optimisation level.
+-fstack-protector-all
+-pie
+-fPIE
+-Wl,-z,relro,-z,now
+-O0

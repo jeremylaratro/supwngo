@@ -117,6 +117,15 @@ corpus_toctou/*/*
 !corpus_toctou/*/*.c
 !corpus_toctou/*/cflags
 
+# corpus_symlink/ -- symlink-following write (CWE-59): a program resolves an
+# attacker-plantable path at open/creat/fopen time with no O_NOFOLLOW and no
+# prior lstat, so a symlink planted ahead of time (no race needed) redirects a
+# deliberate write onto a file that gates disclosure. Same artifact rule as
+# every other family: sources + cflags tracked, binaries and flag.txt not.
+corpus_symlink/*/*
+!corpus_symlink/*/*.c
+!corpus_symlink/*/cflags
+
 # corpus_uninit/ -- uninitialised-memory DISCLOSURE (CWE-457/CWE-908): a record
 # is allocated, partially written, and handed back in full. Same artifact rule
 # as every other family, and it needs its OWN three lines: the corpus-wide
