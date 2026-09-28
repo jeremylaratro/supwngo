@@ -1290,7 +1290,7 @@ glibc **2.39**, which this host could not run anyway.
 | complexity | 2 |
 | priority | P1 |
 | lane | next |
-| status | open |
+| status | **partially closed** 2026-09-27 — diagnosed, not yet prevented |
 | evidence | measured over 5 s: `auth-or-out` 238,243 menu redraws, `bon-nie-appetit` 125,900, `sabotage` 109,995 |
 | provenance | measured |
 | exit | the pipeline detects an EOF spin and abandons the attempt, instead of filling a pipe until its timeout |
@@ -1310,6 +1310,25 @@ stdout for a target that is doing nothing.
 Related input-shape landmine, same source: `bon-nie-appetit`'s `read_num` is a raw
 31-byte `read`, so a batched "send every line at once" strategy is swallowed whole by the
 first prompt and desyncs into "Invalid option" permanently. One prompt, one send.
+
+**Diagnosed centrally, 2026-09-27.** `verify_script` receipts now carry an `OUTPUT SPIN`
+note (`verifier._detect_output_spin`) when captured output is overwhelmingly repetition,
+so a timeout no longer hides its cause. Measured: it fires on `auth-or-out` driven to EOF
+(987,800 non-blank lines, **7** distinct, ratio ~141,000).
+
+Worth recording how the first version failed, because it is this project's signature
+defect class again. It required one line to be >50% of the output. The real spin is a
+**six-line menu block**, so no single line exceeds ~17% and the check could never fire on
+the case it was written for — it passed every synthetic test and was useless. It was
+caught only by running the real target instead of a fixture. The detector now keys on a
+repetition *ratio* (total non-blank lines / distinct non-blank lines) and
+`tests/test_output_spin_detector.py::test_fires_on_a_multi_line_menu_block` is the
+regression guard.
+
+**Still owed:** this *diagnoses* the spin after the fact; it does not prevent the wasted
+budget or the multi-MB capture. A streaming guard that kills the run as soon as the ratio
+crosses the threshold is the actual fix, and `M-2`'s rescore will still pay the full
+timeout for each spinning target until it exists.
 
 #### G-9 — no executor can express "leak first, then finish in libc"
 

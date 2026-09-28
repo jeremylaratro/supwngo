@@ -68,6 +68,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `shell_proven=True`. Tracked as `I-16` in
   `docs/process/2026-09-26-standard-work-queue.md`.
 
+- A verification timeout now says **which kind** of timeout it was. A target wedged
+  on a blocking read and a target redrawing its menu forever are indistinguishable
+  from `TimeoutExpired`, but they want opposite responses — the first may deserve a
+  larger budget, the second will never succeed with one.
+
+  `verify_script` receipts now carry an `OUTPUT SPIN` note when the captured output
+  is overwhelmingly repetition. Measured cause (`I-18`): all three unsolved HTB
+  targets spin their menu on EOF because their number readers cannot distinguish
+  EOF from `0`, so the parse yields 0 and the menu re-displays forever —
+  `auth-or-out` emits 987,800 non-blank lines made of **7** distinct ones in 4
+  seconds. This reattributes a recorded diagnosis: `auth-or-out`'s `TIMEOUT ×3
+  @300s` was read as missing search-budget discipline, and the process was alive and
+  printing the whole time.
+
+  The detector keys on a repetition *ratio*, not on one line dominating the output.
+  The first version required a single line to exceed 50%, which could never fire on
+  the real case — the spin is a six-line menu block, so no line exceeds ~17%. It
+  passed every synthetic test and was useless until run against the actual target;
+  `tests/test_output_spin_detector.py` keeps a regression guard for exactly that
+  shape.
+
 ### Changed
 
 - `eintr_accumulator_rop` now generalises across the signal-interrupted
