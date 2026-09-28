@@ -91,11 +91,30 @@ recorded beneath it (queue rule 2). The chronological record is §6.
 |---|---|---|---|
 | 1 | `G-5` | `eintr_accumulator_rop` generalised across its variation corpus | **in-sprint** |
 | 2 | `G-6` | `srop_symtab_pivot` generalised across its variation corpus | **in-sprint** |
-| 3 | `M-2` | full pytest + every HTB challenge + every variation corpus, re-run | open |
-| 4 | `G-7` | the three unsolved HTB categories solved (`a` `b` `c`) | open |
-| 5 | `A-2` | survey VRv5 agents/skills for vuln types this tool cannot yet reach | open |
-| 6 | `G-8` | new corpora + executors for whatever `A-2` surfaces | open |
+| 3 | `A-2` | survey for vuln types this tool cannot yet reach | **in-sprint** (partial, see below) |
+| 4 | `G-7a` | heap category — `bon-nie-appetit`'s class | **in-sprint** |
+| 5 | `G-7c` | unbounded `scanf`/`strtoull` scalar overwrite — `auth-or-out`'s class | **in-sprint** |
+| 6 | `G-8a` | **new category** — predictable pseudo-random secrets | **in-sprint** |
+| 7 | `G-7b` | `sabotage`'s class (env/path/file handling) | open — awaiting `A-2` classification |
+| 8 | `G-8b` | **new category** — function-pointer / indirect-call hijack | open |
+| 9 | `G-8c` | **new category** — injection into a subprocess sink (`system`/`popen`/`exec*`) | open |
+| 10 | `M-2` | full pytest + every HTB challenge + every variation corpus, re-run | open |
 | — | `T-3` | the breadth target the whole run serves | open |
+
+**Revised ordering, and why (queue rule 4 — re-triage inline when the evidence
+changes).** `M-2` was ordered 3rd when two cycles were in flight; it has moved to last
+because it is a *whole-tree* gate and six cycles are now editing executors concurrently —
+running it mid-flight would measure a tree that no single commit corresponds to, which is
+the "changed harness invalidates the comparison" failure. It still gates nothing
+advancing past it: no cycle is reported closed until `M-2` is green on the merged tree.
+`A-2` moved earlier because it is read-only and unblocks the `G-8*` choices.
+
+**Parallelism note.** Six cycles run concurrently on strictly disjoint path sets; the
+orchestrator holds `supwngo/exploit/pipeline/executors/__init__.py`, `CHANGELOG.md`,
+`docs/`, `benchmark/.gitignore` and all git, so new executors are registered centrally
+and each cycle lands as its own commit. A prior run at eight concurrent agents exhausted
+the session limit and killed every agent mid-flight, so six is the deliberate ceiling
+here, backfilled as slots free rather than raised.
 
 #### G-5 — `eintr_accumulator_rop` generalised across a variation corpus
 
@@ -204,6 +223,36 @@ Deliverable is a finding, not code (`A-` namespace). It is explicitly allowed to
 conclude that a class is out of reach for a local fixture corpus (kernel, browser,
 firmware) and say so rather than inventing a fixture that does not model it.
 
+**Partial result, 2026-09-27 — where the survey material actually is.** `measured`:
+`dgx-spark-platform/VRv5/.claude/skills/` is **empty** and `.../.claude/agents/` holds
+only `finding-validator.md` and `scrutiny-critic.md`, so the survey cannot be done by
+reading that tree — an earlier assumption that it could was wrong. The usable inventory
+is the **VRv5 agent roster itself** (the plugin's dispatchable specialists), which names
+its classes explicitly: heap (glibc ptmalloc/tcache/fastbin, PartitionAlloc, Scudo,
+Windows Segment Heap), kernel (Linux/Windows), browser (V8 type confusion, JIT
+miscompilation, sandbox boundary), cryptographic (padding oracle, timing side channel,
+**weak PRNG**, protocol downgrade), firmware/IoT, mobile (Android/iOS), .NET, IIS,
+source→sink taint (SQLi, XSS, command injection, path traversal, SSRF, deserialization,
+XXE, auth bypass, IDOR, CSRF), business logic (race conditions, **TOCTOU**, state-machine
+violation), supply chain, and concolic/symbolic + AEG.
+
+Cross-referencing that roster against supwngo's executor set (`canary_leak`,
+`container_file`, `fmtstr`, `heap`, `heap_and_bypass`, `input_shape`, `rop`, `shellcode`,
+`signal_underflow`, `srop_nowrite`, `stack`) gives the first ranked coverage call:
+
+| VRv5 class | supwngo coverage | buildable as a local ELF fixture? |
+|---|---|---|
+| stack/ROP, format string, SROP, shellcode | covered | already in `benchmark/corpus/` |
+| glibc heap (tcache/fastbin) | **partial** — two single targets, no variation family | yes → `G-7a` |
+| unbounded scalar/`scanf` input | **partial** — `input_shape` only | yes → `G-7c` |
+| weak PRNG / predictable secret | **absent** | yes, cheaply → **`G-8a`** |
+| function-pointer / indirect-call hijack | **absent** | yes, cheaply → **`G-8b`** |
+| injection into a subprocess sink | **absent** (no non-memory-safety class at all) | yes, cheaply → **`G-8c`** |
+| TOCTOU / race | **absent** | yes, with a widened window |
+| kernel, browser, firmware, mobile, .NET, IIS | absent | **no** — out of reach for a local C fixture corpus; declared out of scope for `G-8` rather than faked |
+
+`A-2` still owes the `sabotage` classification (`G-7b`) before it can close.
+
 #### G-8 — new-category corpora + executors for what `A-2` surfaces
 
 | field | value |
@@ -220,7 +269,63 @@ firmware) and say so rather than inventing a fixture that does not model it.
 | blocked-by | `A-2` |
 
 Decomposed into `G-8a`, `G-8b`, … as `A-2` names the classes; IDs are assigned when the
-class is accepted, never in advance.
+class is accepted, never in advance. Three are now accepted on `A-2`'s partial result:
+
+#### G-8a — NEW CATEGORY: predictable pseudo-random secrets
+
+| field | value |
+|---|---|
+| type | gap |
+| relevance | 5 — no supwngo executor attacks a PRNG, and `sabotage` + `bon-nie-appetit` both import `srand`/`rand`/`time` |
+| complexity | 2 — glibc `rand()` is exactly reproducible, and a `time(NULL)` seed is a one-second bracket |
+| priority | P1 |
+| lane | now |
+| status | in-sprint |
+| evidence | `A-2` coverage table above; the two HTB imports are `measured` via `pwntools ELF` |
+| provenance | measured |
+| exit | `benchmark/corpus_prng/` red-proved both ways, and `weak_prng_techniques` solves every positive and not the CSPRNG control |
+
+The control is the anchor with the secret redrawn from `getrandom()`, so the family
+isolates *seed predictability* rather than "a program that has a secret". The solve must
+reproduce the secret from the seed — a `strings`-greppable flag would void the
+measurement, so validation runs with `SUPWNGO_BENCH_FLAG` making the flag a per-run
+secret.
+
+#### G-8b — NEW CATEGORY: function-pointer / indirect-call hijack
+
+| field | value |
+|---|---|
+| type | gap |
+| relevance | 4 — a distinct control-flow primitive: no return address, no canary in the way, so every canary/ROP technique in the tool is inapplicable by construction |
+| complexity | 2 |
+| priority | P2 |
+| lane | now |
+| status | open |
+| evidence | `A-2` coverage table above |
+| provenance | inferred |
+| exit | corpus red-proved both ways + an executor solving positives and not the control |
+
+Deliberately *not* ROP: the overwrite lands on a stored pointer that the program then
+calls, so it tests whether the pipeline can recognise an indirect-call sink at all.
+
+#### G-8c — NEW CATEGORY: injection into a subprocess sink
+
+| field | value |
+|---|---|
+| type | gap |
+| relevance | 4 — the tool currently has **no** non-memory-safety category whatsoever, and the brief is "binary **and software** vulns" |
+| complexity | 2 |
+| priority | P2 |
+| lane | now |
+| status | open |
+| evidence | `A-2` coverage table above |
+| provenance | inferred |
+| exit | corpus red-proved both ways + an executor solving positives and not the control |
+
+Axes worth varying: `system` vs `popen` vs `execl("/bin/sh","-c",…)`; metacharacter
+filtering that misses one character; `$PATH`-relative invocation of a helper (which is
+also the likely shape of `G-7b`/`sabotage`, given its `getenv`/`putenv`/`setenv` imports);
+and argument-position injection where only a suffix is attacker-controlled.
 
 #### T-3 — breadth: types **and** variations, identified, walked through, and solved
 
@@ -994,3 +1099,6 @@ moved an item; measured numbers only, no projections.
 | 1 | 2026-09-27 | container category | **closed.** `0/5 → 5/5` positives on `benchmark/corpus_variants`, control unsolved, `snow_scan` 2/2 unregressed. Landed `0c79463` + `0d4f0f2`, fast-forwarded to `main`, branch deleted. |
 | 2 | 2026-09-27 | `G-5` | corpus `benchmark/corpus_eintr/` built: 5 positives + anchor + 1 negative control. Anchor reaches a **real shell** deterministically (`PWNED_OK` + `uid=…`), so the primitive is proven before the executor is asked to find it. |
 | 3 | 2026-09-27 | `G-5`, `G-6` | both cycles dispatched in parallel on disjoint files; git, `CHANGELOG.md` and `docs/` held by the orchestrator so the two cycles land as separate commits. |
+| 4 | 2026-09-27 | `A-2` | **partial.** `measured`: VRv5's `.claude/skills/` is empty and its `.claude/agents/` holds 2 files, so the survey material is the agent ROSTER, not that tree. Coverage table filed under `A-2`; three new categories accepted (`G-8a` weak PRNG, `G-8b` indirect-call hijack, `G-8c` subprocess injection) and six classes (kernel, browser, firmware, mobile, .NET, IIS) declared out of reach for a local C fixture corpus rather than faked. |
+| 5 | 2026-09-27 | queue | parallelism raised 3 → 6 concurrent cycles on disjoint path sets. `M-2` re-ordered to last: it is a whole-tree gate and cannot measure a tree that no commit corresponds to. |
+| 6 | 2026-09-27 | support session | the external support session `638c7654-…` is **not reachable** — absent from `ListAgents` (201 peers) and the raw id does not resolve, so its work item (the `scanf` corpus) was re-routed to an in-session agent instead of guessing at an unrelated session. |

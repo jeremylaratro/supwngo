@@ -46,3 +46,19 @@ corpus_srop/*/*
 !corpus_srop/*/*.S
 !corpus_srop/*/cflags
 !corpus_srop/*/*.ld
+
+# The remaining variant families opened by the 2026-09-27 capability run, all
+# under the same rule (each built via its own SUPWNGO_BENCH_CORPUS=... run of
+# build_all.sh, reaching these through the `cflags` fail-closed path):
+#   corpus_scanf/        unbounded scanf/strtoull scalar overwrite
+#   corpus_heap_variants/ glibc tcache/fastbin corruption
+#   corpus_prng/         predictable pseudo-random secrets
+corpus_scanf/*/*
+!corpus_scanf/*/*.c
+!corpus_scanf/*/cflags
+corpus_heap_variants/*/*
+!corpus_heap_variants/*/*.c
+!corpus_heap_variants/*/cflags
+corpus_prng/*/*
+!corpus_prng/*/*.c
+!corpus_prng/*/cflags
