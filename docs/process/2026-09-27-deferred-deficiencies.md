@@ -451,6 +451,38 @@ as coverage in the one place a reader would look for it. See
 - A **post-integration whole-tree gate**. The 1588-passed figure was taken while
   the tree was being edited, which makes it a valid pre-integration baseline and
   nothing more.
-- A **gate sweep for `heap_record_hijack` run by me**. Its narrowing to 6 of 133
+- ~~A **gate sweep for `heap_record_hijack` run by me**. Its narrowing to 6 of 133
   images is the one number in this cycle I took from an agent without
-  re-measuring.
+  re-measuring.~~ **Done 2026-09-28 — see §7.12, and it found something.**
+
+### 7.12 The re-measured heap sweep, and an attribution collision it found
+
+Run by me over the tree as it stands: **159 ELFs swept, gate open on 12, raised
+0**, mean 552 ms per image. Its own 6 open, as they must. The other **6 are the
+brand-new `benchmark/corpus_allocsize/` family** — the allocation-size integer
+overflow category being built the same day, which was told to reuse
+`heap_record_hijack`'s destination shape (a function pointer published into a
+heap record) rather than invent a new metadata attack.
+
+So the agent's "6 of 133" was right for the tree it measured, and the narrowing
+is intact: nothing *pre-existing* is captured. What the wider number exposes is a
+**pending attribution collision**, not a gate defect. `heap_record_hijack` sits at
+position 22 in `FIRST_TECHNIQUES`; unless `alloc_size_overflow` is ordered ahead
+of it, the new category's positives will be credited to a technique that does not
+implement wrapping arithmetic. This is the same class as §7.7 and has to be
+settled by measuring which name the result is attributed to without `--strategy`,
+not by reasoning about the list order.
+
+Two process points worth keeping:
+
+- **A shared destination creates a shared gate.** Telling a new category to reuse
+  a proven destination is the right call for getting a solve, and the price is
+  paid in attribution, always in the same direction: the older, already-ordered
+  family collects the credit. Worth expecting rather than rediscovering.
+- **The sweep helper has to match how the gate is reached.**
+  `gate_sweep_generic.py` calls a module-level `analyse(path)`; a gate living in
+  `Executor.is_applicable(context)` needs `context.binary`, `context.win_function`
+  and `context.profile_has_menu`, which exist only after the profile stage. Run
+  the wrong helper and it raises on all 159 images and prints `gate OPEN on: 0` —
+  §7.10's trap with a different cause. `/tmp/gate_sweep_executor.py` builds the
+  real context and asserts its own positives open, exiting 2 when they do not.
