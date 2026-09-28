@@ -47,6 +47,52 @@ def _reset_console():
     log_console.file = sys.stdout
 
 
+def target_override_options(func):
+    """Attach ``--win`` / ``--ret2`` / ``--rop`` to a command.
+
+    These three belong to `solve`, `autopwn`, AND `explain`, and the help text
+    is long because the semantics are genuinely subtle. Declaring them once as a
+    composite decorator rather than pasting three near-identical blocks is not
+    only shorter: it makes it impossible for the three commands to drift into
+    describing the same flag differently, which is how a flag ends up meaning
+    two things depending on which command you read.
+
+    Decorators apply bottom-up, so they are listed in reverse of their display
+    order to keep ``--help`` reading ``--win``, ``--ret2``, ``--rop``.
+    """
+    func = click.option(
+        "--rop", "rop", is_flag=True,
+        help="Mark the --ret2 address as a ROP GADGET rather than a place to "
+             "land. Without it, a bare address is taken as a return "
+             "destination (and doubles as the win target); with it, the "
+             "address is treated as one link in a chain and is NEVER fed to "
+             "anything expecting a function. A raw address looks identical in "
+             "both roles, so this flag removes a guess the framework would "
+             "otherwise have to make. Requires --ret2.",
+    )(func)
+    func = click.option(
+        "--ret2", "ret2", type=str, default=None, metavar="SYM|ADDR",
+        help="Where a diverted return should go. Accepts a binary symbol "
+             "(`get_flag`), a raw address (`0x401196`), or a LIBC symbol "
+             "(`system`, needs --libc or a shipped libc) -- resolved in that "
+             "order. A libc symbol yields an offset, so it is flagged "
+             "libc-relative and needs a leak before use. When it names a plain "
+             "destination and no --win was given, it is used as the win target "
+             "too, which is what lets you solve a binary whose payoff function "
+             "no heuristic recognises. Add --rop if it is a gadget.",
+    )(func)
+    func = click.option(
+        "--win", "win", type=str, default=None, metavar="SYM|ADDR",
+        help="Override win-function detection with a symbol, raw address, or "
+             "libc symbol. Use it when detection finds nothing (the payoff is "
+             "called `admin_panel`, or the binary is stripped) or picks the "
+             "wrong one (a decoy `win()` beside the real `get_flag()`). Takes "
+             "precedence over --ret2. An unresolvable value WARNS and falls "
+             "back to auto-detection rather than failing the run.",
+    )(func)
+    return func
+
+
 def print_banner():
     """Print SupwnGo banner."""
     banner = """
@@ -2687,9 +2733,10 @@ def _render_handoff_report(report) -> None:
          "fails, do NOT fall back to the legacy EnhancedAutoExploiter. "
          "The legacy engine is never instantiated in this mode.",
 )
+@target_override_options
 @click.pass_context
 def autopwn(ctx, binary, output, timeout, offset, libc, json_output, strategy, all_strategies,
-            input_vector, input_name, input_argv, no_legacy):
+            input_vector, input_name, input_argv, no_legacy, win, ret2, rop):
     """
     Automatic exploitation - try multiple techniques automatically.
 
@@ -2754,6 +2801,9 @@ def autopwn(ctx, binary, output, timeout, offset, libc, json_output, strategy, a
             input_vector=input_vector,
             input_name=input_name,
             input_argv=input_argv,
+            win=win,
+            ret2=ret2,
+            rop=rop,
         )
         if offset:
             engine.context.offset = offset
@@ -2989,6 +3039,9 @@ def _emit_walkthrough(
     remote_host: Optional[str],
     remote_port: Optional[int],
     handoff=None,
+    win: Optional[str] = None,
+    ret2: Optional[str] = None,
+    rop: bool = False,
 ) -> Optional[Path]:
     """Generate, render and write a walkthrough. Returns the path written.
 
@@ -3008,6 +3061,9 @@ def _emit_walkthrough(
             handoff=handoff,
             family=family,
             markdown=markdown,
+            win=win,
+            ret2=ret2,
+            rop=rop,
         )
 
     if not markdown:
@@ -3075,8 +3131,10 @@ def _emit_walkthrough(
 )
 @click.option("--markdown", is_flag=True, help="Render as Markdown instead of a runnable script")
 @click.option("--json", "json_output", is_flag=True, help="Output the walkthrough structure as JSON")
+@target_override_options
 @click.pass_context
-def explain(ctx, binary, output, family, offset, no_probe, libc, remote, markdown, json_output):
+def explain(ctx, binary, output, family, offset, no_probe, libc, remote, markdown, json_output,
+            win, ret2, rop):
     """
     Teach the exploit: emit a step-by-step, runnable walkthrough.
 
@@ -3109,7 +3167,8 @@ def explain(ctx, binary, output, family, offset, no_probe, libc, remote, markdow
         from supwngo.exploit.walkthrough import explain_binary
 
         walkthrough, _text = explain_binary(
-            binary, offset=offset, probe=not no_probe, libc_path=libc, family=family
+            binary, offset=offset, probe=not no_probe, libc_path=libc, family=family,
+            win=win, ret2=ret2, rop=rop,
         )
         _emit_json(walkthrough.to_dict())
         return
@@ -3127,13 +3186,19 @@ def explain(ctx, binary, output, family, offset, no_probe, libc, remote, markdow
         markdown=markdown,
         remote_host=remote_host,
         remote_port=remote_port,
+        win=win,
+        ret2=ret2,
+        rop=rop,
     )
 
 
 def _guided_fallback(engine, binary: str, libc: Optional[str], timeout: float,
                      input_vector: Optional[str] = None,
                      input_name: Optional[str] = None,
-                     input_argv: Optional[str] = None):
+                     input_argv: Optional[str] = None,
+                     win: Optional[str] = None,
+                     ret2: Optional[str] = None,
+                     rop: bool = False):
     """Phase 6 guided fallback mode: present the failed/partial run's
     `blocking_unknowns`, let the user supply ONE of them, and retry.
 
@@ -3198,6 +3263,7 @@ def _guided_fallback(engine, binary: str, libc: Optional[str], timeout: float,
             bin_obj, timeout=timeout, libc_path=libc,
             input_vector=input_vector, input_name=input_name,
             input_argv=input_argv,
+            win=win, ret2=ret2, rop=rop,
         )
         new_engine.run(known_facts={fact_key: value})
 
@@ -3276,9 +3342,10 @@ def _guided_fallback(engine, binary: str, libc: Optional[str], timeout: float,
          "fails, do NOT fall back to the legacy EnhancedAutoExploiter. "
          "The legacy engine is never instantiated in this mode.",
 )
+@target_override_options
 @click.pass_context
 def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, walkthrough, strategy, all_strategies,
-          input_vector, input_name, input_argv, no_legacy):
+          input_vector, input_name, input_argv, no_legacy, win, ret2, rop):
     """
     One command: binary in, working exploit (or a clear explanation why
     not) out.
@@ -3349,6 +3416,7 @@ def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, 
             strategy=strategy, force_all=all_strategies,
             input_vector=input_vector, input_name=input_name,
             input_argv=input_argv,
+            win=win, ret2=ret2, rop=rop,
         )
         try:
             engine.run()
@@ -3410,7 +3478,8 @@ def solve(ctx, binary, output, remote, libc, timeout, json_output, interactive, 
     if interactive and not engine.successful and not _timeout_interrupted:
         engine = _guided_fallback(engine, binary, libc, timeout,
                                   input_vector=input_vector, input_name=input_name,
-                                  input_argv=input_argv)
+                                  input_argv=input_argv,
+                                  win=win, ret2=ret2, rop=rop)
 
     if json_output:
         try:

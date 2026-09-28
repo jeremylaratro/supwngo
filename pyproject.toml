@@ -141,6 +141,9 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+markers = [
+    "slow: spawns the real CLI against a compiled fixture (seconds, not ms)",
+]
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]

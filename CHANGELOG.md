@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Operator-supplied return targets: `--win`, `--ret2`, and the `--rop`
+  modifier**, on `solve`, `autopwn`, AND `explain`. Until now the answer to
+  "divert control flow to *what*?" was always inferred, and the inference had
+  two failure modes an operator could not do anything about: it finds nothing
+  (the payoff is called `admin_panel`, or the binary is stripped) or it finds
+  the wrong thing (a decoy `win()` beside the real `get_flag()`). Each spec is
+  resolved through one deterministic ladder — an integer literal, then a symbol
+  in the binary (real symbols before PLT stubs), then a **libc** symbol, which
+  yields an *offset* and is flagged `libc_relative` so nothing jumps to it
+  before a leak. An integer is tried first and that is safe rather than
+  ambiguous: a C identifier cannot begin with a digit, so no symbol name can
+  collide with a parseable integer.
+
+  **An unresolvable spec WARNS and falls back to auto-detection** rather than
+  failing the run — the opposite of this repo's usual reflex for a no-effect
+  option, and a deliberate choice: a typo costs a warning, not a dead run.
+  `--rop` with no `--ret2` to modify *does* still raise, joining
+  `--input-name`/`--input-argv` in the "accepted, then silently ignored" guard.
+
+  **`--rop` exists to remove a guess, not to add an option.** `--ret2 0x401196`
+  cannot say whether that address is somewhere to *land* (a function to return
+  into, which the stack/canary families want) or a *ROP gadget* (one link in a
+  chain, which must never be handed to something expecting a function, because
+  the resulting chain assembles cleanly and jumps into mid-instruction). A bare
+  address looks identical in both roles. `--rop` marks the gadget case, and the
+  engine then deliberately does NOT promote it to the win/return target.
+
+  MEASURED end to end, and the measurement deliberately asserts a **failure**:
+  on `tests/fixtures/target_overrides/unnamed_payoff.c`, auto-detection targets
+  `stage_two` (0x4011d6) and solves; `--win handle` moves the address in the
+  generated script to 0x4011f7 **and the run then fails**, because `handle` is
+  not a payoff. Both halves are required — an override that is honoured but
+  silently undone on failure would look identical to one that works. `--ret2
+  handle` lands on 0x4011f7; `--ret2 handle --rop` leaves it alone and
+  auto-detection's 0x4011d6 is used instead. `--win <typo>` still solves at
+  0x4011d6 with a warning naming every resolution step that was tried.
+
+  The override is applied in **three** places on purpose, because three
+  independent win-function scans exist and a partial fix would have them
+  disagree: `profile_stage` (which assigns `win_function` unconditionally, so it
+  has to yield explicitly), `StrategySuggester`'s report (which feeds ranking,
+  the handoff, and the generated template), and the walkthrough's own
+  `collect_facts` — the strictest of the three, since it drops every flag-named
+  symbol, meaning `explain` on a `get_flag()` target found nothing at all before
+  this. 28 tests cover it, and the three central ones were each proven to go RED
+  against a mutant that accepts the flag and ignores it.
+
 - **New category: heap off-by-NUL → overlapping program-owned records
   (CWE-193 → CWE-122) — `heap_offbynul_overlap`.** A `strcpy`/manual-copy
   path writes its terminating NUL one byte past a fixed-capacity record

@@ -299,3 +299,12 @@ tests/htb-targets/
 solve_output/
 report_output/
 exploit.bin
+
+# Verification receipts, written BESIDE the target a run verified. Named
+# `.supwngo_receipt_<binary>_<hash>_<offset>_<technique>`, so they accumulate one
+# per distinct verified attempt. Ignored globally rather than per-directory
+# because the target decides where they land: a run against anything inside a
+# TRACKED tree (`tests/fixtures/...`, which is where this rule was earned) leaves
+# them committable, and unlike the corpus artifacts there is no build step whose
+# absence would hint that they are generated.
+.supwngo_receipt_*

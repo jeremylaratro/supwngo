@@ -239,6 +239,20 @@ class ExploitContext:
     # (name, address) of a detected "win"/flag function, if any.
     win_function: Optional[Tuple[str, int]] = None
 
+    # Operator-supplied overrides from `--win` / `--ret2` (+ the `--rop`
+    # modifier), each a `supwngo.exploit.pipeline.target_overrides`
+    # `ResolvedTarget` or None. Typed loosely on purpose: importing that module
+    # here would make `core.context` depend on `exploit.pipeline`, inverting the
+    # layering every other field in this class respects.
+    #
+    # `win_override` is what makes `--win` STICK: `profile_stage`'s detection
+    # would otherwise overwrite anything pre-set on `win_function`, so the
+    # override has to live in a field detection knows to yield to rather than in
+    # the field detection writes. An override set here is authoritative -- it is
+    # never re-derived, re-validated, or second-guessed against the symbol table.
+    win_override: Optional[Any] = None
+    ret2_override: Optional[Any] = None
+
     # Address of a "/bin/sh" string found in the binary, if any.
     binsh_addr: Optional[int] = None
 
