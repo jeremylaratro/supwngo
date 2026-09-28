@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`supwngo explain` now teaches the indirect-call hijack** it has been able to
+  fly since the `objptr_hijack` executor landed. New walkthrough family
+  `objptr_hijack` (score 0.87): fill the member that sits beside a function
+  pointer inside the same object, and the `call *%reg` that reads it goes where
+  you say. The distance that matters is member-to-member — `arg_fold` to
+  `ptr_fold`, read off the disassembly — and **no return address is involved**,
+  so the stack canary and Full RELRO these targets carry guard a path this route
+  never takes. Five shapes, including `menu_libc`, which has no destination in
+  the image at all and names `system` from an `R_X86_64_COPY` slot the loader has
+  already filled.
+
+  The family is deliberately **stricter than the executor it documents**, which
+  is the opposite of the usual drift and is measured rather than asserted:
+  `build_plan()` returns a plan for *both* of this corpus's negative controls, so
+  a walkthrough that trusted the plan would teach a route to a target that cannot
+  be exploited. Three gates the plan does not apply — the read must actually
+  reach the pointer, the wrapping size must be one the program accepts, and the
+  `scanf` field width at the call site's own function must permit the reach — are
+  applied here, and each declines with a *different* sentence naming which gate
+  closed.
+
+  Measured across 26 targets: the gate opens on 19 (its 16 positives plus 3
+  `scanf` overlaps it correctly loses on score), declines all 6 controls, and
+  disagrees with the corpus nowhere. Full selection: **17/17 positives choose
+  this family, 5/5 controls fall to `triage`**, and HTB `auth-or-out` chooses it
+  with `rop_chain@0.6` as runner-up. The score was picked against **measured**
+  competition on the real targets rather than taste: it must clear
+  `stack_bof@0.75`, which is applicable on `fnptr_11_stack_struct` and is the
+  followable-wrong outcome there, and it must stay **below** `scanf_scalar@0.93`,
+  which legitimately wins the three targets whose ingress is an unbounded
+  `scanf`.
+
+  `OFFSET` is dropped from the constants table **by name**, not merely by the
+  unresolved-step filter. The filter alone drops it when it is UNKNOWN and keeps
+  it when the probe measured one — which is what happened on
+  `fnptr_11_stack_struct`, whose frame does yield a real buffer-to-RIP distance.
+  A measured-but-irrelevant number is the more dangerous of the two cases: it is
+  true, so nothing flags it, and it silently invites the reader back to the
+  cyclic-pattern framing this route does not use.
+
 - **New category: TOCTOU path races** (`toctou_path_race`, CWE-367). The first
   route in the pipeline that corrupts no memory and hijacks no control flow — it
   wins a *window*. A constructed path is handed to a path-based CHECK and then,
@@ -539,6 +579,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is that entry.
 
 ### Fixed
+
+- **The walkthrough model made "an address that is not in this image" impossible
+  to state** (`I-31`). A `Fact` of kind `addr` was required to carry an `int`, and
+  the only exemption was `runtime=True` — which `Walkthrough` separately forbids
+  on a constant, because a leaked per-process value must not be baked in. An
+  UNKNOWN fact is required elsewhere to carry no value at all, so
+  `kind="addr"` + `Confidence.UNKNOWN` could not be constructed, and the honest
+  way to describe a destination that genuinely does not exist in the binary —
+  named, unknown, with a reason and a pointer to the step that resolves it — was
+  unavailable. A family hitting this had exactly two ways out, both bad: declare
+  the kind `int` and lie about it, or emit `0x0` as a measurement. UNKNOWN is now
+  exempt; the guard still fires on `measured`, `derived` and `assumed` values that
+  are not ints, which is the case it exists for, and an UNKNOWN that tries to
+  carry a value is still rejected.
 
 - **`supwngo explain` died with an uncaught `PermissionError` on a target the
   pipeline solves in ten seconds** (`I-28`). The format-string probe spawned the
