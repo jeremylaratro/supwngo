@@ -267,3 +267,19 @@ corpus_uafread/*/*
 !corpus_uafread/*/*.c
 !corpus_uafread/*/cflags
 !corpus_uafread/corpus_uafread.yaml
+
+# corpus_g23/ -- LOOP COUNTER OVERFLOW (G-23): a bounded copy loop keeps its own
+# induction variable and reloaded bound INSIDE the region a narrow-arithmetic
+# size-check overflow reaches, so overflowing the buffer destroys the loop's own
+# state before the return address is ever touched. Same artifact rule as every
+# other variation family: a family name is not a prefix match and the corpus-wide
+# flag.txt rule does not cover compiled binaries, so without these three lines a
+# path-scoped `git add benchmark/corpus_g23` would commit six ELF images and six
+# per-run flag secrets.
+#
+# `cflags` stays TRACKED: canary=OFF and PIE=OFF are load-bearing (see that
+# file's own comment) -- a target rebuilt without it could silently turn on the
+# canary or PIE and stop being solvable by this technique at all.
+corpus_g23/*/*
+!corpus_g23/*/*.c
+!corpus_g23/*/cflags

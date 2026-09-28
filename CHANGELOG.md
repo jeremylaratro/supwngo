@@ -9,6 +9,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **New category: loop-counter overflow (CWE-190 gating CWE-787) —
+  `loop_counter_overflow`.** A bounded record-copy loop guards its WHOLE
+  transfer with one narrow-arithmetic size check computed up front
+  (`total = (unsigned char)(count * STRIDE); if (total > sizeof(buf)) reject;`),
+  then reads `count` unnarrowed records in a loop whose OWN control state —
+  the induction variable and, critically, the bound it *reloads from memory
+  every iteration* rather than keeping in a register — sits on the stack
+  closer to `rbp` than the buffer itself (`I < BUF and L < BUF` in
+  stack-offset magnitude). The overflow reaches the loop's own steering state
+  long before it reaches the saved return address, so one crafted "record",
+  written at the right iteration, makes the loop misreport its own progress
+  from partway through its own execution — turning it into its own gadget.
+  Adds `benchmark/corpus_g23/` (5 positives + 1 negative control, `cflags`
+  byte-identical across all six), `benchmark/build_corpus_g23.sh`,
+  `benchmark/reference_exploits/g23_variants_reference.py`,
+  `supwngo/exploit/pipeline/executors/loop_counter_techniques.py`, and
+  `tests/test_loop_counter_executor.py` (42 tests).
+
+  **The measured recipe in the original brief did not generalize, and was
+  replaced with a byte-exact derivation.** The naive record-count-based
+  payload (reusing the swept `count` as the bound written into the control
+  record) hung on live delivery — the bound was far larger than the records
+  actually supplied, so after the stream ended the loop's next `read()`
+  blocked forever, since nothing in this design relies on `io.shutdown` or
+  stdin reaching EOF. Separately, a record-count-unit payload layout silently
+  mislocated the return-address tail on `g23_13_stride16` (stride=16), where
+  `STRIDE` does not evenly divide `BUF+8` and the saved RBP and the return
+  address fall inside the *same* 16-byte record. `_build_payload` was
+  rewritten to compute every offset in absolute bytes from `buf`'s own start
+  and to plant into the control record's bound field EXACTLY the number of
+  records the payload supplies, so the loop's own `i < L` check goes false
+  the instant the stream is consumed. Verified against all 6 `corpus_g23`
+  targets plus `benchmark/corpus_r2/08_int_mul_overflow` (hand-derived and
+  confirmed via direct `objdump -d -M intel`, not assumed).
+
+  Measured through the real CLI (`python3 benchmark/measure_family.py
+  benchmark/corpus_g23 --timeout 300 --jobs 3`): **5/5 positives SOLVED, all
+  credited to `loop_counter_overflow` with `verified=FLAG_CAPTURED` and
+  `flag=True`** — `g23_10_adjacent_above` 10.8 s, `g23_11_swapped_order`
+  10.8 s, `g23_12_word_bound` 10.9 s, `g23_14_second_narrow` 9.3 s,
+  `g23_13_stride16` 9.5 s — and the control (`g23_90_neg_widened_check`)
+  **not solved**, `verified=NONE`, `flag=False`, after 72.7 s of live
+  measurement, exit 0.
+
+  **The static gate opens on the control too, and that is measured
+  separately from — not blurred with — the control's live refusal.**
+  `g23_90_neg_widened_check` has the byte-for-byte identical loop shape as
+  `g23_10_adjacent_above`; only the size check's own arithmetic width differs
+  (32-bit, which never wraps, vs. 8-bit everywhere else). Gate sweep over the
+  whole benchmark tree (`python3 scripts/gate_sweep.py loop_counter_techniques
+  LoopCounterOverflowExecutor corpus_g23`): **opened on 7 — all 6 of its own
+  family (including the control, on purpose) and exactly 1 outside the
+  family, `benchmark/corpus_r2/08_int_mul_overflow/int_mul_overflow`** (the
+  hand-measured target this category was designed against, not a false
+  positive), **0 raised**, mean 560 ms/image. The static open on the control
+  is a fact about the binary's SHAPE; `measure_family.py` above is the
+  separate, live proof that the control is never actually solved — a static
+  gate that closed on it would be keying on a corpus artifact rather than the
+  defect, since a target whose narrowing check is wide enough to never wrap
+  has no overflow of any kind for `ret2win` or anything else to redirect
+  either.
+
+  **`benchmark/corpus_r2/08_int_mul_overflow` — the item's whole reason for
+  existing — solves through the real CLI.** `python3 -m supwngo.cli solve
+  benchmark/corpus_r2/08_int_mul_overflow/int_mul_overflow`: `success=true`,
+  `technique=loop_counter_overflow`, `verified=FLAG_CAPTURED`,
+  `legacy_fallback=not_reached`, wall time **9.56 s**. Output confirmed
+  flag-shaped (`FLAG{...}`, length 39) without printing flag contents.
+
+  **The oracle was proven able to go RED before being trusted, at three
+  layers.** (1) The reference exploit's own `check_mutation()` redirects the
+  payload to `main()` instead of `win()` with everything else identical —
+  `python3 benchmark/reference_exploits/g23_variants_reference.py`: **5/5
+  positives flag_captured=True (flag_len=38), the wrong-but-present mutation
+  produces `flag=False` on all 5, and the control resists the anchor's exact
+  attack shape (count=32 rejected by its 32-bit check, accepted by
+  `g23_10_adjacent_above`'s 8-bit check) — exit 0.** (2) In
+  `tests/test_loop_counter_executor.py`, the `ctrl_end > buf` boundary guard
+  in `_build_payload` was temporarily disabled (`if False and ctrl_end >
+  buf`) and the corresponding load-bearing test failed exactly as predicted;
+  reverted and confirmed byte-identical to the original via `diff` before
+  re-running green. (3) The same file's `I < BUF and L < BUF` discriminator
+  filter in `find_loop_sites` was temporarily disabled and its own test
+  failed the same way; reverted and re-confirmed clean. `python3 -m pytest
+  tests/test_loop_counter_executor.py -q`: **42 passed**.
+
 - **The teaching half of three categories that could only be solved, never
   explained** — walkthrough families for `off_by_one_guard`, `fini_array_write`
   and `alloc_size_overflow`. All three shipped working pipeline executors with no

@@ -1,0 +1,38 @@
+# Protection flags for benchmark/corpus_g23/ -- the loop-counter-overflow
+# family (G-23: CWE-190 gating a record-count loop whose OWN induction
+# variable and reloaded bound sit inside the region the overflow reaches).
+#
+# HELD IDENTICAL ACROSS EVERY TARGET IN THIS FAMILY ON PURPOSE, including the
+# negative control. The only thing that varies between targets is the loop's
+# own geometry (buffer size, record stride, bound width, which local the loop
+# reloads) and, for the control, whether the size check's arithmetic actually
+# wraps -- everything else must stay constant or a protection difference
+# could be mistaken for what made a target open or close.
+#
+# -fno-stack-protector  canary=OFF, matching benchmark/corpus_r2/08_int_mul_
+#                        overflow (this category's reference target) exactly.
+#                        The overflow this family exploits crosses the loop's
+#                        own induction variable and bound before it ever
+#                        reaches a canary slot; turning the canary on would
+#                        add __stack_chk_fail as a second, unrelated way for
+#                        these targets to abort and would not test anything
+#                        about this category that turning it off doesn't.
+# -no-pie                PIE=OFF. The derived payload returns straight into
+#                        win() using a LINK-TIME address -- there is no leak
+#                        step anywhere in this technique (see the executor's
+#                        docstring), so a PIE image would make every target
+#                        in this family unsolvable by construction rather
+#                        than exercise the technique.
+#
+# NX is ON (default, no -z execstack) -- the technique never runs shellcode,
+# it returns into a function already in the image.
+# RELRO is partial (default, no -Wl,-z,relro,-z,now) -- nothing here touches
+# the GOT.
+#
+# BUILT AND TESTED AGAINST
+# ------------------------
+#   glibc   2.35   (Ubuntu GLIBC 2.35-0ubuntu3.15)   <-- `ldd --version`
+#   gcc     11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3)
+#   kernel  6.8.0 x86-64, Ubuntu 22.04
+-fno-stack-protector
+-no-pie
