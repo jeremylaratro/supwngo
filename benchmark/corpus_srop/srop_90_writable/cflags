@@ -1,0 +1,26 @@
+# Protections for the SROP-no-writable-segment variant corpus. Held IDENTICAL
+# across every target in this family on purpose: the *ELF shape* (which PT_LOAD
+# segments exist, where the symbol table lands, the count-returning wrapper, and
+# the bare syscall) is the only variable, so a protection difference would
+# confound the measurement.
+#
+# The category REQUIRES a static image with NO writable PT_LOAD, so the ordinary
+# SROP path (stage a frame in .data, or point rsp at a leaked stack) is
+# unavailable and the only controllable [rsp] for the post-sigreturn
+# `syscall; ret` is a qword in the symbol table, mapped past p_filesz in the
+# tail page of an R / R E segment.
+#
+# -nostdlib   no libc: no CRT _start, no .init/.fini, no GOT/PLT, and -- the
+#             point -- no writable data pulled in by the C runtime. The whole
+#             program is the hand-written _start/read/write/vuln asm below.
+# -static     no dynamic loader, no PT_INTERP, no .dynamic (a .dynamic would be a
+#             writable segment). A truly self-contained image.
+# -no-pie     fixed load address (0x400000): the symbol-table st_value fields the
+#             pivot reads sit at known absolute vaddrs, which is what lets the
+#             technique work with no leak at all.
+#
+# NB: build_all.sh prepends COMMON_FLAGS (incl. -g); its debug sections are
+# non-alloc and do not perturb the two-PT_LOAD / symtab-in-mapped-tail layout.
+-nostdlib
+-static
+-no-pie

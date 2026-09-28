@@ -133,6 +133,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   16 times in-band was measured to deliver **one** signal, not 16. The timer verb
   is still identified from the call graph; it is just not the delivery path.
 
+- `srop_symtab_pivot` now generalises across the no-writable-segment SROP category
+  instead of fitting one challenge's geometry. Measured on `benchmark/corpus_srop/`
+  (3 reps/target): **1/5 → 5/5** positives, the negative control still declined by
+  the gate in both runs, no false positives, and `sick_rop` — the HTB target the
+  technique came from — still solved and **faster**: 37 attempts / 11.8 s → 23
+  attempts / 7.1 s, reaching the same offset and pivot sooner.
+
+  Confirmed through the real `scripts/htb_rescore.py` path at 5/5 with every solve
+  attributed to `srop_symtab_pivot`, so the gain is the executor's rather than a
+  harness artefact.
+
+  Four hard-coded quantities became derived or widened, each isolated by a variant
+  that broke exactly one of them: the wrapper's `rsi`/`rdx` stack loads are matched
+  in either order (a reversed order previously made the gate *decline* outright);
+  the pivot list is no longer truncated at 12 (the working pivot sat at index 16 in
+  one variant); the second-stage buffer is `pivot - (offset - 8)` rather than a
+  constant `pivot - 0x20`; and the offset search runs offset-outer over
+  `range(8, 264, 8)` instead of `range(8, 136, 8)`.
+
+  The widened search is kept honest by a clearance guard — a candidate pair is
+  skipped when `pivot - (offset - 8)` falls below the end of code, so the second
+  stage's own `read` cannot overwrite the executing gadget. It *removes* candidates
+  rather than adding them, and the control still declines.
+
 - `container_file_rop` now **derives** what it previously guessed from a single
   target, and generalises across a vulnerability category rather than matching one
   challenge. Measured on `benchmark/corpus_variants/` (`--reps 2`): **0/5 → 5/5**
