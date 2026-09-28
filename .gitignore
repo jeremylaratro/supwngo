@@ -280,3 +280,22 @@ benchmark/controls/*/flag.txt
 benchmark/controls/*/flagfile_win
 !benchmark/controls/*/*.c
 !benchmark/controls/*/build.sh
+
+# ---------------------------------------------------------------------------
+# Never-commit artifacts. These were all untracked-but-unignored, which meant a
+# single `git add -A` would have committed them; the first entry would have
+# committed SECRETS.
+# ---------------------------------------------------------------------------
+
+# The HTB challenge tree. Each challenge directory ships its real flag, and a flag
+# readable from the repo would let a component "solve" a target by reading the
+# answer instead of exploiting it -- so this is a measurement-integrity rule as
+# well as a secret-handling one. Binaries here are third-party and not ours to
+# redistribute either.
+tests/htb-targets/
+
+# Generated exploit artifacts from `supwngo solve` / `autopwn` / `report` runs.
+# Reproducible from the corpus plus the harness, per-run, and frequently large.
+solve_output/
+report_output/
+exploit.bin
