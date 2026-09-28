@@ -73,6 +73,16 @@ def _bare_engine() -> CanonicalAutopwnEngine:
     engine.static_analysis_duration_sec = None
     engine.dynamic_profile_duration_sec = None
     engine.leak_acquisition_duration_sec = None
+    # Added 2026-09-28. `_attempt_techniques` began reading `self._force_all` and
+    # `self._strategy` in 1e263737 (2026-09-26), and because this helper bypasses
+    # `__init__` it never set either -- so all six tests here have been raising
+    # AttributeError since that commit while the recorded whole-tree baseline still
+    # said "1 failed". A hand-built fixture that mirrors a constructor has to be
+    # updated with it; that is the standing cost of the shortcut, not a reason to
+    # stop taking it. Both defaults match `__init__`'s, so the fixture exercises
+    # the ordinary path rather than a bypassed gate.
+    engine._force_all = False
+    engine._strategy = None
     return engine
 
 
