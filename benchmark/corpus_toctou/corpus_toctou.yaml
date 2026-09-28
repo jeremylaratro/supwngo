@@ -1,0 +1,499 @@
+# Challenge-variation corpus manifest: TOCTOU file races (CWE-367), plus the one
+# degenerate member of the same defect class where the window is infinite
+# (CWE-377, a predictable temporary name opened without O_EXCL).
+#
+# This is the THIRD non-memory-safety category in the set, after corpus_inject/
+# (subprocess injection) and corpus_prng/ (predictable pseudo-random secrets). It
+# was chosen for that reason: it is orthogonal to canary / NX / PIE / RELRO, and
+# the corpus is built with every one of those ON to demonstrate it.
+#
+# WHAT THIS CORPUS MEASURES, AND WHAT IT DOES NOT
+#
+# Measures: whether one solve capability GENERALISES across the particulars of a
+# single vulnerability category. Everything about the BUG is held identical across
+# all six targets and exactly one thing varies -- **which (check, use) operation
+# pair straddles the window**. A per-target difference is therefore attributable to
+# the operation pair, not to a different bug.
+#
+# Held identical in every target (the source headers say it at length):
+#
+#   security goal    a request may only be served from a file that is inside the
+#                    request directory, is a PLAIN file, has exactly ONE link, and
+#                    is not the protected secret (flag.txt, which sits beside the
+#                    binary and therefore OUTSIDE the request directory)
+#   request protocol one operator-supplied NAME per iteration, read with fgets()
+#                    from stdin in an UNBOUNDED loop, so the attacker gets as many
+#                    attempts as it wants without restarting the process
+#   name filter      "..", a leading '/' and any interior '/' are rejected, so there
+#                    is no path-traversal route at all and every escape has to come
+#                    from the race itself
+#   secret's path    resolved ABSOLUTELY at startup from /proc/self/exe, and the
+#                    program FAILS CLOSED if it cannot be stat'd, so no cwd trick
+#                    can quietly switch the barrier off
+#   st_nlink == 1    see "THE HARD-LINK FINDING" below -- this rule is part of the
+#                    family's constant policy, not decoration
+#   the split        no descriptor is ever carried from a check to the use; every
+#                    action re-resolves a path STRING
+#   request dir      one per slug, /tmp/supwngo_toctou_<NN>, never shared
+#
+# Does NOT measure: anything about the other categories; and it does not claim the
+# variants are equally hard for a human -- only that each is exploitable by the same
+# primitive, which is proven below rather than asserted. It also does NOT measure
+# protection bypass, which is the point of the next section.
+#
+# WHY THE PROTECTIONS ARE ALL ON AND IT DOES NOT MATTER
+#
+# Measured 2026-09-28 off the built binaries via
+# `supwngo.core.binary.Binary.load(p).protections`, NOT copied from `cflags`: every
+# target is **PIE + canary + NX + Full RELRO**, and `cflags` is byte-identical
+# across all six (md5 a2bc454d6540cf1b8887946fff2429d7,
+# `-fstack-protector-all -pie -fPIE -Wl,-z,relro,-z,now -O0`). All five positives
+# are still solved. That is the point of the category rather than an oversight: the
+# entire payload is a FILENAME and a symlink, sent over the target's own request
+# protocol. No return address is overwritten, no pointer is corrupted, no code
+# address is ever needed and no memory is ever corrupted at all. There is nothing
+# for a canary to check, nothing for RELRO to protect, and nothing for PIE to
+# randomise. `-O0` is in `cflags` for the MEASUREMENT, not for the exploit: the
+# executor derives the (check, use) pair by matching the path argument of two calls
+# to the same frame slot (`lea -0xNN(%rbp)`), and at -O2 that address may live only
+# in a register.
+#
+# THE ONE VARIABLE: WHICH (CHECK, USE) PAIR
+targets:
+  - slug: toctou_10_stat_ino_then_open
+    role: positive
+    pair: >
+      stat() -> open(). The anchor. stat() FOLLOWS symlinks, so a symlink left
+      pointing at the secret is resolved and its (st_dev, st_ino) matches the
+      secret's and the request is refused; a hard link is refused on st_nlink. A
+      static swap therefore cannot win -- the name has to be a plain file at the
+      instant stat() looks and a symlink at the instant open() looks. The window is
+      the handful of instructions between the two syscalls.
+    route: leaf
+    win_rate_per_attempt_pct: "4.1 - 5.4 across three runs (per-rep 2.8 - 5.8)"
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: toctou_11_lstat_type_then_fopen
+    role: positive
+    pair: >
+      lstat() -> fopen(). The check does NOT follow symlinks, so unlike the anchor
+      it never resolves the secret at all: what stops a statically planted symlink
+      is the TYPE test (S_ISLNK refused outright), not an identity test. The use is
+      buffered stdio rather than a raw descriptor, and fopen() follows symlinks
+      exactly as open() does. An executor that hardcoded the raw-open response
+      shape, or that assumed the check rejects a swapped-in link on IDENTITY, fails
+      here while the mechanism is unchanged.
+    route: leaf
+    win_rate_per_attempt_pct: "1.5 - 5.4 across three runs; holds the family's lowest single rep at 1.5%"
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: toctou_12_realpath_then_fopen
+    role: positive
+    pair: >
+      realpath() -> fopen(). The canonicalise-then-use shape. The check is
+      CONTAINMENT rather than identity: realpath() collapses every symlink and ".."
+      and the result must sit under the request directory, and the stat() of the
+      CANONICAL path refuses a hard link. The use then re-resolves the ORIGINAL,
+      uncanonicalised string -- which is the whole bug. An executor that learned
+      "the check reads metadata of the leaf" finds NO leaf metadata call on the
+      request path here, and one that assumed check and use are handed the same
+      string finds that they are not.
+    route: leaf
+    win_rate_per_attempt_pct: "10.2 - 17.0 across three runs (per-rep 10.2 - 17.8)"
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: toctou_13_dir_component_swap
+    role: positive
+    pair: >
+      lstat() -> open(O_RDONLY | O_NOFOLLOW), on a path the PROGRAM extends with a
+      fixed intermediate directory component ("pending"). The LEAF is hardened at
+      both ends -- lstat() refuses a symlink at the check, O_NOFOLLOW refuses one at
+      the use -- so the leaf swap that wins on 10/11/12 is impossible. O_NOFOLLOW is
+      defined to constrain only the FINAL component, so what remains swappable is
+      the DIRECTORY component in the middle: exchange "pending" for a symlink to
+      another directory and the identical leaf name resolves to a different PLAIN
+      FILE, with no symlink in final position for either call to object to. The
+      identity test is what stops that swap being made statically.
+    route: dir (leaf tried second and never wins)
+    win_rate_per_attempt_pct: "3.0 - 6.5 across three runs (per-rep 3.0 - 6.8)"
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: toctou_14_predictable_tmp_no_excl
+    role: positive
+    pair: >
+      (nothing) -> open(O_WRONLY | O_CREAT) on a FIXED, PREDICTABLE temp name, then
+      a second open() of the same name to read it back. The operator's request path
+      is handled SAFELY here, to the same standard as the negative control (one
+      open() with O_NOFOLLOW, whole policy via fstat() on the returned descriptor),
+      so both the leaf race and the directory race FAIL on this target. What is left
+      is the RESPONSE path: every response is staged through one hardcoded name
+      under /tmp opened with O_CREAT but WITHOUT O_EXCL and WITHOUT O_TRUNC, then
+      read back. Nothing ever checks what the name already is.
+    route: stage
+    win_rate_per_attempt_pct: 100.0
+    not_a_race: >
+      STATED PLAINLY RATHER THAN ROUNDED OFF: this variant is NOT a race. Its win
+      rate is 100% by construction -- there is no window to hit because there are no
+      two calls to get between; the name can simply be a symlink before the program
+      starts. It is in the family because CWE-377 is the same defect with the window
+      widened to infinity, and because it is the one variant where "swap it between
+      the two calls" is the wrong instinct.
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: toctou_90_neg_fd_anchored
+    role: control
+    pair: >
+      There isn't one, and the bug is repaired TWO INDEPENDENT ways so the control
+      is not one edit away from being a positive. REPAIR 1, ONE resolution: open()
+      is called once and the entire policy is answered with fstat() on the
+      DESCRIPTOR it returned, so the bytes served are provably the bytes checked and
+      there is no second path walk for a swap to land in -- this also covers a
+      swapped-in DIRECTORY component, which O_NOFOLLOW would happily follow but the
+      fstat() identity test then refuses. REPAIR 2, O_NOFOLLOW on that single
+      open(): even if a window existed and a symlink were swapped into the leaf, the
+      open fails with ELOOP. Either repair alone defeats every route the positives
+      use. It also does not stage responses through a predictable temporary name.
+    route: null
+    win_rate_per_attempt_pct: 0.0
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+
+# VALIDATED BEFORE USE -- THE ORACLE WAS PROVED ABLE TO GO RED FIRST
+#
+#   benchmark/reference_exploits/toctou_variants_reference.py
+#
+# Measured 2026-09-28 on this host (`python3 benchmark/reference_exploits/
+# toctou_variants_reference.py`), 2 reps per target, 400 racing attempts per rep
+# (4 per rep for the non-race variant). THREE independent runs, all quoted, because
+# a race's rate is not a constant and a single run would misrepresent it:
+#
+#             run 1      run 2      run 3     spread across all 6 reps
+#   toctou_10   5.4%       4.2%       4.1%       2.8% -  5.8%
+#   toctou_11   3.5%       1.5%       5.4%       1.5% -  6.0%   <- family's lowest
+#   toctou_12  10.2%      17.0%      14.9%      10.2% - 17.8%   <- family's highest
+#   toctou_13   3.0%       3.2%       6.5%       3.0% -  6.8%
+#   toctou_14 100.0%     100.0%     100.0%      not a race, see above
+#   toctou_90   0/800      0/800      0/800      0.0%  (CONTROL, 0/2400 total)
+#
+# Each racing cell is 800 attempts (400 x 2 reps); toctou_14 is 4 x 2.
+#
+# A MEASUREMENT ARTEFACT WORTH RECORDING, because it would have flattered the
+# numbers silently: running the same reference exploit under `strace -f -e
+# trace=openat,open` raises every racing variant to 20.8%-22.4% per attempt. That is
+# the OBSERVER EFFECT, not a better exploit -- tracing every openat slows the target
+# far more than the swapper, so the window widens. The rates above are therefore
+# taken from UNINSTRUMENTED runs, and the strace run is used only for the
+# never-opened-the-secret proof below.
+#
+# A HARNESS POSITIVE CONTROL runs first: a benign in-directory request is served on
+# every target, so "0 flag reads" can never be confused with "the target never
+# answered anything".
+#
+# SEVEN RED PROOFS, every one WRONG-BUT-PRESENT rather than merely absent, each
+# measured to read the secret 0 times:
+#
+#   R1  real-but-wrong symlink destination -- the race is WON, but the link points
+#       at the target's own `cflags` instead of the secret
+#   R2  inverted window -- the symlink is planted and NEVER swapped, so the check
+#       resolves it and refuses
+#   R3  swap too late -- the decoy is never exchanged, so the use resolves the same
+#       plain file the check approved
+#   R4  real-but-wrong request name -- `cflags` exists beside the binary but not in
+#       the request directory
+#   R5  wrong ROUTE on the right target -- toctou_13 attacked with the LEAF swap
+#       that wins on the anchor
+#   R6  statically swapped directory component -- toctou_13's "pending" left
+#       pointing at the secret's directory for the whole run
+#   R7  real-but-wrong staging path -- toctou_14's true staging name left a plain
+#       file and a ONE-CHARACTER-OFF neighbour made the symlink instead
+#
+# THE PIPELINE'S OWN ORACLE WAS PROVED RED SEPARATELY
+#
+# R1-R7 exercise the reference harness. The thing the benchmark actually trusts is
+# `PipelineVerifier.verify_script`, so that was proved red too, by handing the real
+# executor a MUTATED `_Plan` and letting the real verifier judge the real generated
+# script. Positive control first, so a red below cannot be vacuous:
+#
+#   P0  GREEN  unmutated plan on the anchor           -> FLAG_CAPTURED
+#   P1  RED    request dir swapped for target 11's (which exists)
+#   P2  RED    secret name swapped for 'cflags' (which exists beside the binary)
+#   P3  RED    routes forced to ['leaf'] on the DIR variant -- a real route that
+#              wins on three other targets, wrong for this one
+#   P4  RED    staging path one character off, and the wrong name really created
+#
+# PROVING THE TARGET READS THE SECRET, NOT THE SCRIPT
+#
+# The reference exploit never opens flag.txt. It creates symlinks; the TARGET
+# resolves them and prints the bytes. Proved by strace, not by reading the source:
+#
+#   strace -f -e trace=openat,open -o /tmp/toctou_ref.strace \
+#     python3 benchmark/reference_exploits/toctou_variants_reference.py
+#   grep -c 'corpus_toctou.*flag\.txt' /tmp/toctou_ref.strace    ->  0
+#
+# `-f` means the trace covers the TARGET processes too, not just the script, and it
+# demonstrably did: 1621 of the target's own
+# `openat(AT_FDCWD, "/tmp/supwngo_toctou_10/req", ...)` calls are in the same file,
+# across 91 traced pids. So the claim proved is the strong one -- NO process in the
+# tree, script or target, ever opens a path under `benchmark/corpus_toctou/` ending
+# in `flag.txt`. The secret's bytes reach stdout only through the kernel resolving a
+# symlink on an open the TARGET issued.
+#
+# A NARROW GREP NEARLY CARRIED A BROAD NEGATIVE here and it is recorded because it
+# would have looked fine either way: `grep -c 'flag.txt'` on the same trace reports
+# 835, which reads as "something opened the secret 835 times". Every one of them is
+# `/tmp/supwngo_toctou_13/pending/flag.txt` -- toctou_13's decoy, which is
+# deliberately NAMED flag.txt so that the leaf component is identical whether
+# `pending` is the real directory or the swapped-in symlink. The corpus-qualified
+# pattern is the one that answers the question, and the unqualified one is wrong in
+# both directions depending on the run.
+#
+# SECRET INTEGRITY: flag.txt byte size compared before and after on all six
+# targets -- unchanged on every one. The exploit DISCLOSES the secret and never
+# modifies it.
+#
+# END-TO-END THROUGH THE REAL CLI
+#
+# Measured 2026-09-28 with `benchmark/measure_family.py benchmark/corpus_toctou
+# --timeout 300 --jobs 3`, which drives the real `autopwn` CLI per target. NOT
+# `run_bench.py --corpus-root`, which reads R1's manifest and would correctly
+# withhold a score for a family whose fifteen slugs it cannot find.
+#
+# Post-registration behaviour was measured through an OUT-OF-TREE
+# `sitecustomize.py` on PYTHONPATH that does exactly the two in-tree wiring edits
+# and nothing else. `supwngo/exploit/pipeline/orchestrator.py` and
+# `supwngo/exploit/pipeline/executors/__init__.py` are NOT edited by this family.
+#
+#   executor UNREGISTERED   0/5 positives; control declined; 318.1-322.4 s each
+#   REGISTERED, default     5/5 positives; control declined; ALL OK
+#     attempt order           toctou_10  65.1 s   toctou_13  64.8 s
+#                             toctou_11  69.7 s   toctou_14  63.5 s
+#                             toctou_12  68.7 s   toctou_90 (control) 319.0 s
+#   REGISTERED + first      5/5 positives; control declined; ALL OK
+#                             toctou_10   8.0 s   toctou_13   7.5 s
+#                             toctou_11   7.9 s   toctou_14   5.9 s
+#                             toctou_12   8.0 s   toctou_90 (control) 319.4 s
+#
+# Both registered rows are from runs against the code as it stands on disk. An
+# earlier pair of runs with the same wiring but the pre-`unplant` script template
+# gave 65.0-71.9 s and 5.1-7.9 s -- same verdicts, so the cleanup fix costs nothing.
+#
+# The ELAPSED figures are load-sensitive and should be read as such. A third
+# front-placed run, taken while an unrelated `clamscan` was using most of a core and
+# another process was driving `supwngo solve`, still went 5/5 with the control
+# declined, but at 6.1-19.7 s per positive and 408.3 s for the control. The verdicts
+# do not move; the seconds do.
+#
+# Every child interpreter in both registered runs recorded itself as WIRED in a
+# per-pid marker log (26 and 19 lines respectively, 0 FAILED). That check exists
+# because the shim's first version FAILED SILENTLY twice -- see the shim's own
+# docstring.
+#
+# EXHAUSTED SEARCH OR EARLY EXIT? MEASURED, BOTH WAYS, FROM `interrupted` AND THE
+# ATTEMPT LIST OF A DIRECT `autopwn --json` RUN -- not inferred from the wall clock.
+#
+#   unregistered positive (toctou_10)   interrupted=false, 26 attempts recorded =
+#     the ENTIRE 26-entry registry, cumulative 314.5 s, last attempt
+#     `format_string` PARTIAL. EXHAUSTED SEARCH, not a timeout and not an early
+#     exit.
+#   registered control (toctou_90)      interrupted=false, 27 attempts recorded =
+#     the entire registry including this family's executor, cumulative 315.1 s.
+#     EXHAUSTED SEARCH.
+#
+# Two things worth separating in that control row. The RUN exhausts its search; the
+# EXECUTOR declines instantly -- `toctou_path_race` is recorded SKIPPED at 0.0 s at
+# index 24, on the derived reason quoted under "GATE NARROWNESS" below. So the
+# control's refusal costs the pipeline nothing, and the 319-321 s it spends is spent
+# by other techniques, overwhelmingly `variable_overwrite` at 255.6 s.
+#
+# That 255.6 s is also why registration alone is enough here: the one expensive
+# technique in the default order sits AFTER this one.
+#
+# `--jobs 1` is NOT required for this family, and that is a deliberate property of
+# the corpus rather than luck: unlike corpus_envpath (where all five targets share
+# `/tmp/panel` and concurrent targets unlink each other's planted file), every
+# target here derives its request directory from its OWN slug --
+# /tmp/supwngo_toctou_10 ... _14 -- and toctou_14's staging name is
+# /tmp/supwngo_toctou_14_stage. No two targets touch the same path, so `--jobs 3`
+# is safe. Concurrency does change the MEASURED WIN RATE (racing threads compete
+# for the same cores), which is why the per-attempt rates above are quoted from the
+# serial reference run and the pipeline numbers are quoted as elapsed time.
+#
+# A RACE NEEDS A LOOP, AND HERE IS THE HONEST RATE
+#
+# Per-attempt win rates on the four racing variants are 1.5%-17.8% across the three
+# uninstrumented runs above, with the LOWEST single rep observed being toctou_11 at
+# 1.5%. They are NOT deterministic and are not reported as such. Reliability comes
+# from the targets' own UNBOUNDED request loop: the generated script sends
+# ATTEMPTS = 1200 requests in batches of 150 with SWAPPERS = 2 swapper threads, and
+# retries the whole plan for PASSES = 3. Taking the WORST rate seen rather than the
+# mean, 1.5% per attempt gives 1 - 0.985**1200 = 1 - 1.3e-8 for at least one win in
+# one pass. Measured, all 15 generated-script runs won on pass 1, and both
+# 5/5-positive pipeline runs above solved every racing target first time.
+#
+# TWO WIDENING TECHNIQUES ARE USED, AND BOTH ARE THERE FOR A REASON:
+#
+#   RENAME_EXCHANGE  the swap is `renameat2(..., RENAME_EXCHANGE)` (x86-64 syscall
+#                    316, flag 2) rather than unlink+symlink. Win rate is
+#                    proportional to window/period, and one syscall instead of two
+#                    roughly halves the swapper's period. It also means the name is
+#                    NEVER momentarily absent -- an absent name makes the CHECK fail
+#                    and wastes the attempt outright.
+#   2 SWAPPERS       two threads flipping the same pair raise the flip frequency
+#                    seen by the target. Measured on toctou_13, whose window is the
+#                    narrowest: 1 swapper 0.25%-2.5%, 2 swappers 3.8%-5.2%.
+#
+# ATTEMPT ORDERING IS LOAD-BEARING, AND IT WAS MEASURED
+#
+# Measured, not assumed. Registered but NOT front-placed, `toctou_path_race` is
+# attempt **25 of 25** on this family (index 24 of the 27-name ordered list; two
+# names in the list are never recorded as attempts). From a single direct
+# `python3 -m supwngo.cli autopwn ./toctou_10_stat_ino_then_open --json --no-legacy
+# --timeout 300` under the register-only shim:
+#
+#   cumulative attempt time BEFORE it runs   57.7 s
+#   its own attempt                           3.9 s   -> SUCCESS, FLAG_CAPTURED
+#   interrupted                               false
+#
+# The 57.7 s is not spread across 24 techniques: 22 of them SKIP in 0.0 s and the
+# whole cost is two failures, `ret2win` 25.0 s and `canary_leak_ret2win` 30.1 s,
+# plus 2.1 s in `fmtstr_write_gate` and 0.4 s in `ret2libc_leak`.
+#
+# CONCLUSION, stated as the evidence supports and no further: front placement is
+# **NOT REQUIRED**. Registration alone solves all five positives, and it would still
+# do so at the 150 s budget that starved `prng_10`, because the technique is reached
+# at 57.7 s. Front placement is a LATENCY win worth about 58 s per target
+# (64-70 s -> 6-8 s measured) and nothing more. That is a different recommendation
+# from `env_path_hijack`'s, where the technique ran as attempt 23 of 23 and survived
+# only because the budget happened to be 300 s.
+#
+# GATE NARROWNESS, MEASURED
+#
+# `ToctouPathRaceExecutor` (name `toctou_path_race`) derives its plan from the image
+# by dataflow, not by keyword. Swept 2026-09-28 over every ELF executable under
+# `benchmark/corpus*/`: applicable on exactly **5 of 110** binaries across 15
+# families -- the five positives here and nothing else. (The sweep was run three
+# times over the session as other families landed: 5/81, 5/104, 5/110. The
+# denominator grows; the numerator has not moved.) The control is declined with
+# a reason DERIVED from the image rather than from the slug:
+#
+#   "no path-based check feeds the same constructed path as a path-based use, and
+#    no fixed name is created with O_CREAT but without O_EXCL"
+#
+# The check-API table deliberately EXCLUDES fstat/fstatat/faccessat: those are the
+# FIX, not the bug, and including them would make the control applicable.
+#
+# SILENTLY WRONG #2: A WON EXPLOIT LEFT THE NEXT RUN PRE-POISONED
+#
+# Caught by P4 above, which did NOT go red the first time it was run. The generated
+# script planted symlinks under /tmp and never removed them, so:
+#
+#   * after any successful run, /tmp/supwngo_toctou_14_stage was still a symlink to
+#     the secret, and toctou_14 would then disclose the flag to ANY caller that
+#     merely typed a filename -- no race, no technique, no exploit;
+#   * likewise /tmp/supwngo_toctou_1{0,1,2}/spare -> the secret and, after a won
+#     swap, /tmp/supwngo_toctou_13/pending -> the secret's DIRECTORY.
+#
+# That last one had a SECOND-ORDER effect worth recording on its own, because it is
+# the kind of thing a working exploit hides: with `pending` left symlinked at the
+# corpus directory, the NEXT run's leaf plant resolved `REQUEST_DIR` through it and
+# created its decoy and its symlink INSIDE
+# `benchmark/corpus_toctou/toctou_13_dir_component_swap/` -- an exploit writing into
+# the corpus it is measured against, while still reporting a clean win. Found by
+# listing the family tree, twice (the files came back after being deleted once,
+# which is what identified the cause). Closed at both ends: `unplant` stops the
+# symlink surviving, and `plant` now refuses to write through a symlinked
+# REQUEST_DIR at all.
+#
+# MEASURED, and this is the part that matters: P4 mutated the staging path to a
+# one-character-off neighbour, planted THAT, and still reported FLAG_CAPTURED --
+# because the previous run's symlink was still sitting on the real path. A future
+# baseline run would have credited some unrelated technique with a solve this
+# family's own exploit had set up.
+#
+# Closed by adding `unplant(route)` to the generated script, called from a `finally`
+# on every pass, win or lose, and documented in the script it emits. Verified after
+# the fix: all five scripts still win on pass 1 (5.2%, 3.4%, 9.4%, 7.6%, 100.0% on
+# that run) and `os.walk` over /tmp/supwngo_toctou* finds ZERO symlinks afterwards;
+# P4 then goes red. Re-verified once more after the `plant` guard below was added:
+# 3.5%, 4.7%, 10.8%, 3.4%, 100.0%, all winning on pass 1, no symlink left in /tmp
+# and no stray file in any corpus directory. The same fix was applied SYMMETRICALLY to
+# `toctou_variants_reference.py` (an `unplant(reqdir)` after the swapper stops --
+# never before, or the cleanup would race the swapper -- in `attack`,
+# `served_benign` and the R7 helper), because the reference exploit planted the same
+# names and left them behind for the same reason.
+#
+# THE HARD-LINK FINDING: SOMETHING SILENTLY WRONG THAT WOULD HAVE SHIPPED GREEN
+#
+# The first draft of this family had no st_nlink rule. MEASURED on this host: a
+# plain `os.link()` from `benchmark/` into `/tmp` SUCCEEDS, because the request
+# directories and the secret are on the same ext4 filesystem. That made toctou_11
+# and toctou_12 solvable with NO RACE AT ALL -- hard-link the secret into the
+# request directory and every check passes, because a hard link IS a plain file
+# inside the directory with the right containment. The reference exploit and the
+# executor would both have been credited for a racing solve they never performed.
+# Closed by adding `st_nlink == 1` to the family's constant policy in all six
+# targets; recorded in every source header and in the reference exploit.
+#
+# SHAPES DELIBERATELY DROPPED, AND WHY -- STATED RATHER THAN ROUNDED OFF
+#
+#   access(path, R_OK) -> open(path)
+#     DROPPED. `access(2)` follows symlinks, and the classic bug needs the
+#     real-vs-effective-uid asymmetry that makes access() answer a DIFFERENT
+#     question from open(). This corpus is non-setuid and same-uid, so access()
+#     can never deny a symlink to the secret: the "check" would deny nothing and
+#     the target would be a strawman that is solvable without winning any race.
+#     Keeping it would have inflated the family's solve count with a target that
+#     measures nothing.
+#
+#   open() -> fchmod()/fchown() on a re-created path, and st_uid-then-write
+#     DROPPED for the same reason: both derive their security value from a
+#     privilege asymmetry (a setuid or root writer acting on an unprivileged
+#     user's path) that a same-uid corpus cannot express honestly.
+#
+# Replaced by realpath()-then-fopen() (toctou_12) and the directory-component swap
+# (toctou_13), which need no privilege asymmetry: their barriers are containment
+# and O_NOFOLLOW's final-component-only rule, both of which bite at the same uid.
+#
+# WIRING (the orchestrator and the executors package are NOT edited by this family)
+#
+#   class  ToctouPathRaceExecutor
+#   name   "toctou_path_race"
+#   file   supwngo/exploit/pipeline/executors/toctou_techniques.py
+#
+# Registration is one line in `build_default_registry()`. Front placement is one
+# entry in `orchestrator.FIRST_TECHNIQUES`; see the ordering evidence above for
+# whether it is needed.
+#
+# ONE CAVEAT ABOUT THE SHIM, NOT ABOUT THE EXECUTOR, and it is recorded because the
+# raw result looks like a regression. Running
+# `tests/test_input_vector_delivery.py` with the sitecustomize shim on PYTHONPATH
+# fails 2-3 spawn-counting tests (`TestBothSpawnPathsProduceIdenticalFileBytes`,
+# `TestForcedFallbackRematerializes`), with a different subset each run. Attributed
+# rather than guessed at, three runs each:
+#
+#   no shim                                    66/66 and 87/87 pass (twice)
+#   real wiring shim                           3 fail
+#   CONTROL shim: same imports, registers
+#     NOTHING at all                           2 fail   <-- reproduces it
+#   registered via an out-of-tree pytest `-p`
+#     plugin instead of sitecustomize          87/87 pass
+#
+# So the cause is the SHIM MECHANISM, not the registry: a `sitecustomize.py` on
+# PYTHONPATH is inherited by every spawned CHILD interpreter, each of which then
+# imports supwngo and pwntools at startup, and those tests count spawns under a
+# timeout. In-tree registration adds no per-child cost and does not reproduce it --
+# proved by the `-p` plugin row, where `toctou_path_race` is asserted present in the
+# registry AND in the test module's derived non-allowlist tuple, and everything is
+# green.

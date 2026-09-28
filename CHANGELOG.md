@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **New category: TOCTOU path races** (`toctou_path_race`, CWE-367). The first
+  route in the pipeline that corrupts no memory and hijacks no control flow — it
+  wins a *window*. A constructed path is handed to a path-based CHECK and then,
+  later, to a path-based USE, so the name is resolved twice; swapping what it
+  resolves to in between makes the target read a file it has just decided to
+  refuse. One variant is not a race at all: a fixed `/tmp` name created with
+  `O_CREAT` and without `O_EXCL`, which is pre-empted rather than raced.
+
+  It is also the first technique here whose success is **probabilistic**. That
+  changes what a failed attempt means: a single miss is not evidence the route is
+  wrong, so the retry count is part of the capability rather than a fallback.
+
+  Measured through the real `autopwn` CLI (`benchmark/measure_family.py
+  benchmark/corpus_toctou --timeout 300 --jobs 3`): **5/5 positives
+  `FLAG_CAPTURED` by `toctou_path_race` at 3.7–6.1 s**, and the negative control
+  declined after **exhausting 316.6 s** — the shape a properly repaired control
+  should have, since it spends the whole budget rather than exiting early.
+
+  The control is repaired two independent ways so that it is not one patch away
+  from solvable: a single `open()` with the whole policy re-applied via
+  `fstat(fd)`, and `O_NOFOLLOW`. Correspondingly the executor's check-API table
+  deliberately **excludes** `fstat`/`fstatat`/`faccessat` — operating on a
+  descriptor instead of a path is the fix, so counting those as checks would make
+  every repaired program look vulnerable.
+
+  Gate narrowness swept rather than asserted, over every ELF executable under
+  `benchmark/corpus*/` and `tests/htb-targets/`: **116 swept, open on 5, all of
+  them its own positives, nothing outside the family and nothing raised.**
+
+  `FIRST_TECHNIQUES` placement is honest about what it buys: unlike the four
+  entries below it, a front position is not strictly required — the family solves
+  5/5 registered-but-unordered too. It is kept because the latency it saves is
+  what leaves a probabilistic technique room to retry inside the budget.
+
+  Three defects found during the build are worth recording because all three
+  looked fine:
+
+  * `os.link()` from `benchmark/` into `/tmp` succeeds on the same filesystem, so
+    two variants were solvable with **no race at all**. Closed with an
+    `st_nlink == 1` requirement.
+  * a won exploit left `/tmp` **poisoned** — a leftover symlink on the real path
+    meant a deliberately *wrong* staging path still reported `FLAG_CAPTURED`.
+    Caught only because a red-proof mutation failed to go red. Closed with an
+    `unplant()` in both the generated script and the reference exploit.
+  * under `strace -f` every racing variant's win rate rises well above its
+    uninstrumented value, so the tracer changes the thing being measured. The
+    trace is therefore used only for the never-read-the-secret proof, never for a
+    rate.
+
 - **The teaching half of `heap_strlen_ofb1`**: a walkthrough family for the
   category where *the length source is the overflow*.
 
