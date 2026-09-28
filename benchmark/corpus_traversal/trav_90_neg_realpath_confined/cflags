@@ -1,0 +1,53 @@
+# Protections for the path-traversal / arbitrary-file-read corpus (CWE-22). Held
+# IDENTICAL -- byte-identical, not merely equivalent -- across every target in this
+# family on purpose: the *flawed containment filter the escape has to defeat* is the
+# only variable, so a protection difference would confound the measurement. The
+# negative control shares this exact file too, which is what makes its refusal
+# attributable to the absence of the bug rather than to different hardening.
+#
+# EVERY PROTECTION IS ON, AND NONE OF THEM MATTERS. That is the point of the
+# category, not an oversight. This is a non-memory-corruption route: nothing
+# overflows, no pointer is written, no code address is ever needed, and no byte of
+# the program's memory is ever corrupted. The entire payload is a FILENAME typed
+# into the target's own request protocol.
+#
+# -fstack-protector-all  a canary detects a corrupted return address in an
+#                        epilogue. Nothing here writes past a buffer -- the one
+#                        target that depends on a buffer LIMIT (trav_14) depends on
+#                        snprintf() TRUNCATING, which is the bounded, defined
+#                        behaviour, not on it overflowing. No frame is ever damaged
+#                        and the check always passes.
+# -pie -fPIE             PIE randomises where code and data live. No exploit step
+#                        here needs any address at all; the "payload" is a path.
+# -Wl,-z,relro,-z,now    Full RELRO write-protects the GOT after startup. There is
+#                        no GOT write in this category and no pointer write of any
+#                        kind. The program calls exactly the functions it was
+#                        linked against, in the order it was written to call them.
+#                        It simply calls open() on a name that resolves outside the
+#                        directory the program believes it is confined to.
+# (NX)                   comes from the default ELF program headers; nothing is
+#                        ever executed from a data page, so it is satisfied too.
+#
+# Building the family with the full modern set keeps "hardened" from being quietly
+# re-learned as "not exploitable" -- and here it is stronger than that: it shows
+# that for this category the entire memory-safety mitigation stack is not merely
+# insufficient, it is *irrelevant*, because none of it is in the exploit's path.
+#
+# -O0                    load-bearing for the MEASUREMENT, not for the bug. Two
+#                        things depend on it. First, the family has to be a
+#                        controlled comparison, and at higher -O gcc is free to
+#                        reorganise each target's filter differently. Second, the
+#                        executor derives WHERE operator text is concatenated into
+#                        a path by matching the snprintf() destination and the
+#                        open() argument to the same frame slot
+#                        (`lea -0xNN(%rbp)`); at -O2 that buffer can live in a
+#                        register and the derivation would have nothing to match,
+#                        so the gate would be guessing where it is currently
+#                        reading. The bug itself is a missing/flawed
+#                        canonicalisation and is entirely unaffected by
+#                        optimisation level.
+-fstack-protector-all
+-pie
+-fPIE
+-Wl,-z,relro,-z,now
+-O0

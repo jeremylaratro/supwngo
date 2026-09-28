@@ -1,0 +1,85 @@
+# Protections for the untrusted-library-search-path corpus (CWE-426 / CWE-427).
+#
+# The five PROTECTION lines at the bottom of this file are IDENTICAL -- byte for
+# byte -- in every target of this family, including the negative control, so a
+# per-target difference in outcome can never be attributed to different hardening.
+# The only lines that differ between targets are the LINKER lines that express
+# that target's loader-influence mechanism (-ldl, -Wl,-rpath,..., the DT_NEEDED
+# sibling), and each of those is documented in the target's own section below.
+#
+# EVERY PROTECTION IS ON, AND NONE OF THEM MATTERS. That is the point of the
+# category, not an oversight. This is a filesystem + dynamic-loader category and
+# it is orthogonal to the entire memory-safety mitigation stack:
+#
+# -fstack-protector-all  a canary detects a corrupted return address in an
+#                        epilogue. Nothing here writes past a buffer; no frame is
+#                        ever damaged, so the check always passes. The "payload"
+#                        is an ELF shared object sitting in a directory.
+# -pie -fPIE             PIE randomises where code and data live. No step of this
+#                        exploit needs any address at all: the attacker never
+#                        computes a pointer, and the code that runs is code the
+#                        LOADER mapped and relocated on the attacker's behalf.
+# -Wl,-z,relro,-z,now    Full RELRO write-protects the GOT after startup. There is
+#                        no GOT write here and no pointer write of any kind. Worth
+#                        noting the opposite effect on libhj_13: -z now means every
+#                        relocation is resolved BEFORE any constructor runs, so a
+#                        planted DT_NEEDED object that fails to define the init
+#                        symbol aborts the process instead of running -- the
+#                        mitigation constrains the exploit's SHAPE without
+#                        preventing it.
+# (NX)                   comes from the default program headers. Nothing is
+#                        executed from a data page: the attacker's code is in the
+#                        .text of a legitimately mapped, legitimately executable
+#                        shared object.
+#
+# -O0                    load-bearing for the MEASUREMENT, not for the bug. The
+#                        executor derives the mechanism by reading call sites and
+#                        their rodata string arguments out of the image (which
+#                        dlopen argument is relative, which is a bare soname,
+#                        which getenv value reaches the path builder), and at
+#                        higher -O those arguments can live only in registers
+#                        across inlined code. The bug is a loader-configuration
+#                        defect and is entirely unaffected by optimisation level.
+#
+# THIS TARGET'S MECHANISM LINES, and the one place in this family where cflags
+# cannot express everything the variant needs (see install_plugins.sh).
+#
+# -L/tmp/supwngo_libhj_linkdir  LINK-TIME search directory. build_all.sh compiles
+#     exactly one artifact per target directory, so the sibling library this
+#     executable is linked against has to be built by install_plugins.sh FIRST.
+#     An absolute /tmp path is used because -L is resolved against gcc's cwd,
+#     which is whatever directory build_all.sh was invoked from -- a relative -L
+#     would silently drop the DT_NEEDED entry on any other cwd, which is exactly
+#     the "silently building a different program" failure this comment exists to
+#     prevent. Run: benchmark/corpus_libhijack/install_plugins.sh
+# -Wl,--no-as-needed            build_all.sh puts these flags BEFORE the source
+#     file, so with the default --as-needed the linker would process
+#     libsupwngoext.so.1 while it still has no undefined symbols and DROP the
+#     DT_NEEDED entry -- producing a program with no sibling dependency at all.
+# -l:libsupwngoext.so.1         the EXACT-FILENAME form of -l. Plain
+#     `-lsupwngoext` searches for libsupwngoext.so / libsupwngoext.a -- the
+#     development symlink a packaged library would ship -- and MEASURED, it fails
+#     the build outright ("cannot find -lsupwngoext"). The family installs only
+#     the runtime soname, so the exact-filename form is the honest one and a
+#     missing file is a loud link error rather than a quiet mis-build.
+# -Wl,--disable-new-dtags       emit DT_RPATH rather than DT_RUNPATH, so both
+#     dynamic tags are represented in the family.
+# -Wl,-rpath,$ORIGIN/lib:$ORIGIN/vendor   $ORIGIN is expanded by the loader to
+#     the executable's own directory. lib/ is FIRST and is shipped EMPTY and
+#     writable -- that is the defect. vendor/ is second and holds the legitimate
+#     module. Verify:
+#       readelf -d libhj_13_runpath_origin | grep -E 'NEEDED|RPATH|RUNPATH'
+#         -> NEEDED [libsupwngoext.so.1]
+#         -> RPATH  [$ORIGIN/lib:$ORIGIN/vendor]   and no RUNPATH line
+-L/tmp/supwngo_libhj_linkdir
+-Wl,--no-as-needed
+-l:libsupwngoext.so.1
+-Wl,--disable-new-dtags
+-Wl,-rpath,$ORIGIN/lib:$ORIGIN/vendor
+#
+# --- protections, identical across the family -----------------------------
+-fstack-protector-all
+-pie
+-fPIE
+-Wl,-z,relro,-z,now
+-O0

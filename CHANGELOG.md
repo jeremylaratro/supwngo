@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **New category: untrusted library search path — dlopen / RUNPATH hijack
+  (CWE-426 / CWE-427).** New executor `library_path_hijack`
+  (`supwngo/exploit/pipeline/executors/library_hijack_techniques.py`), registered
+  in `build_default_registry()`. The target loads an extension module through the
+  dynamic loader from a location the operator can influence, so the *operator*
+  decides which ELF gets mapped: the exploit compiles its own `.so`, plants it
+  where ld.so looks first, and its constructor runs inside the target process.
+  Five derived routes — a cwd-relative `dlopen` literal, a directory from plain
+  `getenv`, a bare soname reached via `LD_LIBRARY_PATH`, a `readdir` drop-in
+  scan, and an empty-but-writable early `DT_RPATH`/`DT_RUNPATH` entry ahead of
+  the entry that actually holds a non-system `DT_NEEDED` object.
+
+  Nothing in this technique reads `protections`: the whole payload is a file on
+  disk plus a cwd or an environment variable, so there is nothing for a canary to
+  check, nothing for RELRO to protect and nothing for PIE to randomise. The new
+  corpus (`benchmark/corpus_libhijack/`, six targets, one variable — *how the
+  loader is pointed at the object*) is built **PIE + canary + NX + Full RELRO**
+  to demonstrate it. Full RELRO is load-bearing *against* the exploit on one
+  route: `-z now` resolves every relocation before any constructor, so a planted
+  `DT_NEEDED` stand-in must define the symbol its legitimate sibling exported —
+  and the executor derives that contract from the sibling rather than assuming
+  it.
+
+  Gate narrowness **measured, not argued**: the applicability check was called
+  directly on every ELF executable under `benchmark/` and `tests/` — **140 swept,
+  open on 5 (exactly its own positives, with the control declined statically),
+  nothing outside the family, nothing raised**, mean 110 ms per image. The
+  subject was proven present rather than absent: three HTB targets
+  (`rocket_blaster_xxx`, `sabotage`, `bon-nie-appetit`) carry
+  `RUNPATH ['./glibc/']`, the bundled-glibc shape a naive "has a relative
+  RUNPATH" gate would claim, and all three are declined by name. Five
+  wrong-but-present gate mutations, each rebuilt into a genuinely working
+  program, all go red. Re-measured in-tree by the orchestrator
+  (`measure_family.py benchmark/corpus_libhijack --timeout 300 --jobs 3`): **5/5
+  positives `FLAG_CAPTURED` by `library_path_hijack` at 69.1–70.0 s**, control not
+  solved after 338.1 s. Every win is
+  proven with shell arithmetic (`echo SH$((6*7))OK` → `SH42OK`) before any stdin
+  is bridged, because the pipeline's `echo <token>` check cannot tell a shell
+  from a target that echoes its input.
+
 - **`supwngo explain` now teaches the indirect-call hijack** it has been able to
   fly since the `objptr_hijack` executor landed. New walkthrough family
   `objptr_hijack` (score 0.87): fill the member that sits beside a function
@@ -48,6 +88,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A measured-but-irrelevant number is the more dangerous of the two cases: it is
   true, so nothing flags it, and it silently invites the reader back to the
   cyclic-pattern framing this route does not use.
+
+- **New category: path traversal to arbitrary file read** (`path_traversal_read`,
+  CWE-22). New executor
+  `supwngo/exploit/pipeline/executors/path_traversal_techniques.py`, registered in
+  `build_default_registry()`. The target concatenates operator-supplied text onto a
+  fixed request directory and opens the result **by name**, so a name that resolves
+  upwards makes the target itself print a file it believes it cannot reach. The
+  whole payload is a filename: nothing overflows, no pointer is written, no code
+  address is ever needed. New corpus `benchmark/corpus_traversal/` — six targets,
+  one variable, *which flawed containment filter the escape has to defeat*: no
+  filter at all, a single-pass `../` strip (which re-creates the sequence it
+  deletes), a `strncmp` prefix check performed on the **unresolved** string, a
+  `strstr(name, "..")` rejection that still honours a leading `/`, and a fixed
+  `.txt` suffix that `snprintf` truncates away when the name is long enough.
+
+  The gate is dataflow, not keyword: an `objdump` backward trace over the SysV
+  argument registers must line up four facts — a `"<dir>/%s"`-shaped join, the
+  other vararg reaching back to an input reader (directly or through one
+  sanitiser), the join's destination frame slot handed to a path-based `open`, and
+  a leaf filter that does not reject **both** `..` and `/`. The fourth fact exists
+  because the first three describe `corpus_toctou` exactly. Swept by the
+  orchestrator over every ELF executable under `benchmark/` and `tests/`: **140
+  swept, open on 5 (exactly its own positives), nothing outside the family, nothing
+  raised**, mean 270 ms per image. Re-measured in-tree
+  (`benchmark/measure_family.py benchmark/corpus_traversal --timeout 300 --jobs 3`):
+  **5/5 positives `FLAG_CAPTURED` by `path_traversal_read` at 60.8–61.4 s**, and the
+  negative control not solved after 318.8 s.
+
+  Two things are recorded rather than smoothed. The control is repaired **three**
+  ways — `realpath()` then a containment check on the *resolved* path then open
+  *that*, a leaf allowlist, and `O_NOFOLLOW` — and their independence is measured
+  by ablation (`#ifdef` switches `cflags` never defines), including a
+  fully-ablated build as the positive control on the ablation itself. And
+  `trav_14`'s truncation route depends on the repository's own path length: the
+  padded escape must fit in 234 characters and measures 95 here, so a
+  pathologically deep checkout makes that one variant *refuse* rather than
+  mis-solve.
 
 - **New category: uninitialised-memory disclosure** (`uninit_disclosure`,
   CWE-457/CWE-908). The first route here that is a **read** primitive rather than a

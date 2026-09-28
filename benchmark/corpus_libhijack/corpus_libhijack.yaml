@@ -1,0 +1,554 @@
+# Challenge-variation corpus manifest: UNTRUSTED LIBRARY SEARCH PATH -- dlopen /
+# RUNPATH hijack (CWE-426 untrusted search path, CWE-427 uncontrolled search path
+# element).
+#
+# The target loads an extension module through the dynamic loader from a location
+# the operator can influence, so the OPERATOR -- not the program -- decides which
+# ELF gets mapped. An attacker-supplied shared object then runs its own code
+# inside the target process before the program can inspect anything.
+#
+# This is the latest non-memory-safety category in the set, after corpus_inject/
+# (subprocess injection), corpus_prng/ (predictable secrets), corpus_toctou/
+# (file races) and corpus_traversal/ (path traversal). It was chosen for the same
+# reason they were: it is orthogonal to canary / NX / PIE / RELRO, and the whole
+# family is built with every one of those ON to demonstrate it.
+#
+# WHAT THIS CORPUS MEASURES, AND WHAT IT DOES NOT
+#
+# Measures: whether one solve capability GENERALISES across the particulars of a
+# single vulnerability category. Everything about the BUG and the security goal is
+# held identical across all six targets and exactly one thing varies -- **how the
+# loader is pointed at the attacker's object**. A per-target difference is
+# therefore attributable to the pointing mechanism, not to a different bug.
+#
+# Held identical in every target (the source headers say it at length):
+#
+#   the legitimate    every target loads an extension module through the dynamic
+#   feature           loader and calls the family's documented init symbol
+#                     `supwngo_plugin_init` on it, printing what that returns. With
+#                     the module installed where the target documents it, this
+#                     WORKS NORMALLY. The module is ONE shared source for the whole
+#                     family (supwngo_ext.c, SONAME libsupwngoext.so.1, installed
+#                     by install_plugins.sh), so no target gets a different plugin.
+#   the security      the process's code is its own. Nothing outside the program
+#   goal              and its shipped module may execute inside it.
+#   the secret        flag.txt sits BESIDE THE BINARY. Its path is resolved
+#                     ABSOLUTELY at startup from /proc/self/exe and the program
+#                     FAILS CLOSED (exits) if that path cannot be stat'd, so no
+#                     cwd trick can quietly switch the barrier off -- and three of
+#                     the five mechanisms DO change the cwd or the environment.
+#   the working dir   one per slug, /tmp/supwngo_libhj_<NN>, never shared with
+#                     another target.
+#   the command loop  identical: `status` / `quit`, and no file access of any kind.
+#   the protections   canary + NX + PIE + Full RELRO, all ON (see the next
+#                     section), from cflags whose PROTECTION lines are identical
+#                     across the family.
+#   the win condition code execution inside the target process: the planted object
+#                     spawns /bin/sh. Proven with a COMPUTED marker
+#                     (`echo SH$((6*7))OK` -> `SH42OK`, which /bin/echo cannot
+#                     produce) and then used to read the flag.txt beside the
+#                     binary.
+#   what is NOT here  no system(), no popen(), no execve of a $PATH name, no
+#                     overflow, no format string. The only way in is the loader.
+#
+# Does NOT measure: anything about the other categories; and it does not claim the
+# five variants are equally hard for a human -- only that each is exploitable, and
+# that is proven below rather than asserted. It also does NOT measure protection
+# bypass, which is the point of the next section.
+#
+# WHY THE PROTECTIONS ARE ALL ON AND IT DOES NOT MATTER
+#
+# Measured 2026-09-28 off the BUILT BINARIES via
+# `supwngo.core.binary.Binary.load(p).protections`, not copied from `cflags`:
+#
+#   libhj_10_dlopen_relative_path   canary=True nx=True pie=True relro=Full RELRO
+#   libhj_11_dlopen_dir_from_env    canary=True nx=True pie=True relro=Full RELRO
+#   libhj_12_dlopen_bare_soname     canary=True nx=True pie=True relro=Full RELRO
+#   libhj_13_runpath_origin         canary=True nx=True pie=True relro=Full RELRO
+#   libhj_14_plugin_dir_scan        canary=True nx=True pie=True relro=Full RELRO
+#   libhj_90_neg_absolute_verified  canary=True nx=True pie=True relro=Full RELRO
+#
+# All five positives are still solved. That is the POINT of the category rather
+# than an oversight: the entire payload is a FILE ON DISK plus a cwd or an
+# environment variable. No return address is overwritten, no pointer is corrupted,
+# no code address is ever computed and no memory is ever corrupted at all. The
+# code that runs is in the .text of a legitimately mapped, legitimately executable
+# object that ld.so relocated on the attacker's behalf. There is nothing for a
+# canary to check, nothing for RELRO to protect and nothing for PIE to randomise.
+#
+# Full RELRO is not merely harmless here, it is LOAD-BEARING in one direction --
+# against the exploit. `-z now` means every relocation is resolved before any
+# constructor runs, so on the DT_NEEDED route (libhj_13) an object that fails to
+# DEFINE `supwngo_plugin_init` makes the loader abort the process with "undefined
+# symbol" and not one instruction of the attacker's code executes. The hardening
+# does not stop the category; it constrains what the planted object must contain,
+# and the executor derives that requirement rather than assuming it.
+#
+# `-O0` is in cflags for the MEASUREMENT, not for the exploit: the executor reads
+# dlopen's path argument by tracing the argument register backwards through the
+# -O0 `lea`/`mov` chain, and at -O2 that chain may not exist. The DEFECT is
+# equally present at -O2 (it is in the dynamic section and in the .rodata strings)
+# but the static derivation of WHICH route to take is what needs -O0.
+#
+# cflags: the five PROTECTION lines are identical across all six targets
+# (md5 284f0ddcc90af5ea8ebe54d18129d84e over
+# `-fstack-protector-all -pie -fPIE -Wl,-z,relro,-z,now -O0`). The files are NOT
+# byte-identical, unlike corpus_toctou's, and they cannot be: the one variable
+# this family varies is a LINK-TIME property for two of the six targets, so the
+# mechanism lives partly in cflags. Effective flag lists, as build_all.sh parses
+# them:
+#
+#   libhj_10  -ldl <protections>
+#   libhj_11  -ldl <protections>
+#   libhj_12  -ldl -Wl,--enable-new-dtags -Wl,-rpath,$ORIGIN/plugins <protections>
+#   libhj_13  -L/tmp/supwngo_libhj_linkdir -Wl,--no-as-needed
+#             -l:libsupwngoext.so.1 -Wl,--disable-new-dtags
+#             -Wl,-rpath,$ORIGIN/lib:$ORIGIN/vendor <protections>
+#   libhj_14  -ldl <protections>
+#   libhj_90  -ldl <protections>
+#
+# WHAT cflags COULD NOT EXPRESS, SAID PLAINLY RATHER THAN WORKED AROUND
+#
+# `benchmark/build_all.sh` compiles exactly ONE artifact per target directory
+# (`<slug>.c` -> `<slug>`). `cflags` therefore cannot express two things this
+# family needs:
+#
+#   1. the legitimate extension module -- a SHARED OBJECT, i.e. a second gcc
+#      output; and
+#   2. for libhj_13, a real sibling library that has to EXIST AT LINK TIME so the
+#      executable can be linked against it and acquire a DT_NEEDED entry.
+#
+# Rather than silently building a different program (a family with no plugin to
+# load, or a libhj_13 with no DT_NEEDED at all), provisioning is split in two and
+# documented. **install_plugins.sh must run BEFORE build_all.sh**:
+#
+#     benchmark/corpus_libhijack/install_plugins.sh
+#     SUPWNGO_BENCH_CORPUS=benchmark/corpus_libhijack benchmark/build_all.sh
+#
+# This is a REPORTABLE LIMITATION of the cflags mechanism, not a defect in the
+# family. Two consequences follow and both were measured, not guessed:
+#
+#   * libhj_13's cflags carries an ABSOLUTE `-L/tmp/supwngo_libhj_linkdir`. A
+#     relative -L would be resolved against gcc's cwd -- whatever directory
+#     build_all.sh happened to be invoked from -- and would silently drop the
+#     DT_NEEDED entry, producing a target with no bug. A committed cflags also
+#     must not contain a host-specific checkout path. /tmp is the only location
+#     that satisfies both, and install_plugins.sh creates it.
+#   * `-lsupwngoext` does NOT work and the measured error is
+#     `/usr/bin/ld: cannot find -lsupwngoext`: plain -l looks for
+#     `libsupwngoext.so` or `.a`, the development symlink a packaged library
+#     would ship, and this family installs only the runtime soname. The cflags
+#     line is the exact-filename form `-l:libsupwngoext.so.1`.
+#   * build_all.sh places cflags BEFORE the source file, so Ubuntu's default
+#     `--as-needed` would have dropped the DT_NEEDED entry for a library whose
+#     symbols are referenced only by the later object. `-Wl,--no-as-needed` is
+#     there for that reason and `readelf -d` was checked afterwards.
+#
+# A third thing nothing in this repo can express: libhj_13 ships an EMPTY
+# `lib/` directory, and git does not track empty directories. install_plugins.sh
+# recreates it. The gate depends on it existing (see FILTER 2 below), so a fresh
+# checkout that skips install_plugins.sh yields a libhj_13 the executor declines.
+#
+# VERIFIED DYNAMIC TAGS (readelf -d, 2026-09-28)
+#
+#   libhj_10  NEEDED libc.so.6                       FLAGS BIND_NOW, NOW PIE
+#   libhj_11  NEEDED libc.so.6                       FLAGS BIND_NOW, NOW PIE
+#   libhj_12  NEEDED libc.so.6
+#             RUNPATH $ORIGIN/plugins                FLAGS BIND_NOW, NOW PIE
+#   libhj_13  NEEDED libsupwngoext.so.1, libc.so.6
+#             RPATH   $ORIGIN/lib:$ORIGIN/vendor     BIND_NOW, NOW PIE
+#   libhj_14  NEEDED libc.so.6                       FLAGS BIND_NOW, NOW PIE
+#   libhj_90  NEEDED libc.so.6                       FLAGS BIND_NOW, NOW PIE
+#             (no RPATH, no RUNPATH -- grep prints nothing)
+#
+# Both dynamic tags are represented on purpose. ld.so does NOT treat them the
+# same: DT_RPATH is searched BEFORE LD_LIBRARY_PATH, DT_RUNPATH after it, and the
+# loader ignores DT_RPATH entirely on an object that also has a DT_RUNPATH.
+# libhj_12 gets DT_RUNPATH (-Wl,--enable-new-dtags) and libhj_13 gets DT_RPATH
+# (-Wl,--disable-new-dtags), so the executor's handling of the distinction is
+# exercised rather than assumed.
+#
+# THE ONE VARIABLE: HOW THE LOADER IS POINTED AT THE OBJECT
+#
+#   libhj_10  cwd-relative dlopen. `dlopen("./plugins/libsupwngoext.so.1")`. A
+#             relative path CONTAINING A SLASH makes ld.so skip every search rule
+#             and resolve the string against the process's cwd, so whoever starts
+#             the program decides what "." means.
+#   libhj_11  directory from the environment. `getenv("SUPWNGO_PLUGIN_DIR")`,
+#             snprintf'd with the soname, dlopen'd. Plain getenv, not
+#             secure_getenv, and no validation of any kind on the named directory.
+#   libhj_12  bare soname. `dlopen("libsupwngoext.so.1")` -- no slash, which is
+#             the one thing that makes ld.so run its SEARCH algorithm. For a
+#             dlopen from an executable, LD_LIBRARY_PATH is consulted BEFORE the
+#             calling object's own DT_RUNPATH, so the legitimate
+#             `$ORIGIN/plugins` loses to an attacker's LD_LIBRARY_PATH.
+#   libhj_13  writable early RPATH entry, and NO dlopen at all. The extension is
+#             an ordinary DT_NEEDED sibling resolved by ld.so at process startup;
+#             the init symbol is bound by the linker, not looked up with dlsym.
+#             DT_RPATH is `$ORIGIN/lib:$ORIGIN/vendor`; the legitimate copy is in
+#             `vendor/`, the SECOND entry, and `lib/` -- the FIRST -- ships EMPTY
+#             and writable. An empty-but-writable early search-path entry is the
+#             whole defect: anything dropped into $ORIGIN/lib satisfies the soname
+#             first and is mapped, relocated and CONSTRUCTED before main() runs.
+#   libhj_14  drop-in directory scan. opendir/readdir over the working directory,
+#             every entry whose name merely CONTAINS ".so" handed to dlopen, then
+#             dlsym. The program loads whatever it enumerates, so the FILENAME is
+#             free -- and the plant does not have to impersonate anything.
+#
+#   libhj_90  THE NEGATIVE CONTROL. See "THE CONTROL" below.
+#
+# THE CONTROL, AND WHY IT IS REPAIRED TWICE
+#
+# A control that is one edit away from being a positive measures nothing, so
+# libhj_90_neg_absolute_verified is repaired two INDEPENDENT ways. Either repair
+# alone defeats all five mechanisms; both are present.
+#
+#   REPAIR 1 -- no channel exists that could point the loader elsewhere.
+#     vs libhj_10  the module path is a compile-time ABSOLUTE string under a
+#                  ROOT-OWNED directory. Leading '/' means the cwd is never
+#                  consulted, and the operator cannot write that directory.
+#     vs libhj_11  NO environment variable reaches any path. The one environment
+#                  read that remains is a verbosity flag, through secure_getenv().
+#     vs libhj_12  the path contains slashes, so ld.so does no search at all:
+#                  LD_LIBRARY_PATH, ld.so.cache and the default directories are
+#                  never consulted for it.
+#     vs libhj_13  the image has NO DT_RUNPATH and NO DT_RPATH -- not an $ORIGIN
+#                  one, not any one -- and no non-system DT_NEEDED entry.
+#     vs libhj_14  nothing is enumerated. There is no opendir/readdir/scandir in
+#                  the image; exactly one module is loaded and its name is a
+#                  constant.
+#
+#   REPAIR 2 -- the file actually loaded is identity-checked first. The program
+#     open()s the path ONCE, answers the whole policy with fstat() on THE
+#     DESCRIPTOR IT WILL LOAD FROM (plain file, exactly one link, expected owner
+#     uid), and then loads THAT DESCRIPTOR via /proc/self/fd/<n> rather than
+#     re-resolving the name. The bytes mapped are provably the bytes checked --
+#     there is no second path walk for a swap to land in, which is also why this
+#     control cannot be attacked as a TOCTOU race.
+#
+# It is still a genuinely working program: it loads its module and calls that
+# module's documented init symbol, so a DECLINE is a decline and not a crash.
+# That was checked, not assumed -- see the harness positive control below.
+#
+# THE CONTROL'S HONEST LIMIT
+#
+# "A directory the attacker cannot write" is only expressible in a SAME-UID
+# corpus by pointing at a real system directory. The control's legitimate
+# extension module is therefore a vendor system object --
+# /lib/x86_64-linux-gnu/libz.so.1, root-owned in a root-owned directory -- and
+# its documented init symbol is that module's own `zlibVersion()` rather than the
+# family's `supwngo_plugin_init`. That is the ONE respect in which this target
+# differs from the family beyond the absence of the bug, and it is a consequence
+# of the "cannot write" requirement rather than a free choice: the family's own
+# extension cannot be installed under a root-owned prefix without root. A real
+# deployment would ship the family extension under /usr/lib and this control
+# would be byte-for-byte the same program with a different pair of constants.
+#
+# VALIDATION -- DONE BEFORE ANYTHING TRUSTED THE CORPUS
+#
+# benchmark/reference_exploits/libhijack_variants_reference.py is a deterministic
+# per-target reference exploit, written and run BEFORE the executor existed. Run
+# 2026-09-28, exit 0, 0.44s wall:
+#
+#   HARNESS POSITIVE CONTROL -- all six targets load their LEGITIMATE plugin.
+#     This runs FIRST. Without it, "the control cannot be hijacked" is
+#     indistinguishable from "the control is broken", which is the
+#     unsolvable-for-the-wrong-reason failure this section exists to exclude.
+#
+#   POSITIVES -- 5 targets x 2 reps = 10 wins. Every rep produced BOTH the
+#     computed shell marker SH42OK and the flag. The flag was the per-run secret
+#     FLAG{libhj_perrun_uqp70r}, installed by rebuilding with SUPWNGO_BENCH_FLAG,
+#     so it could not have been guessed from the sources.
+#
+#   NEGATIVE CONTROL -- libhj_90 attacked with ALL FIVE mechanisms: cwd, env_dir,
+#     ld_library_path, origin_rpath, dropin_scan. shell=False and flag=None for
+#     every one.
+#
+#   EIGHT RED PROOFS, every plant REAL and PRESENT and merely wrong:
+#     R1  wrong plant path, right mechanism -- 'libsupwngoext.so.2', one character
+#         off, in the right directory.                                      RED
+#     R2  right plant, mechanism NOT applied -- the object is in our directory but
+#         the target is started from its own, so '.' finds the legitimate one. RED
+#     R3  right plant, right mechanism, BENIGN object -- a real loadable .so that
+#         exports the init symbol and does nothing.                          RED
+#     R4  NOTHING planted at all, mechanism applied. This is the cleanup proof: a
+#         stale plant from R1-R3 would win here.                             RED
+#     R5  wrong environment VARIABLE (SUPWNGO_PLUGIN_DIRX).                  RED
+#     R6  wrong MECHANISM on the bare-soname target (the env var that wins on
+#         libhj_11 instead of LD_LIBRARY_PATH).                              RED
+#     R7  wrong RPATH DIRECTORY -- '$ORIGIN/libs', one character off.        RED
+#     R8  a name the scan IGNORES -- '.dylib' in the right directory, so the
+#         '.so' substring test skips it.                                     RED
+#
+#   CLEANUP -- leftover plants: 0, over a walk of the whole family looking for any
+#     .so outside plugins/ and vendor/.
+#   SECRET INTEGRITY -- all six flag.txt files 26 -> 26 bytes, unchanged.
+#
+#   NON-VACUITY of that run, because 0.44s for 25 spawns is not a credible number
+#   on its face and was checked rather than believed. Under
+#   `strace -f -e trace=execve`: 29 execve of a corpus target, 34 of the
+#   compiler chain, and exactly **10 execve("/bin/sh")** -- which is the 10
+#   winning positive reps and nothing else. The control's five attempts and all
+#   eight red proofs produced ZERO shells.
+#
+#   The reference script never reads a flag.txt itself: under
+#   `strace -e trace=openat,open,creat` (no -f, i.e. its own process only) the
+#   244-line trace contains 0 matches for 'flag.txt' and 19 for
+#   'corpus_libhijack', so the trace is non-vacuous. Every flag byte reported came
+#   back through a shell running inside the target.
+#
+# MEASUREMENT -- THE REAL CLI, NOT A HARNESS
+#
+#   $ python3 benchmark/measure_family.py benchmark/corpus_libhijack \
+#         --timeout 300 --jobs 3
+#
+#   [positive] libhj_11_dlopen_dir_from_env  SOLVED  technique=library_path_hijack
+#                                            verified=FLAG_CAPTURED flag=True  69.0s
+#   [positive] libhj_12_dlopen_bare_soname   SOLVED  technique=library_path_hijack
+#                                            verified=FLAG_CAPTURED flag=True  69.0s
+#   [positive] libhj_10_dlopen_relative_path SOLVED  technique=library_path_hijack
+#                                            verified=FLAG_CAPTURED flag=True  69.2s
+#   [positive] libhj_13_runpath_origin       SOLVED  technique=library_path_hijack
+#                                            verified=FLAG_CAPTURED flag=True  68.7s
+#   [positive] libhj_14_plugin_dir_scan      SOLVED  technique=library_path_hijack
+#                                            verified=FLAG_CAPTURED flag=True  68.9s
+#   [CONTROL ] libhj_90_neg_absolute_verified not solved  technique= verified=NONE
+#                                            flag=False                      337.3s
+#
+#   positives solved: 5/5   controls: 1, wrongly solved: 0
+#
+# Every positive is FLAG_CAPTURED and every one is won by `library_path_hijack`,
+# not by another technique that happened to get there. The control takes 337s
+# because the pipeline tries its whole catalogue before giving up; that is the
+# cost of an honest decline, not a timeout.
+#
+# The wall clocks above are from the run against the FINAL tree, and they are
+# upper bounds rather than clean figures: two other agents were measuring their
+# own families on the same host at the time. The verdicts do not depend on timing
+# -- nothing in this category races anything -- but the seconds should not be
+# quoted as this family's cost in isolation.
+#
+# A CLEANUP DEFECT FOUND BY CHECKING, AND FIXED
+#
+# The first measure_family run left THREE /tmp/.supwngo_libhijack_<pid> scratch
+# directories behind. Cause: the generated script removed its scratch at the end
+# of bridge(), but on a WINNING run the script ends inside io.interactive() and is
+# terminated there by whoever owns it -- so the one code path that never ran the
+# cleanup was the successful one. The scratch held only the compiled payload, not
+# a plant in any search path, so no measurement was corrupted; it is recorded here
+# because "cleanup runs except when you win" is the shape of defect this family is
+# supposed to catch. Fixed with an atexit handler, and re-verified: a winning run
+# now leaves NONE, confirmed both by hand and after a full six-target
+# measure_family run.
+#
+# GATE NARROWNESS -- MEASURED, AND THE SUBJECT PROVEN PRESENT
+#
+# The executor's applicability check was called DIRECTLY (no exploits run) on
+# every ELF executable under benchmark/corpus*/ and tests/htb-targets/:
+#
+#   ELF executables swept          132   (10 of them under tests/htb-targets/)
+#   gate OPENED on                   5   -- exactly the five positives
+#   openings outside those five      0
+#   exceptions raised                0
+#
+# A 0-openings result over images that carry none of the gate's subjects would
+# prove nothing, so the subjects were counted too:
+#
+#   images carrying dlopen/dlmopen in the PLT   5  (the 4 dlopen positives + the
+#                                                  control, which DECLINES)
+#   images carrying DT_RUNPATH or DT_RPATH      5  (libhj_12, libhj_13, and THREE
+#                                                  HTB targets)
+#
+# The three HTB targets are the important ones: rocket_blaster_xxx, sabotage and
+# bon-nie-appetit all carry `RUNPATH ['./glibc/']` with `NEEDED ['libc.so.6']` --
+# the bundled-glibc shape that is the HTB house style. A naive "has a relative or
+# $ORIGIN RUNPATH" gate would claim all three. This one declines all three, and
+# says why: "every DT_NEEDED soname is a system library resolvable from the
+# default directories".
+#
+# THE TWO FILTERS THAT KEEP THE RPATH ROUTE NARROW, AND PROOF EACH IS NEEDED
+#
+#   FILTER 1  the needed soname must NOT be resolvable from the default system
+#             directories. Without it, every bundled-glibc binary is a hit, and
+#             "hijacking" one would mean OVERWRITING its shipped libc -- a
+#             different act entirely.
+#   FILTER 2  a REAL DIRECTORY must precede the entry where the needed object is
+#             actually found, and must not already contain it. Without it, every
+#             image whose dependency is found in its FIRST search entry is a hit,
+#             and again winning would mean overwriting the program's own library.
+#
+# GATE RED PROOFS -- five mutations, each WRONG-BUT-PRESENT
+#
+# Each mutation edits a tracked corpus source or cflags so the CHANNEL IS STILL
+# THERE but is no longer the defect, rebuilds a genuinely working program from the
+# mutated source into a /tmp mirror (the validated corpus ELF is never touched),
+# and asserts the gate goes RED. Every mutant was RUN and its legitimate plugin
+# load shown, because a mutation the compiler or the program rejects proves
+# nothing. Every source was then restored and the restoration verified by sha256.
+#
+#   M1  libhj_10  dlopen literal "./plugins/libsupwngoext.so.1" -> the ABSOLUTE
+#                 "/tmp/supwngo_libhj_m1/libsupwngoext.so.1". Still a dlopen
+#                 string literal; no longer cwd-relative.                    RED
+#                 mutant works: "plugin: supwngo reference extension v1"
+#   M2  libhj_11  getenv(SUPWNGO_PLUGIN_DIR) -> secure_getenv. Same variable,
+#                 same snprintf, same dlopen -- hardened reader.              RED
+#                 mutant works: "plugin: supwngo reference extension v1"
+#   M3  libhj_14  the opendir/readdir loop -> one snprintf of the SAME directory
+#                 and soname. The computed path and its builder are still there;
+#                 only the enumeration is gone.                               RED
+#                 mutant works: "plugin: supwngo reference extension v1"
+#   M4  libhj_13  DT_RPATH "$ORIGIN/lib:$ORIGIN/vendor" -> "$ORIGIN/vendor:
+#                 $ORIGIN/lib". Both entries still real and writable; the needed
+#                 object is now in the FIRST. Isolates FILTER 2.              RED
+#                 decline names it: "already present in the first real directory
+#                 on that list, so there is no earlier empty entry to win from"
+#                 mutant works: "plugin: supwngo reference extension v1"
+#   M5  synthetic DT_NEEDED libsupwngoext.so.1 -> libz.so.1, a SYSTEM soname, with
+#       (libhj_13 the RPATH shape UNCHANGED: an empty writable $ORIGIN/lib
+#        shape)   preceding a $ORIGIN/vendor that HOLDS the object. FILTER 2 would
+#                 open on this; FILTER 1 is the only thing that declines it.   RED
+#                 decline names it: "every DT_NEEDED soname is a system library
+#                 resolvable from the default directories"
+#                 mutant works: "plugin: vendor module zlib 1.2.11"
+#
+#   SANITY, because a red proof that reds everything proves nothing: with the
+#   sources restored, all five unmutated positives are GREEN again and each
+#   derives its own single route (cwd / env_dir+env_dir_subdir /
+#   ld_library_path / origin_rpath / dropin_scan).
+#
+# WHY THIS GATE CANNOT COLLIDE WITH env_path_hijack
+#
+# corpus_envpath/'s EnvPathHijackExecutor plants an EXECUTABLE on $PATH so a later
+# `system("<relative name>")` runs it. Its gate is three facts about a HEAP WRITE
+# (a size-biasing allocator wrapper, an unsigned-bounded copy loop, and a relative
+# string reaching system()). None of those is required, or even looked for, by
+# library_path_hijack, whose consumer is dlopen/ld.so, whose payload is a .so
+# rather than a script, and whose plant location is decided by the LOADER's search
+# rules. The sweep above confirms it empirically: the gate opened on zero
+# corpus_envpath/ and zero corpus_inject/ targets.
+#
+# SILENTLY WRONG -- THE FAILURE MODES THIS FAMILY WAS BUILT TO CATCH
+#
+#   A STALE PLANT IS A FALSE GREEN. A .so left behind by one attempt makes the
+#   NEXT attempt -- including a deliberately wrong one, and including an unrelated
+#   technique measured later -- find a shell waiting for it. Red proof R4 exists
+#   for exactly this: it applies the mechanism with NOTHING planted and must fail.
+#   Both the reference exploit and the generated script unplant from a `finally`,
+#   before and after every attempt.
+#
+#   DELETING THE TARGET'S OWN EMPTY DIRECTORY DISARMS IT. libhj_13's defect IS an
+#   empty writable lib/. A cleanup that removed it would make the gate decline on
+#   every later run -- an unsolvable-for-the-wrong-reason control, silently. The
+#   generated script therefore removes ONLY directories it created itself, and the
+#   reference exploit's unplant() special-cases libhj_13. This was a real bug,
+#   found because the control's origin_rpath attempt left an empty lib/ inside
+#   libhj_90's directory.
+#
+#   A HOPEFUL STRING MATCH IS NOT PROOF. The pipeline's default shell check writes
+#   `echo <token>` and credits SHELL_ACCESS when the token comes back, which
+#   false-positives on any target that echoes its input -- and four of these six
+#   echo unknown commands. Every win in this family is proven with shell
+#   ARITHMETIC (`echo SH$((6*7))OK` -> `SH42OK`) before any stdin is bridged.
+#   Arithmetic and not `id`: `id` is a separate binary that must be found on
+#   $PATH, and three of the five mechanisms rewrite the target's environment.
+#
+#   A GUESSABLE FLAG IS NOT A CAPTURE. The default flag is derived from the slug,
+#   so a script that printed a plausible string would pass. The validation run
+#   rebuilt the family with SUPWNGO_BENCH_FLAG set to an unguessable per-run value
+#   and confirmed all ten positive reps returned THAT value.
+#
+#   A CFLAGS FLAG THAT SILENTLY DOES NOTHING. `-lsupwngoext` failed loudly (good)
+#   but `--as-needed` would have dropped libhj_13's DT_NEEDED entry SILENTLY,
+#   yielding a target with no bug that nonetheless built and ran. Every dynamic
+#   tag in this family was checked with `readelf -d` after building, and the
+#   verified output is recorded above.
+
+family: libhijack
+category: untrusted library search path (dlopen / RUNPATH hijack)
+cwe: [CWE-426, CWE-427]
+technique: library_path_hijack
+executor: supwngo/exploit/pipeline/executors/library_hijack_techniques.py
+reference_exploit: benchmark/reference_exploits/libhijack_variants_reference.py
+
+build:
+  # Order is load-bearing; see "WHAT cflags COULD NOT EXPRESS" above.
+  - benchmark/corpus_libhijack/install_plugins.sh
+  - SUPWNGO_BENCH_CORPUS=benchmark/corpus_libhijack benchmark/build_all.sh
+measure:
+  - python3 benchmark/measure_family.py benchmark/corpus_libhijack --timeout 300 --jobs 3
+
+held_identical:
+  legitimate_feature: loads an extension module via the dynamic loader and calls
+    the documented init symbol supwngo_plugin_init
+  secret: flag.txt beside the binary, path resolved absolutely from
+    /proc/self/exe at startup with a fail-closed stat
+  working_dir: /tmp/supwngo_libhj_<NN>, one per slug, never shared
+  protections: canary + NX + PIE + Full RELRO, all ON, measured off the binaries
+  win_condition: /bin/sh inside the target, proven by `echo SH$((6*7))OK` ->
+    SH42OK, then used to read flag.txt
+
+varies: how the dynamic loader is pointed at the attacker's shared object
+
+targets:
+  - slug: libhj_10_dlopen_relative_path
+    role: positive
+    mechanism: cwd-relative dlopen literal containing a slash
+    route: cwd
+    dynamic_tags: {needed: [libc.so.6], runpath: [], rpath: []}
+    plant: <cwd>/plugins/libsupwngoext.so.1
+    verdict: FLAG_CAPTURED by library_path_hijack (68.5s)
+
+  - slug: libhj_11_dlopen_dir_from_env
+    role: positive
+    mechanism: plugin directory taken from plain getenv, no validation
+    route: env_dir
+    env: SUPWNGO_PLUGIN_DIR
+    dynamic_tags: {needed: [libc.so.6], runpath: [], rpath: []}
+    plant: $SUPWNGO_PLUGIN_DIR/libsupwngoext.so.1
+    verdict: FLAG_CAPTURED by library_path_hijack (68.6s)
+
+  - slug: libhj_12_dlopen_bare_soname
+    role: positive
+    mechanism: bare soname -> ld.so search; LD_LIBRARY_PATH precedes DT_RUNPATH
+    route: ld_library_path
+    env: LD_LIBRARY_PATH
+    dynamic_tags: {needed: [libc.so.6], runpath: ["$ORIGIN/plugins"], rpath: []}
+    plant: $LD_LIBRARY_PATH/libsupwngoext.so.1
+    verdict: FLAG_CAPTURED by library_path_hijack (68.7s)
+
+  - slug: libhj_13_runpath_origin
+    role: positive
+    mechanism: empty writable early DT_RPATH entry; DT_NEEDED sibling, no dlopen
+    route: origin_rpath
+    dynamic_tags:
+      needed: [libsupwngoext.so.1, libc.so.6]
+      runpath: []
+      rpath: ["$ORIGIN/lib", "$ORIGIN/vendor"]
+    plant: $ORIGIN/lib/libsupwngoext.so.1
+    note: the planted object MUST define supwngo_plugin_init -- the image is
+      linked -z now, so a missing symbol aborts the process before any
+      constructor runs. The executor derives that from the legitimate sibling.
+    verdict: FLAG_CAPTURED by library_path_hijack (69.0s)
+
+  - slug: libhj_14_plugin_dir_scan
+    role: positive
+    mechanism: readdir over a drop-in directory, dlopen anything containing ".so"
+    route: dropin_scan
+    dynamic_tags: {needed: [libc.so.6], runpath: [], rpath: []}
+    plant: /tmp/supwngo_libhj_14/<any name containing .so>
+    note: the dlopen sits in a one-line load_one(path) helper while the scan is in
+      its caller, so the derivation needs one interprocedural step.
+    verdict: FLAG_CAPTURED by library_path_hijack (68.8s)
+
+  - slug: libhj_90_neg_absolute_verified
+    role: negative_control
+    repairs:
+      - absolute path under a root-owned directory; no env influence
+        (secure_getenv only); no DT_RUNPATH and no DT_RPATH; nothing enumerated
+      - open() + fstat() on the descriptor actually loaded, then
+        dlopen("/proc/self/fd/<n>") -- the bytes mapped are the bytes checked
+    dynamic_tags: {needed: [libc.so.6], runpath: [], rpath: []}
+    honest_limit: its init symbol is zlibVersion, not supwngo_plugin_init, because
+      a same-uid corpus can only express "a directory the attacker cannot write"
+      by pointing at a real root-owned system object
+    verdict: DECLINED; resisted all five mechanisms; still loads its own plugin

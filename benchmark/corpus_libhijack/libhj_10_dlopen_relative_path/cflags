@@ -1,0 +1,56 @@
+# Protections for the untrusted-library-search-path corpus (CWE-426 / CWE-427).
+#
+# The five PROTECTION lines at the bottom of this file are IDENTICAL -- byte for
+# byte -- in every target of this family, including the negative control, so a
+# per-target difference in outcome can never be attributed to different hardening.
+# The only lines that differ between targets are the LINKER lines that express
+# that target's loader-influence mechanism (-ldl, -Wl,-rpath,..., the DT_NEEDED
+# sibling), and each of those is documented in the target's own section below.
+#
+# EVERY PROTECTION IS ON, AND NONE OF THEM MATTERS. That is the point of the
+# category, not an oversight. This is a filesystem + dynamic-loader category and
+# it is orthogonal to the entire memory-safety mitigation stack:
+#
+# -fstack-protector-all  a canary detects a corrupted return address in an
+#                        epilogue. Nothing here writes past a buffer; no frame is
+#                        ever damaged, so the check always passes. The "payload"
+#                        is an ELF shared object sitting in a directory.
+# -pie -fPIE             PIE randomises where code and data live. No step of this
+#                        exploit needs any address at all: the attacker never
+#                        computes a pointer, and the code that runs is code the
+#                        LOADER mapped and relocated on the attacker's behalf.
+# -Wl,-z,relro,-z,now    Full RELRO write-protects the GOT after startup. There is
+#                        no GOT write here and no pointer write of any kind. Worth
+#                        noting the opposite effect on libhj_13: -z now means every
+#                        relocation is resolved BEFORE any constructor runs, so a
+#                        planted DT_NEEDED object that fails to define the init
+#                        symbol aborts the process instead of running -- the
+#                        mitigation constrains the exploit's SHAPE without
+#                        preventing it.
+# (NX)                   comes from the default program headers. Nothing is
+#                        executed from a data page: the attacker's code is in the
+#                        .text of a legitimately mapped, legitimately executable
+#                        shared object.
+#
+# -O0                    load-bearing for the MEASUREMENT, not for the bug. The
+#                        executor derives the mechanism by reading call sites and
+#                        their rodata string arguments out of the image (which
+#                        dlopen argument is relative, which is a bare soname,
+#                        which getenv value reaches the path builder), and at
+#                        higher -O those arguments can live only in registers
+#                        across inlined code. The bug is a loader-configuration
+#                        defect and is entirely unaffected by optimisation level.
+#
+# THIS TARGET'S MECHANISM LINE: none. The loader influence is the RELATIVE dlopen
+# path in the source ("./plugins/libsupwngoext.so.1"), so no linker flag expresses
+# it. -ldl is the only extra, and on glibc >= 2.34 it is a no-op kept for clarity
+# and portability. NO DT_RUNPATH and NO DT_RPATH -- verify with
+#   readelf -d libhj_10_dlopen_relative_path | grep -E 'RPATH|RUNPATH'   (empty)
+-ldl
+#
+# --- protections, identical across the family -----------------------------
+-fstack-protector-all
+-pie
+-fPIE
+-Wl,-z,relro,-z,now
+-O0

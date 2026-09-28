@@ -1,0 +1,190 @@
+/*
+ * trav_11_single_pass_dotdot_strip -- FLAG{supwngo_bench_trav_11_single_pass_dotdot_strip}
+ *
+ * Family: benchmark/corpus_traversal/ -- PATH TRAVERSAL leading to ARBITRARY FILE
+ * READ (CWE-22). The program joins operator-supplied text onto a fixed request
+ * directory and opens the result by NAME, so a name that resolves upwards reaches
+ * files the program believes it cannot reach. Nothing overflows, no pointer is
+ * written, no code address is ever needed: the whole payload is a filename.
+ *
+ * HELD IDENTICAL ACROSS EVERY TARGET IN THE FAMILY
+ *
+ *   * the security goal    serve only files that are INSIDE the request
+ *                          directory. The protected secret (flag.txt) sits beside
+ *                          the BINARY, and the request directory is somewhere else
+ *                          entirely (/tmp), so containment is the ONLY barrier
+ *                          between a request and the secret. Every target states
+ *                          that policy and every positive fails to enforce it;
+ *   * the request protocol one operator-supplied NAME per iteration, read with
+ *                          fgets() from stdin into a 512-byte line buffer, in an
+ *                          UNBOUNDED loop -- so the attacker gets as many attempts
+ *                          as it wants without restarting the process, and a
+ *                          vocabulary of escapes can be tried in one session;
+ *   * the secret's path    resolved ABSOLUTELY at startup from /proc/self/exe and
+ *                          then stat()ed, and the program REFUSES TO RUN if that
+ *                          stat fails. See "WHAT THE FAIL-CLOSED STAT IS AND IS
+ *                          NOT" below -- it is a deployment assertion, deliberately
+ *                          NOT an identity blacklist, and the reason is stated
+ *                          rather than left implied;
+ *   * the request dir      one per slug, /tmp/supwngo_trav_<NN>, never shared, so
+ *                          two targets can be measured concurrently without
+ *                          touching each other's filesystem state;
+ *   * the win condition    the secret's bytes appear on the TARGET's stdout. The
+ *                          attacker never opens the secret itself; it only names
+ *                          it in a way the target's filter fails to refuse;
+ *   * the protections      PIE + canary + NX + Full RELRO, from a cflags file that
+ *                          is byte-identical across the whole family.
+ *
+ * THE ONE VARIABLE IN THIS FAMILY IS WHICH FLAWED CONTAINMENT FILTER THE ESCAPE
+ * HAS TO DEFEAT -- what the program does to the name before it trusts it, and
+ * therefore what shape of name gets through.
+ *
+ * WHAT THE FAIL-CLOSED STAT IS AND IS NOT
+ *
+ * locate_secret() resolves flag.txt's absolute path from /proc/self/exe and stat()s
+ * it; main() exits non-zero if that fails. That is a DEPLOYMENT ASSERTION: it makes
+ * "0 flag reads" impossible to confuse with "the planted secret was missing", and it
+ * means no cwd or $PATH trick can silently remove the thing the measurement is
+ * about. It is deliberately NOT used as a per-filename or (dev, ino) blacklist,
+ * because this family's security goal is CONTAINMENT -- "only files inside the
+ * request directory" -- and a one-filename blacklist would be a different, weaker
+ * policy that happens to be defeated by the same traversal anyway (the constructed
+ * string /tmp/.../../../<abs>/flag.txt is not equal to <abs>/flag.txt). Stating the
+ * barrier honestly matters more than making the startup stat look load-bearing:
+ * containment is the whole barrier, and each positive breaks it in a different way.
+ *
+ * THIS TARGET'S FILTER: A SINGLE-PASS "../" STRIP.
+ *
+ * The name is sanitised by deleting every literal "../" from it -- ONE left-to-right
+ * pass, with no re-scan of what the deletion produced. This is the single most
+ * common real-world spelling of the mistake (`str_replace('../', '', $p)` and its
+ * equivalents in every language), and it is wrong for a reason that is easy to state
+ * and easy to miss: deleting a substring can CREATE the substring at the join.
+ *
+ *     "....//"   ->  the scanner copies '.', copies '.', then matches "../" at
+ *                    offset 2 and skips it, then copies the trailing '/'
+ *                ->  "../"
+ *
+ * so a traversal whose every "../" is written "....//" survives the strip intact,
+ * while the plain spelling is deleted down to nothing. MEASURED consequence of the
+ * strip working as its author intended: the plain relative escape that wins on
+ * trav_10 and trav_12 is reduced to "srv/share/..." here, which names nothing
+ * inside the request directory, and the request is refused. An exploit that knows
+ * only one spelling of "go up one level" fails on this target while the defect
+ * class is unchanged.
+ */
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+/* The directory operators put request files in. A fixed ABSOLUTE path -- which is
+ * what makes the family's request protocol identical across targets -- and
+ * per-slug, so two targets never contend for the same name. It is deliberately NOT
+ * beside the binary: the secret is beside the binary, so "inside this directory"
+ * and "the secret" are disjoint by construction, and the only way to bridge them is
+ * to escape the directory. */
+#define REQDIR "/tmp/supwngo_trav_11"
+#define SECRET_NAME "flag.txt"
+
+/* Absolute path of the protected secret, resolved once at startup. Read only by the
+ * startup assertion -- see the header. */
+static char secret_path[4096];
+
+static int locate_secret(void)
+{
+    char exe[4096];
+    struct stat st;
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (n <= 0)
+        return -1;
+    exe[n] = 0;
+    char *slash = strrchr(exe, '/');
+    if (!slash)
+        return -1;
+    *slash = 0;
+    snprintf(secret_path, sizeof secret_path, "%s/%s", exe, SECRET_NAME);
+    if (stat(secret_path, &st) != 0)
+        return -1;              /* FAIL CLOSED: refuse to run at all. */
+    return 0;
+}
+
+/* THE FLAWED FILTER. Delete every literal "../" in ONE left-to-right pass.
+ *
+ * The bug is structural, not a typo: the output cursor `o` is never re-examined, so
+ * a "../" that only exists because a deletion brought its halves together is never
+ * seen. A correct version would either loop until the string stops changing, or
+ * (better) not try to repair the name at all and canonicalise instead -- which is
+ * what the family's negative control does.
+ *
+ * Note the short-circuit order in the match: in[i+2] is only read once in[i] and
+ * in[i+1] are both '.', so for the string ".." the read lands on the terminator and
+ * never past it. */
+static void strip_dotdot(const char *in, char *out, size_t outsz)
+{
+    size_t i = 0, o = 0;
+
+    while (in[i] && o + 1 < outsz) {
+        if (in[i] == '.' && in[i + 1] == '.' && in[i + 2] == '/') {
+            i += 3;
+            continue;
+        }
+        out[o++] = in[i++];
+    }
+    out[o] = 0;
+}
+
+/* Serve a request by NAME. One open() of a path string, from scratch. */
+static void serve(const char *name, const char *path)
+{
+    char buf[1024];
+
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        puts("denied: cannot open");
+        return;
+    }
+    ssize_t n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    buf[n > 0 ? n : 0] = 0;
+    printf("--- %s ---\n%s\n", name, buf);
+}
+
+int main(void)
+{
+    char line[512];
+    char clean[512];
+    char path[4096];
+
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    if (locate_secret() != 0) {
+        puts("fatal: protected file is not where it belongs; refusing to serve");
+        return 1;
+    }
+    mkdir(REQDIR, 0777);
+    printf("supwngo note service (filter: single-pass \"../\" strip)\n");
+    printf("request dir: %s\n", REQDIR);
+    printf("only files inside the request dir may be served\n");
+
+    for (;;) {
+        printf("name> ");
+        fflush(stdout);
+        if (!fgets(line, sizeof line, stdin))
+            break;
+        line[strcspn(line, "\n")] = 0;
+        if (!line[0])
+            continue;
+        if (!strcmp(line, "quit"))
+            break;
+
+        /* THE DEFECT. The name is "made safe" and then concatenated. The strip is
+         * the entire containment argument, and it is not sound: one pass cannot see
+         * the sequence its own deletions create. */
+        strip_dotdot(line, clean, sizeof clean);
+        snprintf(path, sizeof path, "%s/%s", REQDIR, clean);
+        serve(line, path);
+    }
+    return 0;
+}

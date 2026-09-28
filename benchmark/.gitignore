@@ -127,3 +127,51 @@ corpus_toctou/*/*
 corpus_uninit/*/*
 !corpus_uninit/*/*.c
 !corpus_uninit/*/cflags
+
+# corpus_traversal/ -- PATH TRAVERSAL to arbitrary file read (CWE-22). Same artifact
+# rule as every other family, and it needs its OWN three lines: a family name is not
+# a prefix match and the corpus-wide flag.txt rule does NOT cover compiled binaries,
+# so without these a path-scoped `git add benchmark/corpus_traversal` would commit
+# six ELF images. flag.txt matters more here than in most families: in this category
+# the flag file is not a fallback for a shell-obtaining target, it IS the object of
+# the exploit (the target is made to read it and print it), so committing it would
+# publish the answer AND leak a per-run secret.
+corpus_traversal/*/*
+!corpus_traversal/*/*.c
+!corpus_traversal/*/cflags
+
+# corpus_libhijack/ -- UNTRUSTED LIBRARY SEARCH PATH, dlopen/RUNPATH hijack
+# (CWE-426/CWE-427). Same artifact rule as every other family, and it needs its
+# OWN lines: a family name is not a prefix match and the corpus-wide flag.txt
+# rule does NOT cover compiled binaries, so without these a path-scoped
+# `git add benchmark/corpus_libhijack` would commit six ELF images.
+#
+# This family has THREE artifact kinds the others do not, and each needed a
+# decision rather than a default:
+#
+#   * the family-level sources. `supwngo_ext.c` (the ONE legitimate extension
+#     module, shared by every target) and `install_plugins.sh` (which compiles
+#     and installs it) live at the family root, not in a target directory, so
+#     `!corpus_libhijack/*/*.c` does not reach them. They are tracked
+#     explicitly: without them the family cannot be rebuilt from the repo,
+#     because `benchmark/build_all.sh` compiles exactly one artifact per target
+#     directory and so cannot produce a second .so. See install_plugins.sh's
+#     header for why that split exists.
+#   * the installed plugins. `libsupwngoext.so.1` is a COMPILED artifact -- it
+#     is reproduced by install_plugins.sh from the tracked source and must stay
+#     ignored, in plugins/ and vendor/ alike. The `corpus_libhijack/*/*` rule
+#     only covers one level down, so plugins/ and vendor/ get an explicit rule.
+#   * libhj_13's EMPTY lib/ directory. git does not track empty directories at
+#     all, so nothing here can express it -- which is a real gap and is called
+#     out in corpus_libhijack.yaml: install_plugins.sh recreates it, and the
+#     target's gate depends on it existing.
+#
+# flag.txt matters as much here as in corpus_toctou/ and corpus_traversal/: the
+# proof of a win is a shell that then reads flag.txt, so committing it would
+# both publish the answer and leak a per-run secret.
+corpus_libhijack/*/*
+corpus_libhijack/*/*/*
+!corpus_libhijack/*/*.c
+!corpus_libhijack/*/cflags
+!corpus_libhijack/supwngo_ext.c
+!corpus_libhijack/install_plugins.sh

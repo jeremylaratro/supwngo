@@ -1,0 +1,653 @@
+# Challenge-variation corpus manifest: PATH TRAVERSAL leading to ARBITRARY FILE
+# READ (CWE-22).
+#
+# This is another non-memory-safety category, chosen for the same reason
+# corpus_inject/ (subprocess injection), corpus_prng/ (predictable secrets) and
+# corpus_toctou/ (file races) were: it is orthogonal to canary / NX / PIE / RELRO,
+# and the corpus is built with every one of those ON to demonstrate it. The entire
+# payload is a FILENAME. Nothing overflows, no pointer is written, no code address
+# is ever needed, and no memory is ever corrupted at all.
+#
+# WHAT THIS CORPUS MEASURES, AND WHAT IT DOES NOT
+#
+# Measures: whether ONE solve capability GENERALISES across the particulars of a
+# single vulnerability category. Everything about the BUG is held identical across
+# all six targets and exactly one thing varies -- **which flawed containment filter
+# the escape has to defeat**. A per-target difference is therefore attributable to
+# that filter and to nothing else.
+#
+# Held identical in every target (each source header says it at length):
+#
+#   security goal    serve only files that are INSIDE the request directory. The
+#                    protected secret (flag.txt) sits beside the BINARY and the
+#                    request directory is somewhere else entirely (/tmp), so
+#                    containment is the ONLY barrier between a request and the
+#                    secret. Every target states that policy; every positive fails
+#                    to enforce it.
+#   request protocol one operator-supplied NAME per iteration, read with fgets()
+#                    from stdin into a 512-byte line buffer, in an UNBOUNDED loop --
+#                    so the attacker gets as many attempts as it wants without
+#                    restarting the process and a whole vocabulary of escapes can be
+#                    tried in one session.
+#   secret's path    resolved ABSOLUTELY at startup from /proc/self/exe and then
+#                    stat()ed, and the program REFUSES TO RUN if that stat fails.
+#                    See "WHAT THE FAIL-CLOSED STAT IS AND IS NOT" below.
+#   request dir      one per slug, /tmp/supwngo_trav_<NN>, never shared, so two
+#                    targets can be measured concurrently without touching each
+#                    other's filesystem state. `--jobs 3` is therefore safe, and
+#                    that is a property of the corpus rather than luck.
+#   win condition    the secret's bytes appear on the TARGET's stdout. The attacker
+#                    never opens the secret itself; it only NAMES it in a way the
+#                    target's filter fails to refuse.
+#   protections      PIE + canary + NX + Full RELRO, from a cflags file that is
+#                    byte-identical across the whole family.
+#
+# Does NOT measure: anything about the other categories; protection bypass (see
+# below); and it does not claim the five positives are equally hard for a human --
+# only that each is solved by the same primitive, which is proved below rather than
+# asserted.
+#
+# WHAT THE FAIL-CLOSED STAT IS AND IS NOT
+#
+# locate_secret() resolves flag.txt's absolute path from /proc/self/exe and stat()s
+# it; main() exits non-zero if that fails. That is a DEPLOYMENT ASSERTION: it makes
+# "0 flag reads" impossible to confuse with "the planted secret was missing". It is
+# deliberately NOT used as a per-filename or (dev, ino) blacklist, because this
+# family's security goal is CONTAINMENT and a one-filename blacklist would be a
+# different, weaker policy -- one that the same traversal defeats anyway, since the
+# constructed string `/tmp/supwngo_trav_10/../../<abs>/flag.txt` is not equal to
+# `<abs>/flag.txt`. Stating the barrier honestly matters more than making the
+# startup stat look load-bearing.
+#
+# WHY THE PROTECTIONS ARE ALL ON AND IT DOES NOT MATTER
+#
+# Measured 2026-09-28 off the BUILT binaries via
+# `supwngo.core.binary.Binary.load(p).protections`, NOT copied out of `cflags`:
+# every target is PIE + canary + NX + Full RELRO. `cflags` is byte-identical across
+# all six (md5 7f20c31f5c758f642bf2a0af1a6e4b96,
+# `-fstack-protector-all -pie -fPIE -Wl,-z,relro,-z,now -O0`). All five positives
+# are still solved. There is nothing for a canary to check, nothing for RELRO to
+# protect and nothing for PIE to randomise, because the exploit never leaves the
+# target's own request protocol.
+#
+# `-O0` is in `cflags` for the MEASUREMENT, not for the exploit: the executor
+# derives its plan by matching the snprintf DESTINATION and the open ARGUMENT to the
+# same frame slot (`lea -0xNN(%rbp)`), and at -O2 that address may live only in a
+# register. The exploit itself is a filename and is indifferent to optimisation.
+#
+# THE ONE VARIABLE: WHICH FLAWED FILTER THE ESCAPE MUST DEFEAT
+targets:
+  - slug: trav_10_naive_concat
+    role: positive
+    filter: >
+      NONE AT ALL. The anchor. snprintf("%s/%s", REQDIR, name) with the name used
+      exactly as typed -- no rejection, no stripping, no canonicalisation, no
+      containment check. This is the unadorned defect the other four positives dress
+      up, and it exists so that a per-target difference elsewhere in the family is
+      attributable to the filter that target adds, measured against a target that
+      adds nothing.
+    escape: >
+      relative -- the plain relative path from the request directory to the secret
+      (os.path.relpath), e.g. `../../srv/share/dev/.../flag.txt`. Any traversal
+      vocabulary at all works here.
+    derived_routes: [relative, doubled, absolute, deep_ladder, doubled_deep, padded_likely, padded_sweep]
+    derived_buffer_size: 4096
+    derived_suffix: ""
+    derived_path_format: "%s/%s"
+    derived_name_origin: "fgets() writes it directly"
+    win_rate_per_attempt_pct: 100.0
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: trav_11_single_pass_dotdot_strip
+    role: positive
+    filter: >
+      A SINGLE-PASS strip of the literal "../". strip_dotdot() walks the name once
+      and deletes each "../" it sees, then joins the result. The flaw is that
+      deletion is not idempotent and is never repeated: the strip is what CREATES
+      the sequence it was supposed to remove. This is the real-world shape of "we
+      sanitise the input" implemented as one pass of search-and-delete.
+    escape: >
+      doubled -- every `../` written as `....//`. The single pass deletes the inner
+      `../`, and the surviving `..` and `/` rejoin into a fresh `../`. A plain
+      relative escape is REFUSED on this target, which is what makes the variant
+      load-bearing rather than decorative.
+    derived_routes: [relative, doubled, absolute, deep_ladder, doubled_deep, padded_likely, padded_sweep]
+    derived_buffer_size: 4096
+    derived_suffix: ""
+    derived_path_format: "%s/%s"
+    derived_name_origin: "fgets() -> strip_dotdot() sanitiser -> the join"
+    win_rate_per_attempt_pct: 100.0
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: trav_12_prefix_check_before_resolution
+    role: positive
+    filter: >
+      A CONTAINMENT CHECK IN THE WRONG ORDER. The program concatenates first, then
+      `strncmp(path, REQDIR, strlen(REQDIR))`, and only THEN opens. The check is a
+      real containment check and it passes, because a traversing path still STARTS
+      with the request directory as a string -- the ".." that leaves it comes after
+      the prefix. This is check-before-resolution: the string is tested and the
+      kernel is what resolves it, and they answer different questions.
+    escape: >
+      relative -- identical to the anchor's, and that is the point: the same escape
+      that needs no filter defeat also sails through a containment check performed
+      on the unresolved string. The DIFFERENCE between this target and trav_10 is
+      that trav_12 looks defended in source review and is not.
+    derived_routes: [relative, doubled, absolute, deep_ladder, doubled_deep, padded_likely, padded_sweep]
+    derived_buffer_size: 4096
+    derived_suffix: ""
+    derived_path_format: "%s/%s"
+    derived_name_origin: "fgets() writes it directly"
+    win_rate_per_attempt_pct: 100.0
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: trav_13_absolute_path_accepted
+    role: positive
+    filter: >
+      `strstr(line, "..")` REJECTS the name outright -- and then a leading '/' is
+      honoured as an absolute path and the request directory is skipped entirely.
+      This is the os.path.join / Path.Combine semantic hazard written out in C: the
+      programmer defended against the escape they had heard of and left the one that
+      needs no ".." at all.
+    escape: >
+      absolute -- the secret's full absolute path, with no ".." anywhere in it. Every
+      one of the four ".."-based routes is REFUSED on this target ("denied: no parent
+      references"), so an executor that only knew the dot-dot vocabulary fails here
+      while the bug class is unchanged.
+    derived_routes: [absolute, relative, doubled, deep_ladder, doubled_deep, padded_likely, padded_sweep]
+    derived_rejects_dotdot: true
+    derived_rejects_slash: false
+    derived_buffer_size: 4096
+    derived_suffix: ""
+    derived_path_format: "%s/%s"
+    win_rate_per_attempt_pct: 100.0
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: trav_14_suffix_append_truncated
+    role: positive
+    filter: >
+      A FIXED EXTENSION APPENDED BY snprintf INTO A FIXED BUFFER:
+      `char path[256]; snprintf(path, sizeof path, "%s/%s.txt", REQDIR, line)`. The
+      appended ".txt" is the containment device -- it is meant to pin the request to
+      one file type -- and snprintf's truncation removes it. This is the one variant
+      whose barrier is not a string test at all but an arithmetic property of the
+      buffer, so the escape has to be the right LENGTH, not just the right shape.
+    escape: >
+      padded -- the relative escape followed by enough no-op '/' characters that the
+      constructed string reaches sizeof(path) - 1 = 255 and the ".txt" falls off the
+      end. Padding with '/' is deliberate: it is 1 byte of granularity (so an exact
+      length is always reachable) and repeated slashes collapse during path
+      resolution, so the padding cannot change WHICH file is named. All four
+      unpadded escapes are REFUSED on this target.
+    derived_routes: [padded_exact, relative, doubled, absolute, deep_ladder, doubled_deep, padded_likely, padded_sweep]
+    derived_buffer_size: 256
+    derived_suffix: ".txt"
+    derived_path_format: "%s/%s.txt"
+    win_rate_per_attempt_pct: 100.0
+    host_path_length_dependence: >
+      STATED RATHER THAN HIDDEN, because it is the one place this family is not
+      host-independent. The padded name must fit in 255 - len("/tmp/supwngo_trav_14")
+      - 1 = 234 characters. Measured on this host 2026-09-28: the relative escape is
+      95 characters, leaving 139 characters of padding -- comfortable. But a clone of
+      this repository at a pathologically deep path would push the relative escape
+      past 234 and this ONE variant becomes UNSOLVABLE. That is a fail-closed
+      degradation (the target refuses, the executor reports no win) rather than a
+      wrong answer, and it is recorded here so a future 4/5 on this family is
+      diagnosed in one step instead of being blamed on the executor.
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: trav_90_neg_realpath_confined
+    role: control
+    filter: >
+      There isn't a flawed one, and the bug is repaired THREE ways so the control is
+      not one edit away from being a positive. REPAIR 1, CANONICALISE THEN CHECK THEN
+      USE: `realpath()` the candidate, require the RESOLVED path to be a proper
+      descendant of the realpath'd request directory (prefix AND a '/' at the
+      boundary, so a sibling directory `/tmp/supwngo_trav_90x` cannot pass), and open
+      the RESOLVED path -- so the string that was checked is the string that is
+      opened. REPAIR 2, a LEAF ALLOWLIST: the name must match [A-Za-z0-9._-]+ with
+      no leading '.', so no traversal spelling reaches the join at all. REPAIR 3,
+      `O_NOFOLLOW` on the open, plus an explicit snprintf truncation check. Neither
+      env nor cwd can influence any of them: the request directory is a fixed
+      absolute path and the secret's path comes from /proc/self/exe.
+    escape: null
+    is_a_working_program: >
+      CHECKED, not assumed -- an unsolvable-for-the-wrong-reason control is a broken
+      control. trav_90 serves its legitimate in-directory file `note.txt` on every
+      measured rep and exits 0. Its refusals are refusals, not crashes and not a
+      missing request directory.
+    repairs_are_independent: >
+      MEASURED BY ABLATION, not asserted -- see "CONTROL REPAIR INDEPENDENCE" below.
+      The source carries #ifdef switches (TRAV90_NO_ALLOWLIST, TRAV90_NO_CANON,
+      TRAV90_NO_NOFOLLOW, TRAV90_NO_TRUNC_CHECK) that `cflags` NEVER defines, so the
+      shipped binary has all repairs on and the reference exploit can still build
+      each repair in isolation.
+    win_rate_per_attempt_pct: 0.0
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+
+# VALIDATED BEFORE USE -- THE ORACLE WAS PROVED ABLE TO GO RED FIRST
+#
+#   benchmark/reference_exploits/traversal_variants_reference.py
+#
+# Measured 2026-09-28 on this host, `python3 benchmark/reference_exploits/
+# traversal_variants_reference.py`, EXIT=0. Two runs; their output is
+# BYTE-IDENTICAL (8651 bytes each, `diff -q` clean), which is the expected result
+# for a category with no race in it and is recorded because it is the evidence that
+# the family is deterministic rather than an assertion that it is.
+#
+# The reference exploit is deliberately NOT a reimplementation of the executor: it
+# is TOLD each target's escape and each pad length, so that "the corpus is
+# exploitable" and "the executor can find the escape" are two separate claims with
+# two separate pieces of evidence.
+#
+# A HARNESS POSITIVE CONTROL RUNS FIRST, so a later "0 flag reads" can never be
+# confused with "the target never answered anything": all six targets, control
+# included, serve a plain in-directory file (`note.txt`, or `note` on trav_14 where
+# the program appends the extension itself).
+#
+# 2 reps per target, the FULL four-escape vocabulary attempted every rep:
+#
+#                                            relative  absolute  doubled  padded
+#   trav_10 (no filter)                        WON      refused  refused   WON
+#   trav_11 (single-pass '../' strip)        refused    refused    WON   refused
+#   trav_12 (prefix check, unresolved)         WON      refused  refused   WON
+#   trav_13 ('..' rejected, '/' honoured)    refused      WON    refused refused
+#   trav_14 ('.txt' into a 256-byte buffer)  refused    refused  refused   WON
+#   trav_90 (CONTROL)                        refused    refused  refused refused
+#
+# Every WON cell read the secret exactly once with attribution `own`; every other
+# cell read it 0 times. The control read it 0 times on all four escapes in both
+# reps, while still serving note.txt.
+#
+# TWO CELLS ARE NOT ROUNDED OFF: `padded` also wins on trav_10 and trav_12. That is
+# expected and is not an extra capability -- those two targets build into a
+# 4096-byte buffer, so the '/' padding truncates nothing and the padded name
+# resolves to exactly the same file the plain relative escape names. It is recorded
+# because a reader counting WON cells would otherwise see seven wins across five
+# targets and wonder which claim was being made.
+#
+# ATTRIBUTION IS BY SLUG-DERIVED VALUE, NOT BY PATTERN. All six sibling flag.txt
+# files match `FLAG{...}`, so a traversal that landed in the WRONG sibling would
+# pass a pattern-only oracle. The harness constructs the expected literal
+# `FLAG{supwngo_bench_<slug>}` and compares, and reports `own` / `mixed` /
+# `FOREIGN`. RED proof R6 below exists solely to prove that check can fire.
+#
+# CONTROL REPAIR INDEPENDENCE -- MEASURED BY ABLATION
+#
+# "Repaired two independent ways" was an assertion until this was built. Each row
+# rebuilds trav_90 from its own source with the named repairs compiled out and
+# re-runs the full escape vocabulary against it:
+#
+#   A1  REPAIR 2 removed (no allowlist), REPAIR 1 alone      flag reads 0   OK
+#         -DTRAV90_NO_ALLOWLIST
+#   A2  REPAIR 1 removed (no realpath/containment; the raw
+#       candidate is opened), REPAIR 2 alone                 flag reads 0   OK
+#         -DTRAV90_NO_CANON -DTRAV90_NO_NOFOLLOW
+#   A3  EVERY repair removed -- POSITIVE CONTROL ON THE
+#       ABLATION: this one MUST be solvable or A1/A2 prove
+#       nothing at all                                       flag reads 2   OK
+#         -DTRAV90_NO_ALLOWLIST -DTRAV90_NO_CANON
+#         -DTRAV90_NO_NOFOLLOW -DTRAV90_NO_TRUNC_CHECK
+#
+# A BUG IN THIS HARNESS, FOUND BY READING THE STRACE AND RECORDED BECAUSE IT MADE A
+# TRUE-LOOKING RESULT UNTRUSTWORTHY. `run_ablation` first keyed its work directory
+# on `defines[0].lower()`; A1 and A3 both begin with TRAV90_NO_ALLOWLIST, so A3's
+# build overwrote A1's binary and its planted flag.txt in place. The verdicts above
+# were still correct (A1 ran to completion before A3 built), but the invariant "the
+# binary at this path is the one I just built" was false by construction. The
+# symptom that exposed it was an `openat(..., O_RDONLY)` with NO `O_NOFOLLOW`
+# appearing under the `trav90_no_allowlist` directory -- and A1 is built WITH
+# O_NOFOLLOW. Fixed to index-based `a1`/`a2`/`a3` directories. Re-run under strace
+# afterwards: per-directory opens 2 / 2 / 3, and A1's directory shows only the
+# script's own creation of its flag.txt.
+#
+# SIX RED PROOFS ON THE HARNESS, every one WRONG-BUT-PRESENT rather than absent or
+# malformed, each measured:
+#
+#   R1  RED  real-but-wrong destination -- the traversal escapes CORRECTLY but names
+#            the target's own `cflags` instead of flag.txt. flag reads 0, and
+#            cflags WAS served, so the escape demonstrably worked
+#   R2  RED  real-but-wrong file INSIDE the barrier -- the legitimate in-directory
+#            note, which the target is SUPPOSED to serve. flag reads 0
+#   R3  RED  real escape, wrong target -- trav_11 attacked with the plain relative
+#            escape that wins on trav_10 and trav_12. flag reads 0
+#   R4  RED  real escape, wrong target -- trav_13 attacked with the doubled
+#            `....//` escape that wins on trav_11. flag reads 0
+#   R5  RED  padding off by one -- trav_14 padded to 254 and to 256 rather than 255.
+#            flag reads 0
+#   R6  RED  ATTRIBUTION proof -- the anchor made to read trav_11's flag.txt. A real
+#            `FLAG{...}` IS printed (flag reads 1), so ONLY the attribution check can
+#            catch it, and it does: attribution FOREIGN
+#
+# SECRET INTEGRITY: flag.txt byte size compared before and after on all six targets
+# (41, 53, 59, 51, 52, 50 bytes) -- unchanged on every one. The exploit DISCLOSES
+# the secret and never modifies it.
+#
+# THE PIPELINE'S OWN ORACLE WAS PROVED RED SEPARATELY
+#
+# R1-R6 exercise the reference harness. The thing the benchmark actually trusts is
+# `PipelineVerifier.verify_script`, so that was proved red too, by handing the REAL
+# executor a MUTATED `_Plan` and letting the REAL verifier judge the REAL generated
+# script. Positive control first, so a red below cannot be vacuous. Every mutation
+# substitutes a value that is WRONG-BUT-PRESENT -- a real path, a real filename, a
+# real route, a real buffer size that exists on this host and works somewhere.
+#
+#   P0  GREEN  unmutated plan on the anchor                       -> FLAG_CAPTURED
+#   P1  GREEN  request_dir swapped for trav_11's (a real directory)   NOT A PROOF
+#   P2  RED    secret_name swapped for 'cflags' (real, beside the binary)
+#   P3  RED    routes forced to ['relative'] on the truncation variant -- a real
+#              route that wins on trav_10 and trav_12
+#   P4  RED    buffer_size 512 instead of 256 (a real, plausible size), with only
+#              padded_exact left in the route list
+#   P5  GREEN  suffix emptied (the real value on 4 of the 6 targets), with only
+#              padded_exact left in the route list                    NOT A PROOF
+#   P6  RED    trav_13 (the '..'-rejecting variant) given ONLY the four ".."-based
+#              routes -- all four are real routes that win elsewhere
+#   P7  RED    secret_name swapped for 'cflags' on the truncation variant
+#   P8  RED    trav_11 (the strip variant) given every route EXCEPT 'doubled' --
+#              all real, none of which survives its filter
+#
+# P1 AND P5 CAME BACK GREEN AND ARE REPORTED AS FAILED RED PROOFS, NOT QUIETLY
+# DROPPED. They are honest measurements of a real property: `request_dir` and
+# `suffix` are NOT load-bearing fields on the targets they were mutated on.
+#
+#   P1  `/tmp/supwngo_trav_10` and `/tmp/supwngo_trav_11` are siblings at equal
+#       depth, so `os.path.relpath(secret, request_dir)` is byte-identical for both;
+#       and the `deep_ladder` route is request-dir-independent by construction (it
+#       walks `../` past the filesystem root, where the excess collapses). The plan
+#       field is therefore a LABEL for this mutation, not a determinant, and the
+#       mutated script still wins -- correctly.
+#   P5  `padded()` computes its pad from `buffer_size` and the measured prefix and
+#       does not consult `SUFFIX` at all, so emptying `suffix` changes the generated
+#       script's constant and not its behaviour. P4 is the mutation that makes the
+#       same target go red, and it does.
+#
+# P6, P7 and P8 were added SPECIFICALLY to cover the two fields P1 and P5 failed to
+# exercise, with mutations that are load-bearing on the target they are applied to,
+# and all three went red. The mandatory >= 3 red proofs are satisfied by the gate
+# mutations below (M1/M2/M3) and by P2/P3/P4/P6/P7/P8; P1 and P5 remain in the
+# suite as recorded non-proofs.
+#
+# THE GATE WAS PROVED RED BY MUTATING ITS SUBJECT IN THE SOURCE
+#
+# The plan mutations above test the SCRIPT. The gate -- `is_applicable()` -- was
+# proved separately by editing the C source, rebuilding, and re-running the real
+# gate, with the source restored byte-identically afterwards. Every mutation is
+# WRONG-BUT-PRESENT: the subject is still there and still compiles and the program
+# still works; it is just the wrong shape for this category.
+#
+#   M0  APPLICABLE  unmutated anchor                             (positive control)
+#   M1  RED         the join is still an snprintf of operator text, but the
+#                   constructed path is no longer what gets opened
+#   M2  RED         the request name is still concatenated, but the leaf filter now
+#                   rejects BOTH '..' and '/' -- i.e. the anchor turned into the
+#                   corpus_toctou shape
+#   M3  RED         the operator's line still reaches a path-based open, but through
+#                   a fixed in-directory name rather than the operator's text
+#   M4  APPLICABLE  restored source, rebuilt                     (proves the restore)
+#
+# Each of M1/M2/M3 was additionally checked to be "still a working program: True",
+# and each was declined with a reason DERIVED FROM THE IMAGE rather than from the
+# slug. The restored source's md5 is 234490a69cc2da891f3a342c5366306a, equal to the
+# original's, and `git diff` on the corpus is empty.
+#
+# PROVING THE TARGET READS THE SECRET, NOT THE SCRIPT
+#
+# The reference exploit never opens flag.txt: it types filenames into the target's
+# stdin and the TARGET opens the file. Proved by strace, not by reading the source:
+#
+#   strace -f -e trace=openat,open -o /tmp/trav_ref.strace \
+#     python3 benchmark/reference_exploits/traversal_variants_reference.py
+#
+#   openat() calls naming `corpus_traversal/.../flag.txt`, any pid       -> 37
+#   ... of those, issued by the SCRIPT's own pid (919438)                ->  0
+#   distinct pids holding those 37 calls                                -> 37, and
+#                                                       the script's pid is not one
+#   of the 37, how many SUCCEEDED (returned a descriptor)               -> 15
+#   pids traced in total                                                -> 131
+#
+# `-f` means the trace covers the TARGET processes too, and it demonstrably did.
+# So the claim proved is the strong one: the script never opens the secret, and
+# every open of it -- successful or ENOENT -- belongs to a target process the script
+# was typing filenames at.
+#
+# The 15 successes are exactly the 14 WON cells of the 2-rep matrix plus the one
+# deliberate read in R6, which is an independent cross-check on the win count: the
+# harness's own tally and the kernel's own trace agree.
+#
+# A NARROW GREP WOULD HAVE ANSWERED A DIFFERENT QUESTION, and it is recorded
+# because it looks fine either way: unqualified `grep -c 'flag.txt'` on the same
+# trace reports 44, not 37, and 3 of those 7 extras are on the SCRIPT's pid -- which
+# read naively says "the script opened a flag.txt after all". They are the ABLATION's
+# own flag.txt files, which the harness creates itself under /tmp for the rebuilt
+# trav_90 variants, outside `corpus_traversal/` entirely. The corpus-qualified
+# pattern is the one that answers "did anything read the MEASURED secret".
+#
+# END-TO-END THROUGH THE REAL CLI
+#
+# Measured 2026-09-28 10:57:31Z - 11:03:51Z with
+#
+#   python3 benchmark/measure_family.py benchmark/corpus_traversal --timeout 300 --jobs 3
+#
+# which drives the real `autopwn --json --no-legacy` CLI once per target. NOT
+# `run_bench.py --corpus-root`, which reads R1's manifest and would correctly
+# withhold a score for a family whose fifteen slugs it cannot find. Registration is
+# the in-tree one line in `build_default_registry()`; no shim, no PYTHONPATH trick.
+# Exit code 0.
+#
+#   [positive] trav_10_naive_concat                 SOLVED  path_traversal_read  FLAG_CAPTURED   61.5 s
+#   [positive] trav_11_single_pass_dotdot_strip     SOLVED  path_traversal_read  FLAG_CAPTURED   61.9 s
+#   [positive] trav_12_prefix_check_before_resolution SOLVED path_traversal_read FLAG_CAPTURED   61.8 s
+#   [positive] trav_13_absolute_path_accepted       SOLVED  path_traversal_read  FLAG_CAPTURED   61.2 s
+#   [positive] trav_14_suffix_append_truncated      SOLVED  path_traversal_read  FLAG_CAPTURED   61.3 s
+#   [CONTROL ] trav_90_neg_realpath_confined        not solved   technique=(none)  NONE  317.9 s
+#
+#   positives solved: 5/5     controls: 1, wrongly solved: 0
+#
+# The winning technique is `path_traversal_read` on all five, and the verification
+# level is FLAG_CAPTURED on all five -- i.e. the planted secret's bytes, not a
+# hopeful string match.
+#
+# LOAD CONDITIONS ARE RECORDED because the seconds are load-sensitive and the
+# verdicts are not: 1-minute load average was 5.14 at the start and 4.77 at the end
+# on a 32-core host, and an unrelated `measure_family.py benchmark/corpus_libhijack
+# --jobs 3` belonging to another worker overlapped part of the run. Read the
+# per-target seconds as "about a minute", not as a benchmark.
+#
+# ATTEMPT ORDERING, MEASURED RATHER THAN ASSUMED
+#
+# From a single direct run in the target's own directory:
+#
+#   PYTHONPATH=/srv/share/dev/supwngo python3 -m supwngo.cli autopwn \
+#     ./trav_10_naive_concat --json --no-legacy --timeout 300
+#
+#   success                  true        technique  path_traversal_read
+#   verified                 FLAG_CAPTURED
+#   legacy_fallback          "not_reached"   <- canonical engine only; the one bad
+#                                              value would be "ran"
+#   interrupted              false       <- EXHAUSTED SEARCH, not a timeout
+#   attempts recorded        25          path_traversal_read is #25 of 25
+#   cumulative time BEFORE it runs       56.8 s
+#   its own attempt                       1.26 s   -> SUCCESS, stage VERIFICATION
+#   cumulative over all attempts         58.0 s
+#
+# The 56.8 s is not spread over 24 techniques: 20 of them SKIP in 0.00 s and the
+# whole cost is two failures plus two slow skips --
+#
+#   ret2win              24.21 s  FAILED
+#   canary_leak_ret2win  30.04 s  FAILED
+#   fmtstr_write_gate     2.15 s  SKIPPED
+#   ret2libc_leak         0.39 s  SKIPPED
+#
+# THE CONTROL'S REFUSAL COSTS THE PIPELINE NOTHING. Same command on
+# `./trav_90_neg_realpath_confined` (11:08:44Z - 11:14:02Z):
+#
+#   success false, technique "", verified NONE, legacy_fallback "disabled",
+#   interrupted FALSE -- 31 attempts recorded, cumulative 315.5 s. EXHAUSTED
+#   SEARCH, not a timeout.
+#
+#   path_traversal_read is attempt #25 of 31 and is recorded SKIPPED at 0.00 s.
+#
+# So the 318 s the control spends is spent by OTHER techniques, overwhelmingly
+# `variable_overwrite` at 256.6 s (plus ret2win 24.2 s, canary_leak_ret2win 30.1 s,
+# fmtstr_write_gate 2.2 s, format_string 2.0 s PARTIAL).
+#
+# ONE HONEST GAP IN THAT RECORD, stated because a reader would otherwise assume
+# otherwise: the SKIPPED attempt's `failure_reason` is the orchestrator's generic
+# "path_traversal_read: precondition not met", NOT the image-derived sentence quoted
+# under GATE NARROWNESS below. `is_applicable()` returns a bool, so the derived
+# reason is only produced when `attempt()` is actually invoked (or when `analyse()`
+# is called directly, which is how the sweep and this manifest obtained it). The
+# derived reason is real and reproducible; it just is not carried into the JSON of a
+# skipped attempt.
+#
+# ORDERING RECOMMENDATION, stated as the evidence supports and no further.
+# `supwngo/exploit/pipeline/orchestrator.py` is deliberately NOT edited by this
+# family -- the ordered `FIRST_TECHNIQUES` list is a whole-pipeline decision. The
+# evidence says front placement is **NOT REQUIRED**: registration alone solves 5/5,
+# the technique is reached at 56.8 s, and it would still be reached inside a 150 s
+# budget. Front placement is a LATENCY win of roughly 57 s per target (61 s -> the
+# ~1.3 s the attempt itself costs, plus process startup) and nothing more. If it is
+# added, the argument for placing it immediately after `toctou_path_race` is that
+# the two gates are mutually exclusive by construction -- `toctou_path_race`
+# declines every traversal positive and `path_traversal_read` declines every toctou
+# target -- so neither can steal the other's solve and the pair costs 0.00 s on any
+# binary that is neither.
+#
+# GATE NARROWNESS, MEASURED
+#
+# `PathTraversalReadExecutor` derives its plan from the image by DATAFLOW, not by
+# keyword: it parses `objdump -d`, traces the SysV argument registers backwards over
+# a 20-instruction window, and requires four facts to line up --
+#
+#   1. a printf-family JOIN (snprintf/sprintf/__snprintf_chk/__sprintf_chk) whose
+#      format is "<dir>/%s"-shaped and whose first vararg is a fixed absolute
+#      directory string in .rodata;
+#   2. the other vararg traced back to an INPUT READER's buffer (fgets/gets/read/
+#      scanf/...), either directly or through one level of sanitiser that receives
+#      both the reader's slot and the join's source slot;
+#   3. the join's DESTINATION frame slot handed to a PATH-BASED open
+#      (open/open64/creat/fopen/freopen), possibly in another function via
+#      argument-spill analysis;
+#   4. the leaf filter does NOT reject both ".." and "/".
+#
+# Fact 4 exists because facts 1-3 describe `corpus_toctou` exactly. Swept
+# 2026-09-28 over every ELF executable under `benchmark/corpus*/` and
+# `tests/htb-targets/`, evaluating ONLY the applicability check (no exploits run),
+# through BOTH `analyse()` and the executor's own `is_applicable()` so that the
+# thing measured is the thing the orchestrator calls:
+#
+#   ELFs swept                                   138, across 18 trees
+#   gate opened on                                 5  -- exactly the five positives
+#   openings outside this family's positives        0
+#   exceptions raised                               0
+#   analyse() / is_applicable() disagreements       0
+#
+#   corpus 15   corpus_bon 4   corpus_eintr 7   corpus_envpath 5
+#   corpus_heap_variants 6   corpus_inject 6   corpus_libhijack 11
+#   corpus_objptr 12   corpus_objptr_libc 9   corpus_prng 7   corpus_scanf 7
+#   corpus_srop 6   corpus_toctou 6   corpus_traversal 6   corpus_uninit 6
+#   corpus_variants 6   corpus_vectors 8   tests/htb-targets 11
+#
+# The declines are reasoned from the image, and the three distinct reasons observed
+# are worth quoting because each one names the thing that is actually missing:
+#
+#   trav_90 (this family's control)
+#     "the constructed path is never opened by name; realpath() canonicalises it
+#      into another buffer and it is that canonical path which is opened"
+#
+#   toctou_10 .. toctou_13
+#     "the request-name filter rejects BOTH '..' and '/', so no traversal spelling
+#      survives to reach the join (this is the name-swap/race shape, not the
+#      traversal shape)"
+#
+#   toctou_14, toctou_90
+#     "operator text is concatenated onto a fixed directory in 1 place(s), but the
+#      constructed path is never handed to a path-based open"
+#
+# `analyse()` is cached per path and its body is wrapped in try/except, so a
+# malformed or exotic image makes the gate DECLINE rather than raise inside the
+# orchestrator. The 0 exceptions above is the measurement of that, over 138 images
+# including 11 real HTB binaries.
+#
+#
+# SHAPES DELIBERATELY DROPPED, AND WHY -- STATED RATHER THAN ROUNDED OFF
+#
+#   NUL-byte truncation (`name%00.txt`)
+#     DROPPED. It is the classic companion to trav_14's suffix defect, but it does
+#     not exist in C: the target reads its name with fgets() into a C string, so a
+#     NUL is the end of the name and there is nothing after it to truncate. Keeping
+#     it would have meant either a target that reads a length-counted name (a
+#     DIFFERENT request protocol, which the family holds identical) or a variant that
+#     is simply unsolvable for a reason unrelated to its filter. trav_14 measures the
+#     same *idea* -- the appended extension removed -- through snprintf truncation,
+#     which is real C behaviour.
+#
+#   UTF-8 / URL / double-URL decoding of the escape (`%2e%2e%2f`, overlong UTF-8)
+#     DROPPED. Those defeat a filter that runs BEFORE a decoding step, which means
+#     the target needs a decoder, which means adding a decoder to the held-identical
+#     request protocol. It is a genuine sixth filter and a good future variant, but
+#     it varies two things at once as the family is currently specified.
+#
+#   symlink-based escape (plant a link inside the request directory)
+#     DROPPED, deliberately, and this one matters: that is `corpus_toctou`'s
+#     mechanism, not this family's. Here the attacker's only channel is the NAME it
+#     types; it never gets to create a file. Allowing a plant would make four of the
+#     six targets solvable without any traversal at all and would collapse the two
+#     families into one.
+#
+#   a directory-listing or glob variant
+#     DROPPED as out of category: it is information disclosure about NAMES, and this
+#     family's win condition is the secret's BYTES on the target's stdout.
+#
+# WIRING (the orchestrator is NOT edited by this family)
+#
+#   class  PathTraversalReadExecutor
+#   name   "path_traversal_read"
+#   file   supwngo/exploit/pipeline/executors/path_traversal_techniques.py
+#
+# Registration is one line in `build_default_registry()`, immediately after
+# `ToctouPathRaceExecutor`. The registry-enumerating and spawn-counting test files
+# were run against the registered tree 2026-09-28 and are green:
+# `tests/test_i2_attempt_duration.py`, `tests/test_context_resolve_properties.py`,
+# `tests/test_subprocess_injection_executor.py` -> 144 passed; and
+# `tests/test_input_vector_delivery.py` -> 66 passed. In-tree registration adds no
+# per-child interpreter cost, which is why it does not reproduce the shim-induced
+# spawn-count flakiness recorded in corpus_toctou's manifest. `supwngo/exploit/pipeline/orchestrator.py` is NOT
+# touched: front placement in `FIRST_TECHNIQUES` is a whole-pipeline ordering
+# decision and is left to the maintainer. The ordering evidence is under
+# "ATTEMPT ORDERING, MEASURED RATHER THAN ASSUMED" above.
+#
+# KNOWN LIMITS AND UNPROVEN ASSUMPTIONS, recorded here rather than left for a
+# future reader to rediscover:
+#
+#   * trav_14 has a HOST PATH LENGTH dependence (quoted in full on its target entry
+#     above). Measured comfortable on this host; a pathologically deep checkout
+#     makes that one variant refuse rather than mis-solve.
+#   * the executor's `-O0` dependence is a MEASUREMENT dependence, not an exploit
+#     dependence. The gate matches a frame slot; at -O2 the constructed path may
+#     live only in a register and the gate would decline. It has NOT been measured
+#     at -O2, because `cflags` is held identical across the family and pins -O0.
+#   * `request_dir` and `suffix` are carried in the plan and printed into the
+#     generated script, but are NOT load-bearing on the targets where they were
+#     mutated -- see P1 and P5 above. They are labels there, not determinants.
+#   * the generated script's leftover-cleanup (`unplant_probe()` in a `finally`)
+#     does not run if the interpreter is KILLED. Observed: three benign 14-byte
+#     `supwngo_probe` files left in /tmp request directories after red-proof runs
+#     were terminated by hand. Unlike corpus_toctou's leftover SYMLINKS, a leftover
+#     probe cannot pre-poison a later run -- it is a plain in-directory file that
+#     the target is supposed to be allowed to serve -- but it is a leftover and it
+#     is recorded as one.
