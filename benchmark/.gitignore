@@ -176,6 +176,16 @@ corpus_libhijack/*/*/*
 !corpus_libhijack/supwngo_ext.c
 !corpus_libhijack/install_plugins.sh
 
+# corpus_allocsize/ -- integer overflow in an ALLOCATION SIZE (CWE-190 ->
+# CWE-122/787): the size handed to malloc/realloc is computed from an
+# attacker-supplied count and the multiply or add WRAPS, so the chunk is tiny
+# while the transfer length (computed independently, and never checked) still
+# runs the full count. Same artifact rule as every other variation family:
+# sources + cflags are tracked, the built ELFs and the per-run flag.txt are not.
+corpus_allocsize/*/*
+!corpus_allocsize/*/*.c
+!corpus_allocsize/*/cflags
+
 # corpus_finiarray/ -- hijacking a WRITABLE INITIALISER/FINALISER TABLE
 # (CWE-787 against .fini_array / .init_array / a program-owned atexit-style
 # handler table). Same artifact rule as every other family, and it needs its

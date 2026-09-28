@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **New category: allocation-size integer overflow** (`alloc_size_overflow`,
+  CWE-190 feeding CWE-122/787). The target computes a heap allocation size from
+  attacker-controlled arithmetic, that arithmetic **wraps**, and a second,
+  non-wrapping length expression still drives the copy — so the destination
+  shrinks while the transfer stays honest. Distinct from `int_truncation_bypass`
+  and `negative_index_write` by construction rather than by assertion: both of
+  those return early when a menu interface is present, and neither contains an
+  allocation at all. Distinct from `heap_record_hijack`, whose destination it
+  deliberately reuses, because that family's four primitives are all allocator
+  *state* defects and every allocation in its corpus is `malloc(<constant>)`;
+  this gate refuses any image whose allocation sizes are all compile-time
+  immediates. The fact it will not proceed without is a **two-sided measured
+  differential**: with the wrapping count, one fixed-length write must land a
+  counter-ladder entry exactly on an adjacent record's handler field (with a
+  contiguity cross-check); with a benign count the same write must reach nothing.
+  A target where both sides reach is declined as the neighbouring family's
+  forward-overflow shape. Five positives vary only the arithmetic — a 32-bit
+  product, `size_t` `+ 1` at `SIZE_MAX`, a signed count that is simultaneously
+  small/huge/negative, a `realloc` growth path that shrinks **in place under live
+  data**, and a 64-bit product wrapping at 2^60 with **no `imul` anywhere in the
+  image** (gcc emits `shl`, which would have closed a gate keyed on a multiply).
+  Measured by me: **5/5 solved, `verified=SHELL_ACCESS`, 21.0–32.5 s**; control
+  not solved at 189.2 s. Gate swept by me over 159 ELFs: opens on 6, **0 outside
+  the family**, 0 raised, mean 552 ms.
+  The negative control is **statically indistinguishable** from the anchor — same
+  `shl`, same `malloc`, same menu, same record shape, with the multiply checked in
+  the widest type first — so the gate opens on it and it is declined by
+  measurement alone. That is deliberate: a control the gate could reject statically
+  would let the corpus discriminate on an artifact instead of on the defect.
 - **New category: off-by-one / single-byte overflow** (`off_by_one_guard`). Gives
   an executor to a name that had been sitting in `FIRST_TECHNIQUES` with nothing
   behind it. The gate matches the defect rather than any one of its spellings — an

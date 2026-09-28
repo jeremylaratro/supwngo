@@ -1,0 +1,50 @@
+# Protection flags for benchmark/corpus_allocsize/ -- the allocation-size
+# integer-overflow family (CWE-190 -> CWE-122/787).
+#
+# HELD IDENTICAL ACROSS EVERY TARGET IN THIS FAMILY ON PURPOSE. The only thing
+# that varies between targets is the ARITHMETIC THAT COMPUTES THE ALLOCATION
+# SIZE inside new_vec(); everything else -- the menu, the record layout, the
+# leak channel, the transfer clamp, the indirect call -- is byte-identical. A
+# protection difference would confound that measurement.
+#
+# -fstack-protector-all  canary=ON. Nothing in this category touches a return
+#                        address, so the canary must not be what stops the
+#                        exploit -- and a family that left it off would not
+#                        model the modern case.
+# -pie -fPIE             PIE=ON. Makes a code-address leak MANDATORY: win()'s
+#                        address is only known after show() has dumped a job
+#                        record and disclosed its handler pointer.
+# -Wl,-z,relro,-z,now    RELRO=FULL. The GOT is read-only, so "overflow the
+#                        tiny chunk into free@got" is STRUCTURALLY unavailable.
+#                        The writable code pointer this family aims at is the
+#                        program's own: the `run` handler inside the adjacent
+#                        job record on the heap.
+# -O0                    the family's geometry IS the measurement. Two things
+#                        must survive the compiler: the handler field must stay
+#                        at a fixed offset inside the record and the call
+#                        through it must stay an indirect call; and the
+#                        allocation-size arithmetic must stay as written, in the
+#                        width it was written in. At higher -O gcc is free to
+#                        re-associate or widen `count * ELEM_SZ` and the target
+#                        silently stops being in this category.
+#
+# NX is ON (default, no -z execstack).
+#
+# BUILT AND TESTED AGAINST
+# ------------------------
+#   glibc   2.35   (Ubuntu GLIBC 2.35-0ubuntu3.15)   <-- `ldd --version`
+#   gcc     11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3)
+#   kernel  6.8.0 x86-64, Ubuntu 22.04
+#
+# Two version-sensitive facts this family depends on, both glibc-specific:
+#   * malloc(0) returns a VALID pointer to the minimum chunk (0x20 on x86-64),
+#     which is what turns a wrapped-to-zero size into a tiny buffer rather than
+#     into a NULL the program would reject;
+#   * realloc(p, small) SPLITS IN PLACE and returns the same pointer when the
+#     remainder is at least MINSIZE, which is what alloc_13 relies on.
+# A later reader comparing results MUST check their own `ldd --version` first.
+-fstack-protector-all
+-pie
+-fPIE
+-Wl,-z,relro,-z,now
+-O0
