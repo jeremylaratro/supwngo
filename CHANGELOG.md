@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/gate_sweep.py` — the gate-narrowness sweep is now a committed tool.**
+  Every new vulnerability category owes a sweep of its executor's applicability
+  gate over the whole benchmark tree (condition 3 of "how a new category is judged
+  done"). For three consecutive categories that sweep ran from a copy in `/tmp`,
+  which is wiped between sessions — the one piece of tooling that decides whether a
+  gate is honest was the least durable thing in the loop. It builds the real
+  context the orchestrator builds (`Binary.load` → `ExploitContext` →
+  `run_static_analysis` → `run_dynamic_profile`) before asking
+  `Executor.is_applicable`, because a gate reads `context.profile_has_menu` and
+  friends, which exist only after the profile stage. It **asserts its own positives
+  open** and exits 2 otherwise: a sweep that raises on all 159 images prints
+  `gate OPEN on: 0`, which reads exactly like a flawlessly narrow gate, and that
+  result was believed for a while. Out-of-family opens are printed by name, not just
+  counted, so a loose gate can be judged rather than hidden. `GATE_SWEEP_ROOTS`
+  narrows the scope for quick checks, and every run prints the scope it swept, so a
+  narrowed run labels itself and its counts cannot be quoted as a whole-tree result.
+
 ### Fixed
 
 - **`objptr_hijack`'s walkthrough no longer claims a dispatch-table site it cannot
