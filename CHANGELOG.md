@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `eintr_accumulator_rop` now generalises across the signal-interrupted
+  accumulator-underflow category instead of matching one challenge's codegen.
+  Measured on `benchmark/corpus_eintr/`: **0/6 → 6/6** positives, every one a real
+  shell (`SHELL_ACCESS`, ~13–15 s each), with `ancient_interface` — the HTB target
+  the technique came from — still solved (13.5 s) and the negative control still
+  **not** solved.
+
+  The baseline was 0/6 including the anchor, which reproduces `ancient_interface`'s
+  frame byte-for-byte. That is the whole argument for building the corpus: the
+  executor's loop detector required `mov eax,[slot]` immediately before `cdqe`, but
+  a current gcc sign-extends the *length* there and sign-extends the cursor with a
+  separate `movsxd`, so it matched nothing and the technique was silently skipped
+  on a target it was written for. One compiler version, not one binary, was load
+  bearing.
+
+  Four things are now derived rather than assumed: the accumulate loop is
+  recognised in both the load/add/store and the `add DWORD PTR [rbp-n],eax`
+  memory-add shapes; the signal count is `max(cursor, count) - buf` so the count
+  slot may sit above **or** below the cursor, with the reprogram word order derived
+  from the two measured indices rather than fixed; the read and timer verbs come
+  from the `struct command` dispatch table in `.data.rel.ro` classified by call
+  graph, so renamed commands and help strings stripped of every size/time keyword
+  still resolve; and the generated script no longer keys on a `!` in the handler
+  banner or a prompt matching a regex, which is what let a `puts`-based banner and
+  a different prompt work.
+
+  Signal delivery is `os.kill(pid, SIGALRM)` rather than the target's own timer
+  command. This is a deliberate narrowing: it is faithful to the defect and
+  deterministic, but it only applies to a local process. It is also the only
+  mechanism-agnostic option — `setitimer(ITIMER_REAL)` is one-shot, and arming it
+  16 times in-band was measured to deliver **one** signal, not 16. The timer verb
+  is still identified from the call graph; it is just not the delivery path.
+
 - `container_file_rop` now **derives** what it previously guessed from a single
   target, and generalises across a vulnerability category rather than matching one
   challenge. Measured on `benchmark/corpus_variants/` (`--reps 2`): **0/5 → 5/5**

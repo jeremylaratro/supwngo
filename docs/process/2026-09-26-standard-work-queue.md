@@ -89,7 +89,7 @@ recorded beneath it (queue rule 2). The chronological record is §6.
 
 | order | ID | item | status |
 |---|---|---|---|
-| 1 | `G-5` | `eintr_accumulator_rop` generalised across its variation corpus | **in-sprint** |
+| 1 | `G-5` | `eintr_accumulator_rop` generalised across its variation corpus | **done** — 0/6 → 6/6, control unsolved |
 | 2 | `G-6` | `srop_symtab_pivot` generalised across its variation corpus | **in-sprint** |
 | 3 | `A-2` | survey for vuln types this tool cannot yet reach | **in-sprint** (partial, see below) |
 | 4 | `G-7a` | heap category — `bon-nie-appetit`'s class | **in-sprint** |
@@ -125,12 +125,12 @@ here, backfilled as slots free rather than raised.
 | complexity | 3 — corpus is built and the primitive is proven; the work is derivation, not discovery |
 | priority | P0 |
 | lane | now |
-| status | in-sprint |
-| evidence | `benchmark/corpus_eintr/` (7 targets); anchor reaches a shell under `/tmp/eintr/proto.py` (measured) |
+| status | **done** 2026-09-27 |
+| evidence | baseline `benchmark/results_htb/eintr-baseline-20260927.json`, final `…/eintr-final-20260927.json`; reference exploit `benchmark/reference_exploits/eintr_variants_reference.py` |
 | provenance | measured |
-| exit | all 5 positive variants reach `SHELL_ACCESS` via `eintr_accumulator_rop`, `eintr_90_neg_checked_read` does not, and `ancient_interface` is unregressed |
-| owes | executor baseline + final measurement |
-| blocks | `M-2` |
+| exit | **met.** 0/6 → 6/6 positives at `SHELL_ACCESS`; `eintr_90_neg_checked_read` gate-applicable but FAILED (no shell); `ancient_interface` still `SUCCESS`/`SHELL_ACCESS` in 13.5 s |
+| owes | nothing |
+| blocks | `M-2` (released) |
 
 The corpus is engineered so each variant breaks one named assumption in the current
 executor: `eintr_14` kills the help-string vocabulary heuristic and uses `setitimer`;
@@ -138,6 +138,21 @@ executor: `eintr_14` kills the help-string vocabulary heuristic and uses `setiti
 `eintr_11` moves every frame offset; `eintr_12` changes the signal count and puts the
 count slot on the other side of the cursor; `eintr_13` emits the accumulate as a
 memory-add. A variant failure therefore names the thing that broke.
+
+**Outcome, and the one thing it cost.** The baseline was 0/6 *including the anchor*,
+which reproduces `ancient_interface`'s frame byte-for-byte — the loop detector was
+pinned to one gcc's sign-extension order, so a technique written for that target no
+longer fired on a rebuild of it. That is the clearest justification for corpus-first
+work this run has produced, and it is worth keeping the number: a single compiler
+version, not a single binary, was the load-bearing assumption.
+
+The cost is recorded here rather than buried: signal delivery is now
+`os.kill(pid, SIGALRM)`, not the target's own timer command, so the technique is
+**local-process only** and would not carry to a remote service. It was chosen because
+it is the only mechanism-agnostic delivery available — arming `setitimer(ITIMER_REAL)`
+16 times in-band was measured to deliver **one** signal (it is one-shot), so the
+in-band path cannot reach the signal counts this primitive needs on the `eintr_14`
+variant at all. Logged as a deficiency (`I-15`), not as a solved problem.
 
 #### G-6 — `srop_symtab_pivot` generalised across a variation corpus
 
@@ -1087,6 +1102,25 @@ should exist at all.
 Named here so `M-2` can exclude it **explicitly** rather than tolerating it quietly
 (queue rule 5). `M-2` is green when pytest shows no failure *other than* this one.
 
+#### I-15 — `eintr_accumulator_rop` delivers its signals out-of-band, so it is local-only
+
+| field | value |
+|---|---|
+| type | issue (accepted narrowing) |
+| relevance | 3 — the technique solves 6/6 locally; this bounds where that result transfers |
+| complexity | 4 — an in-band path needs a re-armable timer the target may not expose |
+| priority | P2 |
+| lane | later |
+| status | open |
+| evidence | `signal_underflow_techniques.py` drives signals with `os.kill(pid, SIGALRM)`; arming `setitimer(ITIMER_REAL)` 16× in-band was **measured** to deliver 1 signal, not 16 |
+| provenance | measured |
+| exit | either an in-band delivery path that reaches the required signal count on `eintr_14`, or a recorded decision that local-only is the intended scope |
+
+`G-5`'s 6/6 is a real result on local processes and nothing here retracts it. But the
+exploit no longer uses the target's own timer command to generate the interrupts, so it
+would not work against the same binary behind a socket. Recorded so the capability
+claim stays the size of the evidence.
+
 ---
 
 ## 6. Autonomous run log — 2026-09-27 onward
@@ -1102,3 +1136,5 @@ moved an item; measured numbers only, no projections.
 | 4 | 2026-09-27 | `A-2` | **partial.** `measured`: VRv5's `.claude/skills/` is empty and its `.claude/agents/` holds 2 files, so the survey material is the agent ROSTER, not that tree. Coverage table filed under `A-2`; three new categories accepted (`G-8a` weak PRNG, `G-8b` indirect-call hijack, `G-8c` subprocess injection) and six classes (kernel, browser, firmware, mobile, .NET, IIS) declared out of reach for a local C fixture corpus rather than faked. |
 | 5 | 2026-09-27 | queue | parallelism raised 3 → 6 concurrent cycles on disjoint path sets. `M-2` re-ordered to last: it is a whole-tree gate and cannot measure a tree that no commit corresponds to. |
 | 6 | 2026-09-27 | support session | the external support session `638c7654-…` is **not reachable** — absent from `ListAgents` (201 peers) and the raw id does not resolve, so its work item (the `scanf` corpus) was re-routed to an in-session agent instead of guessing at an unrelated session. |
+| 7 | 2026-09-27 | `G-5` | **closed.** `0/6 → 6/6` positives at `SHELL_ACCESS` on `benchmark/corpus_eintr`, control gate-applicable but FAILED, `ancient_interface` unregressed (13.5 s). The baseline includes the anchor at **0**, so the executor had stopped working on a rebuild of the very target it was written for — one gcc's sign-extension order was load-bearing. Cost logged as `I-15` (out-of-band signal delivery ⇒ local-only). |
+| 8 | 2026-09-27 | `G-8c` | orchestrator took the subprocess-injection category directly (6 targets built: anchor `system()`, `popen()`, hand-rolled `execl /bin/sh -c`, a blocklist with a command-substitution gap, a mid-pipeline injection position, and an `execv`-argv control). First **non-memory-safety** category in the set; its `cflags` deliberately enable the full modern protection set to make the point that none of them apply. |

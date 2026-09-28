@@ -1,0 +1,27 @@
+# Protections for the signal-underflow variant corpus. Held IDENTICAL across
+# every target in this family on purpose: the frame shape, the timer mechanism
+# and the command vocabulary are the variables, so a protection difference
+# would confound the measurement.
+#
+# -fstack-protector   LOAD-BEARING, and not as an obstacle: it is what puts the
+#                     loop's own control scalars BELOW the array, which is the
+#                     only reason the underflow lands somewhere useful. It also
+#                     matches the measured target (ancient_interface has a
+#                     canary on the vulnerable function). The canary is never
+#                     touched by this technique -- the reprogrammed cursor
+#                     starts above it.
+# -no-pie             fixed gadget/PLT addresses, as in the target
+# -O0                 the whole primitive depends on the accumulate loop
+#                     reloading its cursor and count from stack slots each
+#                     iteration; at higher -O they live in registers and the
+#                     target silently stops being in this category
+# -lrt                timer_create/timer_settime (glibc < 2.34 keeps them in
+#                     librt); harmless on newer glibc
+-fstack-protector
+-no-pie
+-O0
+-lrt
+# -s                  the measured target is STRIPPED, so the corpus is too:
+#                     nothing here may be solved by leaning on a function name
+#                     the real challenge does not carry
+-s
