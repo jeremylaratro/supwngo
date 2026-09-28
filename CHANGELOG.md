@@ -15,8 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `subprocess_injection` — nothing is overflowed and no pointer is corrupted, so
   it is orthogonal to every memory-safety mitigation.
 
-  Measured on `benchmark/corpus_prng/` (7 targets): **6/6** positives reproduce
-  the per-run secret flag, across five distinct seed sources — `time(NULL)` (seed
+  Measured end-to-end through the real `autopwn` CLI on `benchmark/corpus_prng/`
+  (7 targets): **6/6** positives reach `FLAG_CAPTURED`, attributed to
+  `weak_prng_replay`, in **2.3–5.5 s** each; the control declines. Across five
+  distinct seed sources — `time(NULL)` (seed
   bracketed over a 7-value clock window), `getpid()`, *unseeded* (glibc's implicit
   seed 1), a hard-coded `0xc0ffee`, and a seed **recovered** from three published
   draws. `rand_r` with a hex encoding is covered too, so the encoding of the
@@ -42,8 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   saved return address on a PIE + `-fstack-protector-all` + Full RELRO + NX
   target.
 
-  Measured on `benchmark/corpus_scanf/` (7 targets): **6/6** positives reach a
-  shell, the negative control does not, and the control's refusal is
+  Measured end-to-end through the real `autopwn` CLI on `benchmark/corpus_scanf/`
+  (7 targets): **6/6** positives reach `SHELL_ACCESS`, attributed to
+  `scanf_scalar_overwrite`, in ~101 s each; the control declines (at 245 s, having
+  spent the budget rather than exiting early). By the reference exploit the same
+  6/6 hold, the negative control does not, and the control's refusal is
   *distinguished* rather than merely observed — handed the PIE base for free it
   still fails, so the bounds check is what stops it, not a missing leak. Three
   RED-checks confirm the oracle can fail: a wrong-but-present target address, a
@@ -58,10 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reachable. Variants that overflow into a scalar therefore overflow a struct's
   char array into that struct's own trailing member.
 
-  Baseline: the unmodified pipeline solved **0** of these (3 of 7 targets
-  measured `NOT_SOLVED` at ~170 s/rep before the run was superseded; the
-  remaining 4 were not measured, so the baseline is "0 of the 3 measured", not
-  "0 of 7").
+  Baseline → after: **0 → 6/6**. The baseline is stated as "0 of the 3 measured"
+  rather than "0 of 7": three targets were measured `NOT_SOLVED` at ~170 s/rep and
+  the other four were never reached before the run was superseded by the ordering
+  fix below.
 
 - New technique `subprocess_injection`: command injection into a sink that parses
   shell grammar (`system`, `popen`, a hand-rolled `execl("/bin/sh","-c",…)`). This
