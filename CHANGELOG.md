@@ -98,6 +98,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when a shell path string accompanies it — precisely what separates this
   category from a program doing the same job with an argv vector.
 
+- **The teaching half of the two new non-memory-safety categories.** Solving a
+  target and *explaining* it are separate capabilities, and until now `supwngo
+  explain` fell through to `triage` on every injection and PRNG target — it could
+  pwn them but not teach them. Two new walkthrough families close that:
+
+  - `subprocess_injection` (`supwngo/exploit/walkthrough/families/subprocess_injection.py`,
+    score `0.98`) — five steps from the sink to a proven shell: locate the
+    shell-parsing sink, recover the assembled command template and whatever
+    follows its `%s`, read the target's own reject set out of `.rodata`, then
+    inject and prove.
+  - `weak_prng` (`supwngo/exploit/walkthrough/families/weak_prng.py`, score
+    `0.94`) — six steps: find the generator, establish the seed, recover the
+    secret's encoding, probe the try budget, replay and confirm. Verified to
+    select on **6/6** positives in `benchmark/corpus_prng/` at score `0.94` with
+    the seed story derived per target (`time`, `getpid`, `unseeded`, `fixed`), and
+    to **decline** `prng_90_neg_csprng`, which falls to `triage`.
+
+  Both families derive their facts by calling the **executor's own** analysis
+  helpers (`wpt._analyse`, `sit.shell_sink`/`find_command_template`/`find_blocklist`)
+  rather than re-deriving them, so the teacher and the solver cannot disagree about
+  what the binary is.
+
+  Neither family carries `OFFSET`: it arrives from `base_constants` but nothing
+  here is overflowed, so a family now drops any base constant whose resolving step
+  it does not provide — otherwise the reader is sent hunting a number that does not
+  exist.
+
+  Also runnable 0-to-pwn templates under `benchmark/walkthrough/prng/` (six
+  per-slug scripts plus `control_resists.py`) and `benchmark/walkthrough/scanf/`
+  (three scripts). The PRNG control contrast is measured: the anchor solves on
+  candidate 1 while the control exhausts 64/64 rejections, and the anchor's token
+  is accepted by two independent processes in the same second (2/2) where the
+  control's is not (0/2).
+
+  Recorded late: the three commits that introduced these artifacts
+  (`d51fff1`, `4d72e80`, `fd27baf`) landed without a changelog entry. This bullet
+  is that entry.
+
 ### Fixed
 
 - Three narrowly-gated techniques were reached too late to be reached at all.
