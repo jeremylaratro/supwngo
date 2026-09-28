@@ -1,0 +1,245 @@
+# Challenge-variation corpus manifest: unbounded scanf/strtoull scalar-and-buffer
+# overwrite on a PIE + canary + Full-RELRO binary.
+#
+# WHAT THIS CORPUS MEASURES, AND WHAT IT DOES NOT
+#
+# Measures: whether one solve capability GENERALISES across the particulars of a
+# single vulnerability category. The CATEGORY IS HELD CONSTANT -- a menu-driven
+# target that (a) reads a scalar with an unbounded `scanf("%s")` into a small
+# buffer and converts it with `strtoull`, and (b) uses an attacker-supplied value
+# as an unchecked array subscript or as a length/bound -- and each variant changes
+# exactly one particular that an implementation shaped around a single target is
+# likely to have baked in. A per-target difference is therefore attributable to
+# that particular, not to a different bug.
+#
+# The mitigations are IDENTICAL across all seven targets (see `cflags`, which is
+# byte-identical in every directory): PIE, `-fstack-protector-all`, Full RELRO,
+# NX. The variable under study is the shape of the overwrite, not the hardening.
+#
+# Does NOT measure: anything about heap bugs, format strings, other categories, or
+# the HTB targets themselves. It does not claim the variants are equally hard for
+# a human -- only that each is exploitable by the same primitive, which is proven
+# rather than asserted (below).
+#
+# TWO STRUCTURAL FACTS THAT SHAPED THE FAMILY (both measured, not assumed)
+#
+#  1. `-fstack-protector` REORDERS the frame: arrays are hoisted above scalars.
+#     A `%s` overflow of a sibling array therefore cannot reach a sibling scalar
+#     at all. Only STRUCT MEMBERS -- whose order C fixes -- are reachable from a
+#     `%s` write. That is why the `%s` shapes here overflow a struct's char array
+#     into the struct's own trailing member.
+#  2. `scanf("%s")` cannot emit NUL or whitespace (\x00\x09\x0a\x0b\x0c\x0d\x20),
+#     and a stack canary's low byte IS 0x00. A `%s` overflow structurally cannot
+#     cross a canary intact. So the family splits: the `%s` shapes target
+#     something BELOW the canary (a struct's trailing function pointer, or a
+#     bound scalar), while the `read()`/index-store shapes cross or skip it and
+#     need the leaked canary to be correct.
+#
+# Both together are why a leak is part of the variation axis rather than a bonus:
+# every positive carries an out-of-range subscript READ, which is simultaneously
+# a canary oracle and a PIE-base oracle.
+#
+# VALIDATED BEFORE USE (`measured` 2026-09-27)
+#
+#   benchmark/reference_exploits/scanf_variants_reference.py
+#
+# leaks canary + saved rbp + saved RIP through each target's own out-of-range
+# subscript, derives the PIE base from the leaked return site, and lands a hijack
+# on `spawn_admin_shell`. Result: all six positives obtain a REAL SHELL (the
+# receipt token is echoed back THROUGH the obtained shell -- no printed-flag
+# constant is involved anywhere); the negative control does not.
+#
+# The control's failure is DIAGNOSTIC, not incidental, and was demonstrated two
+# independent ways:
+#   * its leak oracle answers `index out of range` instead of a value; and
+#   * with the PIE base handed to it FOR FREE (measured off the anchor under
+#     no-ASLR, 0x555555554000), the write still does not land -- the target
+#     prints `record: AAAA...` and returns to its menu.
+# So the bounds are what stop it, not a missing leak.
+#
+# The oracle was also shown able to go RED, three ways:
+#   * anchor with a WRONG-but-present code address (`show_plain`, a real function
+#     in the image, instead of the win function) -> no shell;
+#   * anchor with the correct address but the pad off by 8 -> no shell;
+#   * scanf_12 with the leaked canary flipped in ONE byte -> no shell.
+# Per the project's validation-first rule, none of the pipeline results beside
+# this corpus were trusted until those three failed as they must.
+#
+# ONE HARD-WON DETAIL, recorded because it is invisible in the sources: a real
+# `call` leaves rsp % 16 == 8 at callee entry, so a hijack that lands on a saved
+# RETURN address arrives eight bytes off and glibc's `system()` faults on a
+# `movaps`. Entering the win function PAST its prologue `push rbp` fixes every
+# shape, including `index_store`, which places exactly one qword and so cannot be
+# fixed with an extra `ret`. The first reference run FAILED on scanf_12/13/14 for
+# exactly this reason and passed on all six once the entry moved.
+#
+# BUILD
+#
+#   SUPWNGO_BENCH_CORPUS=benchmark/corpus_scanf benchmark/build_all.sh
+#
+# build_all.sh has no `case` entry for these directories and so reaches them
+# through its fail-closed `cflags` path.
+
+category: scanf_unbounded_scalar_overwrite
+
+# The primitive every positive target here is exploitable by, stated once.
+primitive: >-
+  An attacker-controlled value reaches an array subscript with no bounds check,
+  which reads OUT of the array and back up the frame. With the array at rbp-off
+  and elements of size scale, subscript (off-8)/scale is the stack canary,
+  (off+0)/scale is the saved rbp and (off+8)/scale is the saved RIP -- one
+  primitive yielding both secrets. The PIE base is the leaked RIP minus the image
+  offset of the instruction after the handler's own call site in main. A second,
+  unbounded write then redirects control: either a `%s` overflow that rewrites a
+  struct's trailing code pointer (6 address bytes plus scanf's own NUL rebuild a
+  whole 8-byte pointer, because bytes 6 and 7 are already zero), or a length /
+  bound the caller trusted, which turns a later `read(2)` into a canary-correct
+  overwrite of the saved RIP, or a store through the unchecked subscript itself.
+  Two validators that cost nothing are applied before committing: the implied PIE
+  base must be PAGE-ALIGNED, and the canary slot's low byte must be 0x00.
+
+protections_all_targets:
+  pie: true
+  relro: Full
+  canary: true
+  nx: true
+  measured: 2026-09-27
+
+targets:
+  # ---- fixed point. Varies nothing. Present so that a variant failure can be
+  #      told apart from a corpus-wide mistake. NOT a capability claim.
+  - slug: scanf_10_fnptr_struct
+    technique: scanf_scalar_overwrite
+    difficulty: easy
+    hand_verified: true
+    must_solve: true
+    varies: nothing (anchor)
+    leak: {handler: dump_slot, menu: 2, kind: decimal_printf, arr_rbp: 0x50, scale: 8, ret_site: 0x1553}
+    write: {handler: edit_record, menu: 1, kind: fnptr, pad: 32}
+    win: {func: spawn_admin_shell, entry: 0x1249, post_prologue: 0x124e}
+    solve_path: >-
+      `struct record { char name[32]; void (*show)(const char *); }`. `dump_slot`
+      prints `slots[idx]` for an unchecked `idx`, which leaks the canary, the
+      saved rbp and the saved RIP. `edit_record` fills `r.name` with an unbounded
+      `scanf("%s")` and then CALLS `r.show(r.name)`, so 32 pad bytes plus six
+      address bytes replace the function pointer with `spawn_admin_shell`. The
+      `%s` write never has to cross the canary, because the pointer it overwrites
+      lives below it inside the same struct.
+
+  # ---- variation rows: each breaks exactly one thing an implementation shaped
+  #      around the anchor is likely to have baked in.
+  - slug: scanf_11_wide_record
+    technique: scanf_scalar_overwrite
+    difficulty: easy
+    hand_verified: true
+    must_solve: true
+    varies: the buffer size and the slot count
+    leak: {handler: dump_slot, menu: 2, kind: decimal_printf, arr_rbp: 0xd0, scale: 8, ret_site: 0x1571}
+    write: {handler: edit_record, menu: 1, kind: fnptr, pad: 160}
+    win: {func: spawn_admin_shell, entry: 0x1249, post_prologue: 0x124e}
+    solve_path: >-
+      Identical in shape to the anchor with NAME_LEN 160 and NSLOT 24. An
+      implementation carrying the anchor's constants ("pad 32, array at
+      rbp-0x50") writes 32 bytes into a 160-byte field and reads the wrong slot
+      for the canary. Requires deriving both the pad and the array's frame offset
+      rather than reusing them.
+
+  - slug: scanf_12_strtoull_len_rip
+    technique: scanf_scalar_overwrite
+    difficulty: medium
+    hand_verified: true
+    must_solve: true
+    varies: where the overwrite lands, and which function delivers the payload
+    leak: {handler: dump_slot, menu: 2, kind: decimal_printf, arr_rbp: 0x50, scale: 8, ret_site: 0x15a8}
+    write: {handler: load_note, menu: 1, kind: len_rip, buf_rbp: 0x50}
+    win: {func: spawn_admin_shell, entry: 0x1289, post_prologue: 0x128e}
+    solve_path: >-
+      No function pointer at all. `load_note` takes a LENGTH through the same
+      unbounded `scanf`+`strtoull` path and hands it straight to
+      `read(0, note, len)`, so the overwrite crosses the canary onto the saved
+      RIP. This is the target that makes the LEAK LOAD-BEARING: the canary must
+      be reproduced byte-exact or `__stack_chk_fail` aborts (proven by the
+      one-byte-flip RED-check). `flush_line()` in the fixture is not decoration --
+      `scanf` leaves its delimiter in the FILE buffer where a later `read(2)`
+      never sees it.
+
+  - slug: scanf_13_clobbered_bound
+    technique: scanf_scalar_overwrite
+    difficulty: medium
+    hand_verified: true
+    must_solve: true
+    varies: which scalar is clobbered -- a trusted bound, not a code pointer
+    leak: {handler: dump_slot, menu: 2, kind: decimal_printf, arr_rbp: 0x50, scale: 8, ret_site: 0x15d1}
+    write: {handler: load_blob, menu: 1, kind: bound_then_read, pad: 32, buf_rbp: 0x30}
+    win: {func: spawn_admin_shell, entry: 0x1289, post_prologue: 0x128e}
+    solve_path: >-
+      `struct blob { char tag[32]; unsigned long long cap; }` with `b.cap`
+      initialised to TAG_LEN. The `%s` overflow of `b.tag` does not redirect
+      anything -- it enlarges `b.cap`, and the `read(0, b.tag, b.cap)` that
+      follows does the real overwrite. One 0xff byte plus scanf's own NUL makes
+      cap 255. Two-stage: the first unbounded write only creates the second.
+
+  - slug: scanf_14_scanf_d_index
+    technique: scanf_scalar_overwrite
+    difficulty: medium
+    hand_verified: true
+    must_solve: true
+    varies: how the scalar arrives -- `scanf("%d")` into an int, and a STORE
+    leak: {handler: dump_slot, menu: 2, kind: decimal_printf, arr_rbp: 0x50, scale: 8, ret_site: 0x152e}
+    write: {handler: set_slot, menu: 1, kind: index_store, store_rbp: 0x50, store_scale: 8}
+    win: {func: spawn_admin_shell, entry: 0x1249, post_prologue: 0x124e}
+    solve_path: >-
+      No overflow anywhere. `set_slot` reads an index with `scanf("%d")` into an
+      `int` and a value through the `scanf`+`strtoull` path, then executes
+      `slots[n] = v` with no bounds check: a single arbitrary qword store, aimed
+      at the saved RIP. An implementation that keys on "unbounded string copy"
+      has nothing to find here; the unbounded thing is a SUBSCRIPT. This is also
+      the shape that cannot be rescued by an extra `ret`, because it places
+      exactly one qword -- which is what forced the post-prologue entry.
+
+  - slug: scanf_15_putchar_leak
+    technique: scanf_scalar_overwrite
+    difficulty: medium
+    hand_verified: true
+    must_solve: true
+    varies: where the leak comes from -- a one-byte oracle, not a printed qword
+    leak: {handler: dump_byte, menu: 2, kind: byte_putchar, arr_rbp: 0x50, scale: 1, ret_site: 0x1571}
+    write: {handler: edit_record, menu: 1, kind: fnptr, pad: 32}
+    win: {func: spawn_admin_shell, entry: 0x1269, post_prologue: 0x126e}
+    solve_path: >-
+      `dump_byte` does `putchar(slots[idx])` over an `unsigned char` array, so a
+      qword costs eight exchanges and must be reassembled little-endian. An
+      implementation that parses a decimal integer out of a reply line finds
+      none. The leaked byte may itself be 0x0a, so the oracle MUST be read by
+      LENGTH, never by line -- a line-oriented read desynchronises the session
+      and the failure surfaces much later as a wrong canary.
+
+  # ---- negative control. MUST NOT SOLVE.
+  - slug: scanf_90_neg_bounded
+    technique: null
+    difficulty: n/a
+    hand_verified: true
+    must_solve: false
+    varies: the bugs are fixed -- both of them
+    leak: {handler: dump_slot, menu: 2, kind: decimal_printf, arr_rbp: 0x50, scale: 8, ret_site: 0x1553, bounds_checked: true}
+    write: null
+    win: {func: spawn_admin_shell, entry: 0x1249, post_prologue: 0x124e}
+    solve_path: >-
+      NONE. Byte-for-byte the anchor except that `dump_slot` rejects
+      `idx >= NSLOT` and `edit_record` uses `scanf("%31s")`. Everything an
+      implementation keys on is still present -- the menu, the record struct, the
+      trailing function pointer, the indirect call through it, the subscripted
+      read, `spawn_admin_shell` in the symbol table, and `get_number`'s OWN
+      unbounded `scanf("%s", line)` (deliberately kept: it is structurally
+      unexploitable everywhere in this family, so keeping it means the control
+      still presents the whole signature). A success here means the corpus is
+      reporting that REACHING the handler counts as exploiting it, and invalidates
+      every positive result beside it.
+    control_is_distinguished_by: >-
+      TWO independent gates, recorded separately because they fail at different
+      stages. STATIC: the executor's derivation still recovers the leak shape from
+      `dump_slot` -- it reads the subscript-load-then-printf pattern and cannot see
+      a runtime bounds check -- and declines because there is NO WRITE, the `%s`
+      having acquired a field width. RUNTIME: the reference exploit's leak
+      exchange is answered `index out of range`. Either alone would stop the
+      solve; both are measured.

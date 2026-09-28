@@ -1,0 +1,36 @@
+# Protections for the unbounded-scanf/strtoull variant corpus. Held IDENTICAL
+# across every target in this family on purpose: the *shape of the unbounded
+# write and of the leak* is the only variable, so a protection difference would
+# confound the measurement. Every file in benchmark/corpus_scanf/ carries this
+# same list, byte for byte, including the negative control.
+#
+# The set is the measured HTB target's set (auth-or-out: PIE, canary, Full
+# RELRO, NX -- `checksec` measured 2026-09-27), because those four together are
+# what makes this category hard: there is no fixed address to aim at until
+# something has been leaked, and no writing past a canary until it is known.
+#
+# -fstack-protector-all  canary on EVERY function, so the canary is in the way
+#                        of every frame the overflow could walk -- and, just as
+#                        important, so gcc applies its stack-protector frame
+#                        REORDERING (arrays hoisted above scalars). That
+#                        reordering is why the reachable target of a %s overflow
+#                        has to be a struct member rather than a sibling local,
+#                        and the family is built around that fact.
+# -pie -fPIE             PIE, as in the target: no code address is known until
+#                        one is leaked, which is what the corpus's leak oracles
+#                        are for.
+# -Wl,-z,relro,-z,now    Full RELRO, as in the target: the GOT is read-only, so
+#                        the usual "overwrite a GOT entry" shortcut is closed
+#                        and the solve has to land on a return address or a
+#                        live function pointer.
+# -O0                    the whole category depends on the parsed scalar and the
+#                        buffer living in addressable stack slots, and on the
+#                        index/length being reloaded from memory at the point of
+#                        use; at higher -O they live in registers, bounds get
+#                        folded, and the target silently stops being in this
+#                        category.
+-fstack-protector-all
+-pie
+-fPIE
+-Wl,-z,relro,-z,now
+-O0
