@@ -1,0 +1,554 @@
+# Challenge-variation corpus manifest: OFF-BY-ONE / SINGLE-BYTE OVERFLOW
+# (CWE-193 off-by-one error / CWE-787 out-of-bounds write). A fill whose bound is
+# N writes at index N. Exactly ONE byte lands outside the region, every run, with
+# no race and no allocator state involved.
+#
+# This family is not derived from an HTB target. It was opened as a NEW category
+# on the ground that the category's whole difficulty is DOWNSTREAM of the bug:
+# finding "a fill that writes at its own bound" is one instruction's worth of
+# pattern matching, and what makes the category hard is that a single byte is not
+# a payload. It only becomes one by borrowing whatever the compiler happened to
+# place immediately after the buffer -- and that adjacent thing is what decides
+# the entire exploit. So the axis this corpus varies is the MECHANISM that
+# produces the byte, and the thing it measures is whether one capability survives
+# the four different adjacent destinations that mechanism lands on.
+#
+# A NOTE ON PRE-EXISTING COVERAGE, STATED UP FRONT RATHER THAN DISCOVERED LATER
+#
+# `benchmark/corpus/13_off_by_one` (round 1, shared corpus) is already an
+# off-by-one: `s.buf[n] = 0` with `n` clamped to `sizeof(buf)` instead of
+# `sizeof(buf) - 1`, landing on an adjacent `int guard` the program then checks.
+# It is NOT a member of this family and this family does not replace it. Every
+# target here does something it does not:
+#
+#   * it has no menu, one command path, and one write; four of the five positives
+#     here need a multi-part input program derived from the call path;
+#   * its destination is a guard the program itself inspects -- the CHEAPEST of
+#     the four destination classes, because the program performs the win for you.
+#     Nothing in it exercises a frame pivot, a widened length, or a redirected
+#     pointer;
+#   * its win is `puts(FLAG)`. Every positive here ends in `system("/bin/sh")`,
+#     so the oracle is a live shell rather than a printed string.
+#
+# The executor this family ships (`off_by_one_guard`) DOES open on it and DOES
+# solve it, via route 4. That is reported in the executor's own docstring and in
+# the OUT-OF-FAMILY GATE OPENS section below, because a new category quietly
+# absorbing a pre-existing target would be the kind of unmeasured overlap that
+# makes a benchmark stop meaning anything.
+#
+# WHAT THIS CORPUS MEASURES, AND WHAT IT DOES NOT
+#
+# Measures: whether one solve capability GENERALISES across the particulars of a
+# single vulnerability category. The DEFECT is held identical in shape across all
+# five positives -- a fill bounded by N that writes at index N -- and exactly one
+# thing varies: the mechanism that produces the extra byte, and therefore which
+# frame slot it lands on. A per-target difference is attributable to that, not to
+# a different bug.
+#
+# Held identical in every target (each source header says it at length):
+#
+#   the defect      a fill bounded by N writes at index N. In four of the five
+#                   the bound is `sizeof` the destination; in the fifth it is
+#                   snprintf's untruncated return value clamped to the same
+#                   quantity.
+#   the shell site  `win()` -> `system("/bin/sh")`. Exactly one, non-static so
+#                   it survives as a symbol whatever else changes.
+#   the menu        `1) info  2) edit  0) quit`, the defect always reached by
+#                   command '2', prompts and labels identical.
+#   the call depth  `main -> handle(c) -> do_*()`. The off-by-one is always two
+#                   calls deep, so `main`'s command loop is never damaged and a
+#                   failed probabilistic attempt costs one respawn, not a
+#                   corrupted oracle.
+#   I/O primitives  `read`/`write` only in the four pivot/guard targets (no
+#                   printf/scanf), so no stdio buffer can sit between the client
+#                   and the defect. obo_14 is the exception and says why.
+#   cflags          byte-identical in all six directories, control included.
+#
+# NOT held identical, stated so it cannot be mistaken for a hidden second bug:
+# the SHAPE OF THE RECORD follows from the axis point. A length guard and a saved
+# pointer have to be adjacent to the overflowed array, which means a struct;
+# a saved-RBP pivot needs the array to be the function's only local, which means
+# no struct members after it. The fill and its bound are unchanged either way.
+#
+# Does NOT measure: any leak -> resolve -> libc finisher, and no PIE variant of
+# the three routes that need an in-image code address. See DELIBERATELY NOT
+# COVERED at the end, which states that gap rather than rounding it off.
+#
+# THE PRIMITIVE, AND WHY THREE OF FIVE POSITIVES ARE PROBABILISTIC
+#
+# The headline destination for a one-byte overflow is the LOW BYTE OF A SAVED
+# FRAME POINTER. Zeroing it moves the caller's frame pointer down to the bottom
+# of its own 256-byte block; the caller's `leave; ret` then pops a frame pointer
+# from, and returns through, memory the attacker filled. The executed word is at
+#
+#     L = (H & ~0xff) + 8            H = the true frame pointer
+#
+# and `H` is a live stack address. Linux offsets the initial stack per exec by
+# `arch_align_stack`: `get_random_int() % 8192`, masked down to 16. So `H & 0xff`
+# is a fresh multiple of 16 on every run, it cannot be computed from the image,
+# and this family carries no leak. Worse, when `H & 0xff` is ALREADY zero the
+# write changes nothing and the program returns normally.
+#
+# THEREFORE NO SINGLE ATTEMPT AT THIS ROUTE CAN EXCEED 15/16, whatever the
+# exploit does. That is a property of the primitive. The three pivot targets here
+# measure BELOW 15/16 by different amounts, and the amount is a function of the
+# frame geometry: the gap between the top of the sprayed region and `H` costs one
+# landing slot per 16 bytes. This is why the corpus holds the frame layout
+# roughly constant and measures the rate per target rather than asserting one.
+#
+# obo_12 and obo_13 are DETERMINISTIC and exist precisely so that "did the
+# technique work?" and "did the dice land?" are not entangled: a family whose
+# every member was probabilistic could not tell a broken executor from an
+# unlucky one.
+#
+# THE ALIGNMENT DETAIL THAT IS NOT COSMETIC
+#
+# Because the landing offset is unknown, the landing zone is sprayed with a
+# repeating 16-byte unit `[p64(win), p64(ret_gadget)]` rather than a chain at a
+# fixed place. `rbp` is 16-aligned in every -O0 frame, so a buffer at `-X(%rbp)`
+# with `X % 16 == 0` starts 16-aligned, and `L` is ALWAYS `8 (mod 16)`. Every
+# landing therefore hits the bare `ret`, slides one word, and enters `win` with
+# `rsp` `8 (mod 16)` -- the parity a `call` leaves behind, which is what glibc's
+# `system()` needs for its `movaps`. Landing directly on `win` would be
+# 16-aligned and would fault INSIDE `system()`, i.e. it looks exactly like a
+# wrong gadget address rather than like an alignment bug. Getting this wrong was
+# a measured failure during construction, not a hypothetical.
+#
+# PROTECTIONS -- MEASURED OFF THE BINARIES 2026-09-28
+#
+# All six identical: **NX on, canary OFF, no PIE, Full RELRO.** Read with
+# `readelf -lW` (GNU_STACK `RW`, GNU_RELRO present) and `readelf -dW`
+# (FLAGS BIND_NOW), cross-checked against pwntools' own ELF checksec
+# (`nx=True canary=False pie=False relro=Full`).
+#
+# ERRATUM, 2026-09-28, beside the original claim rather than replacing it:
+# this section first recorded that "supwngo's OWN protection reporting disagrees
+# -- `NX Disabled / RELRO No RELRO`", and called it a pre-existing framework
+# defect. **That is wrong, and the way it is wrong matters more than the claim.**
+# Re-measured on `obo_10_loop_le_saved_rbp`:
+#
+#   Binary.load(path).protections  ->  NX Enabled   RELRO Full RELRO   (correct)
+#   Binary(path).protections       ->  NX Disabled  RELRO No RELRO     (all defaults)
+#
+# So the framework reports protections CORRECTLY. The wrong answers come from the
+# bare `Binary(path)` constructor, which returns a fully-formed object whose ELF
+# was never parsed, so every protection reads as its default. `readelf` and
+# pwntools agree with `Binary.load`, not against it.
+#
+# Kept here because this is the SECOND time in one day that this exact footgun
+# produced a confident wrong measurement: a gate sweep written against
+# `Binary(path)` reported `gate OPEN on: 0` for all 133 images -- including its
+# own positives -- and read as a flawlessly narrow gate. A constructor that
+# silently yields plausible all-default answers is the defect; the protections
+# code is not. Logged as such in
+# `docs/process/2026-09-27-deferred-deficiencies.md`.
+#
+# The numbers above are readelf's, and `Binary.load` concurs.
+#
+# canary OFF is the ONE deliberate weakening, and its effect on this category is
+# unusual enough to be worth the paragraph that is in `cflags`: a canary does not
+# DETECT the saved-RBP pivot (the canary sits at -0x8(%rbp), BELOW the byte being
+# written, so the epilogue check passes). What `-fstack-protector` does is MOVE
+# THE TARGET -- it relocates local arrays so they end at the canary slot instead
+# of at the saved RBP, and the extra byte then hits the canary and aborts. And it
+# does not defeat obo_12 or obo_13 AT ALL, because their destinations are members
+# of the same struct as the overflowed array and no frame reordering can be
+# inserted between struct members. That asymmetry is a real property of the
+# category, so the flag is held off family-wide rather than varied inside it.
+#
+# -no-pie is a stated SIMPLIFICATION, not a claim about the defect: three of the
+# four routes need an in-image code address and the primitive delivers no leak,
+# so under PIE they would become two-stage exploits and the family would be
+# measuring leak plumbing. Route 4 (guard word) needs no address and does work on
+# a PIE image -- which is exactly how the executor solves the PIE round-1 target.
+#
+# THE ONE VARIABLE: THE MECHANISM, AND THE DESTINATION IT LANDS ON
+targets:
+  - slug: obo_10_loop_le_saved_rbp
+    role: positive
+    mechanism: >
+      A `for (i = 0; i <= n; i++)` read loop, one byte per iteration, straight
+      out of `read(0, &dst[i], 1)`. This is the ANCHOR: every other source was
+      generated from it, so the held-constant parts are byte-identical rather
+      than merely similar. Because the extra iteration is ATTACKER-FED, the extra
+      byte is whatever the client sends as byte N+1 -- so this is the one pivot
+      variant where the attacker chooses the byte, and the only correct choice is
+      0x00.
+    destination: the saved RBP at (%rbp) of do_edit(). `buf` is the function's
+      only local, 0x400 bytes, ending flush against it.
+    route: saved_rbp_pivot
+    deterministic: false
+    per_attempt_rate: >
+      DERIVED 13/16 == 81.25%: `handle` allocates 0x10 of locals and the sled's
+      top is 0x20 below H, so the landing loses on low bytes {0x00, 0x10, 0x20}.
+      MEASURED 26/32 == 81.2% at n=32 and 73/96 == 76.0% at n=96 (reference
+      exploit `--rate`). See the note under RE-MEASURED AT n=96: all three pivot
+      targets land ~6 points under their derived ceilings by the same amount,
+      which is read as probe flake rather than as a geometry error.
+    win: frame pivot into the sprayed `buf`, ret-slide, `win()` ->
+      `system("/bin/sh")`.
+  - slug: obo_11_strcpy_nul_at_len
+    role: positive
+    mechanism: >
+      A strcpy-shaped terminator: `set_label()` does `if (len > cap) len = cap;`
+      then `memcpy(dst, src, len); dst[len] = '\0';`. The clamp's ceiling IS the
+      buffer size, so `len == cap` is admitted and the terminator lands one past
+      the end. Same landing site as obo_10, but the byte is FORCED to NUL by the
+      program -- the attacker does not choose it. An executor that treats "write
+      0x00 past the buffer" as an input it controls and one that reads the byte's
+      value out of the store instruction behave identically here and differ on
+      obo_12, which is the point of having both.
+    destination: the saved RBP at (%rbp) of do_edit(), reached through the
+      `label` member of a 0x400-byte record.
+    route: saved_rbp_pivot
+    deterministic: false
+    per_attempt_rate: >
+      DERIVED 12/16 == 75%: the record is `{ char body[0x3f0]; char label[0x10]; }`
+      and only `body` can hold the sled -- a `strlen`-bounded `memcpy` cannot
+      carry a `p64()`, because on a -no-pie x86-64 image every code address
+      contains five 0x00 bytes. So the sled's top is 0x30 below H (0x10 of
+      `label` plus `handle`'s 0x20) and the landing loses on {0x00, 0x10, 0x20,
+      0x30}. MEASURED 19/32 == 59.4% at n=32 and 64/96 == 66.7% at n=96 -- the
+      LOWEST in the family, as the derivation predicts, and the target whose
+      n=32 sample sat far enough under its derivation to be worth re-measuring
+      rather than reporting once.
+    win: frame pivot into the sprayed `body`, ret-slide, `win()`.
+    note: >
+      The record split is the whole reason this variant exists. Its NUL-intolerant
+      write cannot lay its own landing zone, so the landing zone has to come from
+      a DIFFERENT, NUL-tolerant read earlier on the same path. An executor that
+      sprays "the buffer the off-by-one overflowed" fills 16 of the bytes it needs
+      here.
+  - slug: obo_12_length_guard_two_stage
+    role: positive
+    mechanism: >
+      A `for (i = 0; i <= n; i++)` byte copy from a global staging buffer, so the
+      extra byte is CLIENT-CHOSEN, and it must be 0xff rather than 0x00: the
+      destination is a length guard initialised to 0x10, and a NUL would make it
+      SMALLER and the defect harmless. This is the target that breaks an executor
+      built against obo_10/obo_11 -- everything downstream of the byte is
+      different, and the byte's required value is inverted.
+    destination: the low byte of `unsigned int cap` at -0x50(%rbp), a member of
+      `struct rec { char name[0x20]; unsigned int cap; char body[0x40]; }`.
+    route: length_guard
+    deterministic: true
+    per_attempt_rate: >
+      DERIVED 1/1: no stack address is involved. Stage 1 widens `cap` from 0x10
+      to 0xff; stage 2 spends the widened `read(0, r.body, r.cap)` on 84 bytes of
+      filler (0x4c to `body`, plus 8 over the saved RBP slot) then a bare `ret`
+      then `win`. MEASURED 32/32.
+    win: the widened read overflows `r.body` to do_edit()'s return address --
+      an ordinary ret2win, authorised by one byte.
+    note: >
+      The ONLY deterministic pivot-free positive, and the reason the family can
+      distinguish "the technique failed" from "the dice lost". Also the variant
+      `-fstack-protector` would not touch: `name` and `cap` are members of one
+      struct and no frame reordering separates them.
+  - slug: obo_13_saved_ptr_low_byte
+    role: positive
+    mechanism: >
+      A clamp whose ceiling is the array size: `if (n > NAME_SZ) n = NAME_SZ;`
+      then `r.name[n] = '\0'`, with `n` the return value of
+      `read(0, r.name, NAME_SZ)`. `>` admits `n == NAME_SZ`. Program-written NUL,
+      and in this destination class the NUL is exactly right.
+    destination: the low byte of `char *dst` at -0x10(%rbp), a member of
+      `struct rec { char name[0x20]; char *dst; }`.
+    route: saved_pointer
+    deterministic: true
+    per_attempt_rate: >
+      DERIVED 1/1: the pointer's target is not a stack address, so nothing about
+      it is randomised. `g_state` is declared `__attribute__((aligned(256)))`
+      with a function pointer at offset 0, `r.dst` starts at `g_state.notes` ==
+      `&g_state + 8`, and zeroing its low byte moves it to `&g_state.action` --
+      a link-time constant (0x404100) on a -no-pie image. MEASURED 32/32.
+    win: the program's own `read(0, r.dst, 8)` writes `p64(win)` over the
+      function pointer, and its own `g_state.action()` calls it.
+    note: >
+      The 256-byte alignment is part of the FIXTURE, not a cheat. A one-byte
+      pointer overwrite can only move a pointer inside its own aligned 256-byte
+      block -- that IS the primitive. In the wild the attacker wins when
+      something useful happens to share that block, and whether it does is a fact
+      about the target's data layout. Pinning the block holds that fact constant
+      instead of letting a linker's choice of address turn into an apparent
+      executor regression.
+  - slug: obo_14_snprintf_ret_caller_frame
+    role: positive
+    mechanism: >
+      snprintf's RETURN VALUE -- the length it WOULD have written -- clamped to
+      `cap` instead of `cap - 1`, then used as a terminator index. Two things
+      here are deliberately hostile to a gate written against the other four:
+      there is no inclusive comparison against a size_t cursor anywhere (the
+      compare is a SIGNED `jle` against an `int` that came out of a return
+      register), and no byte of the source ever reaches the overflowed index.
+    destination: the saved RBP at (%rbp) of do_tag(), whose ONLY local is a
+      0x20-byte `name` -- far too small to hold a landing zone.
+    route: saved_rbp_pivot
+    deterministic: false
+    per_attempt_rate: >
+      DERIVED 15/16 == 93.75%, the HIGHEST in the family even though the
+      overflowed buffer is the smallest: `handle` does `sub $0x410,%rsp`, puts
+      `board` at -0x400(%rbp) and spills its `c` argument BELOW the array at
+      -0x404(%rbp), so the landing zone ends FLUSH against H and only 0x00 (the
+      no-op) loses. MEASURED 28/32 == 87.5% at n=32 and 85/96 == 88.5% at n=96 --
+      the highest measured rate in the family, as derived. An earlier revision of
+      the source header PREDICTED
+      -0x410 with a 0x10 gap and a 14/16 ceiling; that was wrong and the erratum
+      is recorded in the source rather than silently replaced.
+    win: frame pivot into `handle`'s sprayed `board`, ret-slide, `win()`.
+    note: >
+      The landing zone lives in the CALLER's frame and is filled by a different
+      read, in a different function, BEFORE the overflow happens. This is the
+      target that tells apart an executor that sprays "the overflowed buffer"
+      from one that sprays every attacker-writable region on the path to the
+      defect -- the former covers 32 of the up-to-248 bytes it needs.
+  - slug: obo_90_neg_bound_fixed
+    role: control
+    mechanism: >
+      obo_10 with ONE CHARACTER CHANGED: `for (i = 0; i < n; i++)`. Everything
+      else is byte-identical -- the same `win()` calling `system("/bin/sh")`, the
+      same `main -> handle -> do_edit` depth, the same 0x400-byte single local
+      ending flush at (%rbp), the same menu, the same prompts, the same cflags.
+      `win()` is present and unreachable.
+    destination: nothing. The highest byte written is `buf[0x3ff]`; the saved RBP
+      is never touched, and a correct exact-length fill is the program's only
+      write, so there is no second read to widen, no pointer to redirect and no
+      guard to zero either.
+    route: none -- REFUSED BY THE STATIC HALF of the gate, on the single fact the
+      category turns on (the terminating comparison is `jb`, not `jbe`), rather
+      than by exhausting a retry budget. A refusal that depends on a budget
+      cannot distinguish "not vulnerable" from "unlucky", which for a
+      probabilistic family would make the control worthless.
+    deterministic: n/a
+    win: none.
+    note: >
+      It is obo_10 rather than a stripped-down program on purpose: if `win()` and
+      the frame geometry were also removed, a decline would be attributable to
+      any of four differences instead of to the missing byte.
+
+# ---------------------------------------------------------------------------
+# MEASUREMENT RECORD
+#
+# Every number below was produced by the command quoted above it, on this host,
+# on 2026-09-28. Nothing here is copied from a sibling family or estimated.
+#
+# 1. CORPUS ORACLE PROOF -- positive AND negative, before anything that trusts it
+#
+#    $ python3 benchmark/reference_exploits/offbyone_variants_reference.py
+#
+#    obo_10  SHELL (1 attempt)   expected solvable      PASS
+#    obo_11  SHELL (1 attempt)   expected solvable      PASS
+#    obo_12  SHELL (1 attempt)   expected solvable      PASS
+#    obo_13  SHELL (1 attempt)   expected solvable      PASS
+#    obo_14  SHELL (2 attempts)  expected solvable      PASS
+#    obo_90  plan declined, no shell   expected NOT solvable   PASS
+#    -> "ALL OK -- corpus is a usable oracle", exit 0.
+#
+#    (Run twice: once against the first build, and again after the sources'
+#    comment corrections were rebuilt. Both passed. The attempt COUNTS differ
+#    between runs on the three pivot targets and are expected to -- that is the
+#    probabilistic route being probabilistic, and a run in which every pivot
+#    target won on attempt 1 every time would be the suspicious one.)
+#
+#    The control's refusal is on the STATIC half: "no off-by-one found: every
+#    fill bound in this image is exclusive". It is not a budget exhaustion.
+#
+#    It went RED first, twice, and both are recorded because both were real
+#    construction bugs rather than tuning:
+#      * obo_10 measured 0/32 shells with the sprayed pattern built as
+#        `(p64(win) + p64(ret)) * 128` -- a 16-byte unit repeated 128 times is
+#        2048 bytes, not 1024, so the byte at stream[1024] was a pattern byte
+#        instead of the trailing NUL and the saved RBP took 0xc9 (win's low byte)
+#        instead of 0x00. Crash rip was `ret_gadget << 16`, which reads like a
+#        wrong gadget. The repeat count is `size // 16`, not `size // 8`.
+#      * obo_14 declined outright until the input-event walk was started from the
+#        DISPATCHER instead of from the overflowed frame, because its landing zone
+#        is a local of the caller.
+#
+# 2. MEASURED PER-ATTEMPT RATES (the probabilistic route's real ceiling)
+#
+#    $ python3 benchmark/reference_exploits/offbyone_variants_reference.py --rate
+#
+#    obo_10_loop_le_saved_rbp           pivot    26/32     (derived 13/16 = 81.2%)
+#    obo_11_strcpy_nul_at_len           pivot    19/32     (derived 12/16 = 75.0%)
+#    obo_12_length_guard_two_stage      length   32/32     (derived 1/1)
+#    obo_13_saved_ptr_low_byte          pointer  32/32     (derived 1/1)
+#    obo_14_snprintf_ret_caller_frame   pivot    28/32     (derived 15/16 = 93.8%)
+#    obo_90_neg_bound_fixed             declined
+#
+#    The two deterministic routes coming back 32/32 and the three pivot routes
+#    coming back at three DIFFERENT non-trivial rates is itself the evidence that
+#    the harness measures something: an always-green oracle cannot produce 19/32.
+#
+# 2b. RE-MEASURED AT n=96 (obo_11's n=32 sample sat ~2 sigma under its
+#     derivation, which was worth resolving rather than reporting once)
+#
+#    $ python3 -c "... R.rate(<path>, n=96) ..."   # same attempt() as --rate
+#
+#    obo_11_strcpy_nul_at_len           64/96 = 66.7%   (derived 12/16 = 75.0%)
+#    obo_10_loop_le_saved_rbp           73/96 = 76.0%   (derived 13/16 = 81.2%)
+#    obo_14_snprintf_ret_caller_frame   85/96 = 88.5%   (derived 15/16 = 93.8%)
+#
+#    ALL THREE COME IN 5-8 POINTS UNDER THEIR DERIVED CEILING, BY ALMOST THE SAME
+#    AMOUNT, while the three geometries differ. That pattern is recorded rather
+#    than smoothed over, and the reading of it is INFERRED, not measured: a
+#    geometry error would move ONE target by a multiple of 1/16 (6.25 points) and
+#    leave the others alone, whereas a constant offset across three different
+#    geometries is what a per-attempt PROBE flake looks like -- each attempt is a
+#    fresh exec plus fixed 0.12 s settles plus a 1.0 s output window, and an
+#    attempt whose shell is simply not ready inside that window is scored as a
+#    miss. So the derived ceilings are believed correct and the measured rates are
+#    believed to be (ceiling x ~0.94). The actionable consequence is only that the
+#    RETRY COUNTS are sized against the MEASURED rates, not the derived ones:
+#    at the worst measured rate (0.667) the reference exploit's 24 attempts leave
+#    a clean miss at 4e-12 and the executor's 20 at 8e-10.
+#
+#    What is NOT claimed: that the ~6% deficit has been isolated. It has not. It
+#    is small, it is in the harness rather than in the primitive, and chasing it
+#    would not change a verdict.
+#
+# 3. GATE NARROWNESS
+#
+#    $ python3 /tmp/gate_sweep_executor.py \
+#          supwngo.exploit.pipeline.executors.offbyone_techniques \
+#          OffByOneGuardExecutor corpus_offbyone
+#
+#    ELF files swept: 159
+#    gate OPEN on: 6
+#      OUTSIDE  benchmark/corpus/13_off_by_one/off_by_one
+#      OWN      benchmark/corpus_offbyone/obo_10_loop_le_saved_rbp/...
+#      OWN      benchmark/corpus_offbyone/obo_11_strcpy_nul_at_len/...
+#      OWN      benchmark/corpus_offbyone/obo_12_length_guard_two_stage/...
+#      OWN      benchmark/corpus_offbyone/obo_13_saved_ptr_low_byte/...
+#      OWN      benchmark/corpus_offbyone/obo_14_snprintf_ret_caller_frame/...
+#    captured OUTSIDE the family: 1
+#    raised: 0
+#    per-image cost: mean 626 ms, max 9108 ms
+#    own-family ELFs present: 6; gate opened on 5 of them
+#
+#    Run twice, identical verdicts; the first run reported mean 715 ms / max
+#    11063 ms on a more loaded host. The cost is one `objdump -d` per image,
+#    cached per (path, mtime), and the maximum is a bundled libc, not a
+#    challenge binary. `raised: 0` matters as much as the open count: a gate
+#    that throws on an unfamiliar image looks narrow and is not.
+#
+#    The control is the sixth own-family ELF and the gate is CLOSED on it, which
+#    is the intended asymmetry: 5 of 6, not 6 of 6.
+#
+# OUT-OF-FAMILY GATE OPENS -- one, named, and correct
+#
+#   benchmark/corpus/13_off_by_one/off_by_one
+#     A genuine pre-existing off-by-one. `vuln()` fills a 0x20-byte buffer at
+#     -0x30(%rbp) with an inclusive clamp, so the terminator lands at
+#     -0x10(%rbp) -- an `int guard` initialised to 0xdeadbeef which the program
+#     then checks with `if ((s.guard & 0xff) == 0) win();`. Route 4
+#     (guard_word). The gate opens because the image really does contain the
+#     defect this executor owns, and the executor solves it. This is coverage,
+#     not a false positive, and it is the reason route 4 exists at all: without
+#     it the executor would decline a target that is literally what the
+#     technique is NAMED for.
+#
+#     Matching it required one addition to the static matcher that is worth
+#     recording as a general improvement rather than a special case: gcc emits
+#     the one-past store in TWO forms at -O0 -- `lea` a base, `add` the index,
+#     store through it (when the base is a pointer variable) and a single SIB
+#     store `movb $0x0,-0x30(%rbp,%rax,1)` (when the base is a frame array).
+#     A matcher that knows only the first form misses half the category.
+#
+#     MEASURED, pinned to this technique:
+#       $ cd benchmark/corpus/13_off_by_one
+#       $ PYTHONPATH=<repo> python3 -m supwngo.cli autopwn ./off_by_one \
+#             --json --no-legacy --timeout 300 --strategy off_by_one_guard
+#       success=True  technique=off_by_one_guard  legacy_fallback=not_reached
+#       flag=FLAG{edb90cfb2503255f16a5b386aa7428b7}
+#       attempts: off_by_one_guard SUCCESS stage=DONE
+#
+#     It went RED first, and the red is worth keeping: on the first run the probe
+#     captured the real flag and the GENERATED SCRIPT then failed to verify,
+#     because the target EXITS after printing the flag and the script's shell
+#     probe raised EOFError on the closed pipe while the in-pipeline probe
+#     swallowed it. The pipeline reported FAILED with exactly that reason rather
+#     than SUCCESS, which is the "artifact and probe must agree" rule doing its
+#     job. Both sides now share one structure and tolerate a dead target.
+#
+#     ATTRIBUTION, MEASURED UN-PINNED (this is the question that matters for
+#     whether this executor should sit where it sits in FIRST_TECHNIQUES):
+#       $ PYTHONPATH=<repo> python3 -m supwngo.cli autopwn ./off_by_one \
+#             --json --no-legacy --timeout 300          # no --strategy
+#       success=True  technique=ret2win  flag=FLAG{edb90...}
+#       attempts: ... scanf_scalar_overwrite SKIPPED, ret2win SUCCESS
+#
+#     `ret2win` still wins this target, because it sits ONE LINE EARLIER in
+#     FIRST_TECHNIQUES than `off_by_one_guard`. So adding this category does NOT
+#     re-attribute a round-1 target; the existing record is preserved by
+#     ordering. (Worth noting why `ret2win` wins at all: this fixture's entire
+#     trigger is "send at least 32 bytes", which any offset sweep does
+#     incidentally, so the round-1 attribution has always been a coincidence of
+#     the fixture rather than a ret2win. Correcting that would mean swapping the
+#     two lines; the measured cost of doing so is bounded to exactly this one
+#     image, since it is the only image in the swept tree where both gates open
+#     AND `ret2win` succeeds -- on all five family targets `ret2win`'s gate opens
+#     and it FAILS at DELIVERY. That is a judgement call for the orchestrator,
+#     not a defect, and this corpus does not depend on the answer.)
+#
+#   Nothing else in 159 swept ELFs opens, including every other `benchmark/`
+#   family and every `tests/htb-targets/` challenge and bundled libc.
+#
+# 4. PIPELINE MEASUREMENT (the real harness, not by hand)
+#
+#    $ python3 benchmark/measure_family.py benchmark/corpus_offbyone \
+#          --timeout 300 --jobs 3
+#
+#    family: /srv/share/dev/supwngo/benchmark/corpus_offbyone
+#    targets: 6  jobs: 3  per-target timeout: 300s
+#
+#      [positive] obo_11_strcpy_nul_at_len     SOLVED     PASS  technique=off_by_one_guard verified=SHELL_ACCESS flag=False [56.3s]
+#      [positive] obo_12_length_guard_two_stage SOLVED    PASS  technique=off_by_one_guard verified=SHELL_ACCESS flag=False [56.4s]
+#      [positive] obo_10_loop_le_saved_rbp     SOLVED     PASS  technique=off_by_one_guard verified=SHELL_ACCESS flag=False [58.3s]
+#      [positive] obo_14_snprintf_ret_caller_frame SOLVED PASS  technique=off_by_one_guard verified=SHELL_ACCESS flag=False [55.8s]
+#      [positive] obo_13_saved_ptr_low_byte    SOLVED     PASS  technique=off_by_one_guard verified=SHELL_ACCESS flag=False [56.2s]
+#      [CONTROL ] obo_90_neg_bound_fixed       not solved PASS  technique= verified=NONE flag=False [238.3s]
+#
+#    positives solved: 5/5
+#    controls: 1, wrongly solved: 0
+#    ALL OK -- every positive solved, every control declined        (exit 0)
+#
+#    All five are attributed to `off_by_one_guard`, none to another technique,
+#    and none fell back to the legacy engine (`--no-legacy`).
+#
+#    The control's 238.3 s is the REST OF THE REGISTRY spending its budget on a
+#    menu target that blocks in `read(0, ...)` forever, not this executor: this
+#    executor's refusal is static and costs one cached `objdump` pass. Read the
+#    control's PASS as "no technique in the registry solves this, including the
+#    one that solves its five near-identical siblings", which is the property it
+#    exists to prove -- it is NOT "the pipeline finished and said no".
+#
+#    CONTENTION CAVEAT, recorded rather than hidden: this ran on a 32-core host
+#    while several other agents' `measure_family.py` runs were in flight (8
+#    concurrent `measure_family` processes were observed with `pgrep`). Verdicts
+#    are unaffected -- each target is an independent process and the oracle is a
+#    shell, not a deadline -- but the per-target WALL TIMES above are inflated by
+#    an unmeasured amount and should not be read as this family's cost in
+#    isolation. An earlier run of the identical command under the same load gave
+#    the same verdicts with times 39.3-61.8 s and a 304.7 s control.
+#
+# ---------------------------------------------------------------------------
+# DELIBERATELY NOT COVERED -- stated rather than rounded off
+#
+#   * No PIE variant of routes 1-3. All three need an in-image code address and
+#     the primitive delivers no leak, so a PIE variant would be measuring a
+#     leak-then-resolve finisher this pipeline does not have. The executor
+#     DECLINES rather than guessing: `_symbol()` refuses to hand back an address
+#     for a non-ET_EXEC image. Route 4 needs no address and does work on PIE,
+#     which is demonstrated by the round-1 target rather than asserted.
+#   * No heap off-by-one (a one-byte overflow into an adjacent chunk's size
+#     field, the classic "poison null byte"). That is a different primitive with
+#     a different set of downstream requirements and belongs with the heap
+#     families, not here; putting it in this corpus would break the
+#     one-varied-axis property.
+#   * No arbitrary-write finisher for route 3 when nothing in the image calls
+#     through the address the pointer can be moved to. The pointer moves inside
+#     256 bytes and whether anything useful lives there is a fact about the
+#     target; when it does not, the executor declines with that stated.
+#   * No 32-bit variant. The frame arithmetic, the 16-byte alignment rule and
+#     the `movaps` constraint are all amd64 facts, and an i386 member would vary
+#     the architecture as well as the mechanism.

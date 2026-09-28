@@ -9,6 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **New category: off-by-one / single-byte overflow** (`off_by_one_guard`). Gives
+  an executor to a name that had been sitting in `FIRST_TECHNIQUES` with nothing
+  behind it. The gate matches the defect rather than any one of its spellings — an
+  **inclusive** (`jbe`/`jle`) comparison between a frame slot used as an index and
+  a fill bound, plus a write at `BASE + <that slot>` — then resolves the buffer to
+  `-X(%rbp)` and the bound to `N` and routes on **where the extra byte lands**,
+  at `-(X - N)(%rbp)`: a saved frame pointer (`leave; ret` pivot behind a
+  `[win, ret]` alignment sled), an adjacent length guard (two-stage,
+  deterministic), an adjacent saved pointer (redirect, then the program writes
+  through it and calls what it wrote), or a guard word the program checks itself.
+  When it is none of the four it declines and names the slot. Six targets vary
+  only the mechanism producing the extra byte: an inclusive read loop, a
+  `strcpy`-shaped terminator, a copy onto a length guard, a clamp onto a saved
+  pointer, and `snprintf`'s return value clamped to `cap`. Measured by me over
+  this tree: **5/5 solved, `verified=SHELL_ACCESS`, all attributed to
+  `off_by_one_guard`, 46.3–58.4 s**; the control declines **statically in 0.00 s**
+  ("every loop-terminating and clamp comparison that indexes a buffer is
+  exclusive, which is the corrected form") rather than by exhausting a budget.
+  Gate swept by me over 159 ELFs: opens on 6, raises on 0.
+  **The saved-RBP route is probabilistic by construction and is not presented
+  otherwise** — `arch_align_stack` re-randomises the frame pointer's low byte per
+  exec, and an already-256-aligned one makes the write a no-op, capping any single
+  attempt at 15/16. Per-target measured rates are recorded in
+  `benchmark/corpus_offbyone/corpus_offbyone.yaml` instead of being asserted.
+- **New category: writable initialiser/finaliser table hijack**
+  (`fini_array_write`). A third *destination* beside the GOT
+  (`tcache_poison_got`) and a heap record's function pointer
+  (`heap_record_hijack`): the loader and exit machinery. Given a write primitive
+  the pipeline can already drive, it recognises a writable, **reached** dispatch
+  table — `.fini_array`, the real `.init_array`, or a program-owned
+  `atexit`-style handler array — picks a slot nothing can pre-empt, and lets
+  ordinary termination or the program's own shutdown/reload path fire the
+  payload. No ROP, no pivot, no leak. Slots are ranked by **walk order**, which
+  is load-bearing: glibc's `call_fini()` walks `.fini_array` *backwards*, so on a
+  four-entry table exactly one index both runs first and is not itself
+  load-bearing. When a table is validated against a shadow/whitelist array, the
+  same primitive writes the mirror at the same index. Measured by me over this
+  tree: **5/5 solved, `verified=SHELL_ACCESS`, 84.8–87.9 s**, control not solved
+  at 131.8 s. Gate swept by me over 159 ELFs: opens on 5, **0 outside the
+  family**, 0 raised.
+  Writability is computed from `PF_W PT_LOAD` **minus `PT_GNU_RELRO`**, and a
+  section's `WA` flag is explicitly rejected as insufficient, because that is the
+  check that would have opened this gate on every Partial-RELRO image in the tree.
+  Measured on this host (gcc 11.4.0, ld 2.38) to settle it: at gcc's *default*
+  Partial RELRO, `.fini_array` lands inside `PT_GNU_RELRO` while its section
+  header still advertises `WA`, and a store there takes **SIGSEGV** — so the
+  loader-table route requires `-z norelro`, and the four loader-table targets are
+  linked that way, pinned per target in `cflags` so that a rebuild at the default
+  cannot silently delete them from the category. The fifth positive needs no such
+  flag: it is **Full RELRO** and goes through a program-owned, shadow-validated
+  table, which is the shape that still applies to ordinary distro binaries.
 - **New category: heap-record function-pointer hijack** (`heap_record_hijack`).
   The same family as `tcache_poison_got`, split by RELRO: where Full RELRO removes
   the GOT as a destination, what remains is a function pointer the program itself

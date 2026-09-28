@@ -175,3 +175,35 @@ corpus_libhijack/*/*/*
 !corpus_libhijack/*/cflags
 !corpus_libhijack/supwngo_ext.c
 !corpus_libhijack/install_plugins.sh
+
+# corpus_finiarray/ -- hijacking a WRITABLE INITIALISER/FINALISER TABLE
+# (CWE-787 against .fini_array / .init_array / a program-owned atexit-style
+# handler table). Same artifact rule as every other family, and it needs its
+# OWN three lines: a family name is not a prefix match and the corpus-wide
+# flag.txt rule does NOT cover compiled binaries, so without these a
+# path-scoped `git add benchmark/corpus_finiarray` would commit six ELF images.
+#
+# The `cflags` files matter more here than in most families and must stay
+# TRACKED: RELRO is the entire discriminator of this category (four targets are
+# linked `-z norelro`, two `-z relro -z now`), so a target that lost its cflags
+# would be rebuilt at gcc's default -- PARTIAL RELRO -- which MEASURABLY makes
+# `.fini_array` read-only and silently removes the target from the category.
+#
+# The proof of a win in this family is a SHELL (spawn_admin_shell -> system),
+# from which the harness then reads flag.txt, so flag.txt is a per-run secret
+# and stays ignored like every other family's.
+corpus_finiarray/*/*
+!corpus_finiarray/*/*.c
+!corpus_finiarray/*/cflags
+
+# corpus_offbyone/ -- OFF-BY-ONE / SINGLE-BYTE OVERFLOW (CWE-193 / CWE-787): a
+# fill whose bound is N writes at index N, and the exploit is decided by WHAT the
+# extra byte lands on (a saved frame pointer, a length guard, a saved pointer, a
+# guard word). Same artifact rule as every other family, and it needs its OWN
+# three lines: the corpus-wide flag.txt rule does NOT cover compiled binaries, so
+# without these a path-scoped `git add benchmark/corpus_offbyone` would commit six
+# ELF images. Verified with `git check-ignore` after the family was built: every
+# ELF and flag.txt ignored, every .c and cflags NOT ignored.
+corpus_offbyone/*/*
+!corpus_offbyone/*/*.c
+!corpus_offbyone/*/cflags

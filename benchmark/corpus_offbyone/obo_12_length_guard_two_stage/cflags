@@ -1,0 +1,72 @@
+# Protections for the off-by-one / single-byte-overflow corpus
+# (benchmark/corpus_offbyone). Held IDENTICAL -- byte-identical, not merely
+# equivalent -- across every target in this family on purpose: the MECHANISM
+# THAT PRODUCES THE ONE EXTRA BYTE is the only variable, so a protection
+# difference would confound the measurement. The negative control shares this
+# exact file too, which is what makes its refusal attributable to the absence
+# of the off-by-one rather than to different hardening.
+#
+# THE ONE FLAG THAT IS LOAD-BEARING FOR THE BUG, STATED PLAINLY RATHER THAN
+# BURIED: -fno-stack-protector.
+#
+# -fno-stack-protector   REQUIRED by three of the five positives, and the
+#                        reason is worth recording because it is NOT the usual
+#                        "the canary would catch us". A one-byte write onto the
+#                        LOW BYTE OF THE SAVED RBP does not touch the canary at
+#                        all -- the canary lives at -0x8(%rbp), which is BELOW
+#                        the byte being written, so the epilogue's check would
+#                        pass. What -fstack-protector actually does to this
+#                        category is MOVE THE TARGET: it relocates local arrays
+#                        to the bottom of the frame so that they end at the
+#                        canary slot instead of at the saved RBP, and the one
+#                        extra byte then lands on the canary's low byte and
+#                        aborts in __stack_chk_fail. So the canary defeats the
+#                        saved-RBP pivot by relayout, not by detection -- and it
+#                        does NOT defeat the other two positives at all
+#                        (obo_12's length guard and obo_13's saved pointer both
+#                        live INSIDE the same struct as the overflowed array, so
+#                        no amount of frame reordering separates them). That
+#                        asymmetry is a real property of the category and is the
+#                        reason this flag is held off for the whole family
+#                        rather than varied inside it.
+#
+# EVERY OTHER PROTECTION IS ON, AND NONE OF THEM MATTERS:
+#
+# -no-pie                the ret2win destination has to be a FIXED address,
+#                        because the primitive here delivers no leak: the frame
+#                        is pivoted into a buffer the attacker already filled,
+#                        and the word that gets executed had to be written
+#                        before the pivot happened. PIE would not make the bug
+#                        unreachable, it would make the exploit a two-stage one
+#                        (leak, then pivot) and the family would then be
+#                        measuring leak plumbing instead of the off-by-one. Held
+#                        constant, and named as a simplification rather than
+#                        presented as a limitation of the defect.
+# -Wl,-z,relro,-z,now    Full RELRO write-protects the GOT after startup. No
+#                        step of any of the five routes writes the GOT: the
+#                        destinations are a saved RBP, a saved length, a saved
+#                        pointer, and a return address -- all of them stack or
+#                        .data. Full RELRO is satisfied and irrelevant.
+# (NX)                   comes from the default ELF program headers. Nothing is
+#                        executed from a data page; every word the pivot lands
+#                        on is an address INSIDE .text (a `ret` gadget or
+#                        `win`), which is exactly what makes a one-byte write
+#                        enough on an NX target.
+#
+# -O0                    load-bearing for the MEASUREMENT, not for the bug, and
+#                        in two distinct ways. First, the family has to be a
+#                        controlled comparison, and at higher -O gcc is free to
+#                        keep the index in a register, unroll the copy, or turn
+#                        the whole inclusive loop into a memcpy -- which would
+#                        change the mechanism under test rather than the
+#                        protection. Second, the executor DERIVES the geometry
+#                        it needs from the frame: which rbp-relative slot the
+#                        one extra byte lands on (`-X(%rbp)` plus the fill
+#                        bound N), and therefore whether that slot is the saved
+#                        RBP, a length, or a pointer. At -O2 the buffer can live
+#                        in a register and the derivation would have nothing to
+#                        match, so the executor would be guessing.
+-fno-stack-protector
+-no-pie
+-Wl,-z,relro,-z,now
+-O0

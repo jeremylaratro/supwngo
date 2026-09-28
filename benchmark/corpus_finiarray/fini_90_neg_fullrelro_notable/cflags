@@ -1,0 +1,57 @@
+# fini_90_neg_fullrelro_notable: NEGATIVE CONTROL -- FULL RELRO and no program-owned table
+#
+# Protections for the writable-initialiser/finaliser-table corpus (CWE-787
+# against .fini_array / .init_array / a program-owned atexit-style table).
+#
+# THREE FLAGS ARE HELD IDENTICAL across all six targets and ONE -- the RELRO
+# setting -- is pinned PER TARGET, because RELRO is the entire discriminator of
+# this category and sharing it would erase the family's axis.
+#
+# -fno-stack-protector   Nothing in this family overflows a frame: the primitive
+#                        is a bounded index write into a GLOBAL array, so no
+#                        canary is ever in the way and none is ever leaked. The
+#                        flag is set explicitly rather than left to gcc's default
+#                        so that a solve cannot be mistaken for a canary bypass,
+#                        and so the frame layout is not reordered by the
+#                        stack-protector heuristic (which would move nothing that
+#                        matters here, but would make the disassembly the
+#                        executor reads differ between hosts).
+# -no-pie                LOAD-BEARING, and the reason this family needs no leak
+#                        at all. The destination of the write is a TABLE at a
+#                        link-time-constant address; with PIE it would move per
+#                        run and the category would collapse into "first obtain
+#                        an image-base leak", which is a different exercise that
+#                        benchmark/corpus_scanf already measures. Held across all
+#                        six so it cannot confound.
+# -O0                    The primitive depends on the slot index and the value
+#                        living in addressable stack slots and being RELOADED
+#                        from memory at the store, and on the bound check
+#                        surviving as two cmp instructions. At higher -O gcc
+#                        keeps both in registers, folds the bound, and can prove
+#                        the store unreachable for out-of-range indices -- any of
+#                        which silently removes the target from the category.
+#
+# RELRO, PINNED FOR THIS TARGET:
+# -Wl,-z,relro,-z,now   FULL RELRO. .init_array, .fini_array, .data.rel.ro,
+#                        .dynamic and the whole GOT are inside PT_GNU_RELRO and
+#                        read-only before main runs, so every loader table AND
+#                        the GOT are closed. What remains writable is the
+#                        program own .data/.bss -- which is the point of this
+#                        target.
+#
+# MEASURED, not inferred (gcc 13 / GNU ld on this host, 2026-09-28,
+# 'readelf -lW' + a live write test): with PARTIAL RELRO -- gcc's DEFAULT --
+# PT_GNU_RELRO already covers .init_array, .fini_array, .data.rel.ro, .dynamic
+# and .got; a store into .fini_array[0] takes SIGSEGV. Only .got.plt, .data and
+# .bss stay writable. The widely repeated claim that "Partial RELRO leaves
+# .fini_array writable" is FALSE on a modern toolchain, so the loader-table
+# route in this family needs '-z norelro' and not '-z relro'.
+#
+# NOT SET, and stated rather than left to inference: no -z execstack (nothing
+# here executes injected bytes), no -static (the category is about this image's
+# own tables, and a static image has no dynamic tags to read them from), and no
+# -fstack-protector of any strength. NX is on by gcc's default here.
+-fno-stack-protector
+-no-pie
+-Wl,-z,relro,-z,now
+-O0
