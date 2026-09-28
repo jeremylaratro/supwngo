@@ -9,6 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The teaching half of `heap_strlen_ofb1`**: a walkthrough family for the
+  category where *the length source is the overflow*.
+
+  A heap buffer is filled **exactly** to its allocation, so it is never
+  NUL-terminated; the program's own `strlen()` then runs into the next chunk and
+  returns a length larger than the buffer, which a copy sink faithfully honours.
+  The `read()` is correctly bounded by the number it was given — the number is
+  wrong — which is why a sink-centric audit clears this binary.
+
+  The gap was measured before anything was written: the three `corpus_bon`
+  positives selected **`triage`**, and HTB `bon-nie-appetit` selected
+  **`rop_chain` at 0.6** — the worse outcome, because it teaches a stack-ROP hunt
+  on a binary whose bug is a heap off-by-N and walks the reader into a canaried
+  frame. Now 3/3 positives and the real target select `heap_strlen_ofb1`, the
+  control (`bon_90_neg_clamped_len`) still declines to `triage`, and all four
+  render and `ast.parse`.
+
+  **A correction is recorded at the gate rather than quietly fixed.** The family
+  first required `fixed_alloc_sizes()` to be non-empty, reasoning that a buffer
+  can only be filled to exactly its own length if that length is a constant the
+  program chose. All three corpus positives have a fixed size, so the gate passed
+  3/3 and looked right — and HTB `bon-nie-appetit` has none: its order option asks
+  *us* for the size. The reasoning is simply false: when we supply the size we
+  supply the fill too, so we make them equal on purpose and the condition is
+  *easier* to meet. The executor's own line has always been
+  `size_candidates = list(static_sizes) or [0x18]`. This is the second time this
+  cycle that a corpus-green gate was wrong only on the real target, so the
+  register-sized case now has a test of its own asserting both halves — that the
+  target really has no immediate, and that the family claims it anyway.
+
+  Three epistemic states are kept apart deliberately, because collapsing them is
+  how an artifact implies a measurement it never made: `ORDER_SZ` is **MEASURED**
+  when the image contains one `malloc` immediate, **UNKNOWN** (resolved by the
+  reach step) when it contains several, and **ASSUMED** when it contains none and
+  we chose the value. `REACH` is **UNKNOWN** by necessity — how far `strlen` runs
+  past the buffer depends on what the allocator placed after the chunk at the
+  moment of the call, so it is a property of the run and not of the image — and
+  everything downstream of it is presented as a table over plausible reaches
+  rather than as one number.
+
+  Gated by `tests/test_walkthrough_heap_strlen.py` (21 tests), red-proofed four
+  ways. The two that matter are the shipped defect (the fixed-size gate: corpus
+  tests stay green while the real-target tests go red, and that asymmetry *is* the
+  finding) and a **plausible fabricated `REACH`** — filled in as 1 with evidence
+  attached so the model accepts it — which 20 of the 21 tests miss.
+
+  The gate was swept rather than argued, because it loosened during development and
+  a loose gate on a 0.89 score steals targets: across **93** corpus and HTB
+  binaries it opens on 4, all of them its own, capturing nothing outside the family
+  and raising nowhere.
+
 - **The teaching half of `env_path_hijack`**: a walkthrough family for the
   data-only route, so `supwngo explain` teaches what the pipeline already flies.
 
