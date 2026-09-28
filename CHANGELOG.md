@@ -95,6 +95,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Three narrowly-gated techniques were reached too late to be reached at all.
+  `subprocess_injection`, `weak_prng_replay` and `scanf_scalar_overwrite` were
+  registered but absent from the orchestrator's `FIRST_TECHNIQUES` ordering, so
+  the pipeline spent its budget on broad sweeps before trying them.
+
+  Measured before/after on `benchmark/corpus_prng/prng_10_time_seed_token` at an
+  unchanged 150 s budget: **INCONCLUSIVE → `FLAG_CAPTURED` by `weak_prng_replay`**,
+  with only three cheap gate-skips (`eintr_accumulator_rop`, `srop_symtab_pivot`,
+  `subprocess_injection`) ahead of it. Four sibling targets already solved in
+  10–13 s, so this was purely an ordering starvation: **a capability that exists
+  but is never reached inside the budget is indistinguishable from one that does
+  not exist.**
+
+  All three belong at the front for the reason the list exists — their gates are
+  narrow and cheap, and each one's narrowness is measured, not asserted:
+  `weak_prng_replay` claims 6 of 68 binaries at ~75 ms per image and fires 0 times
+  on the 15-image R1 corpus; `scanf_scalar_overwrite` claims its own 6 positives
+  and declines all 36 other corpus binaries plus all 7 HTB targets.
+
 - `PipelineVerifier.verify_script` could credit an **echo** as shell access.
   It wrote `echo <token>` to a generated script's stdin and set `SHELL_ACCESS`
   when the token appeared on stdout. Measured against a target with no shell
