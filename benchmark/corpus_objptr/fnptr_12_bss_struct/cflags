@@ -1,0 +1,20 @@
+# Protections for group (a) of the indirect-call-hijack corpus (fnptr_*):
+# HOW THE POINTER IS REACHED. Held IDENTICAL across every target in this
+# group so that the pointer's location and reachability are the only
+# variables.
+#
+# -fno-stack-protector  a canary is genuinely not in the way of this category:
+#                       the hijacked call happens in the middle of the function,
+#                       long before any epilogue check. It is disabled so that a
+#                       canary cannot be mistaken for the reason a variant fails.
+# -no-pie               the payload is an ADDRESS (a win function, or system@plt),
+#                       so a fixed image base is what makes this GROUP solvable
+#                       without a leak. The leak-first shape is not dropped from
+#                       the corpus -- it is group (b)'s objptr_25_pie_leak_first,
+#                       which is the ONE target here built -pie, deliberately.
+# -O0                   at higher -O the indirect call through a struct member is
+#                       devirtualised or the pointer is kept in a register, and the
+#                       target silently stops being in this category at all.
+-fno-stack-protector
+-no-pie
+-O0

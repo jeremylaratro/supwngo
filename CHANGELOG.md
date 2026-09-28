@@ -68,6 +68,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the other four were never reached before the run was superseded by the ordering
   fix below.
 
+- New technique `objptr_hijack`: a function pointer the program later **calls** is
+  reachable from attacker-controlled bytes, so the hijack lands on a live `call
+  *<reg>` in the middle of a function rather than on a saved return address. That
+  is the structural point of the category -- the epilogue canary check that would
+  catch a return-address overwrite is never reached, so a canary is irrelevant to
+  the route rather than bypassed by it.
+
+  Measured end-to-end through the real `autopwn` CLI on `benchmark/corpus_objptr/`
+  (12 targets), and measured **both ways** so the number is attributable:
+
+  | run | positives | controls wrongly solved |
+  |---|---|---|
+  | executor not registered | **0/10** | 0/2 |
+  | registered, attempted first | **10/10** | 0/2 |
+
+  Per target 9.6-18.8 s; `technique=objptr_hijack`, `verified=SHELL_ACCESS` on
+  every positive. Controls decline by **exhausting** the ladder, not by exiting
+  early: `fnptr_90_neg_bounded_read` 54.8 s, `objptr_91_neg_size_check` 147.6 s.
+  `legacy_fallback` was `not_reached` on every row of both runs, so no solve is
+  attributable to the legacy engine.
+
+  Two groups vary one particular each, with `cflags` byte-identical inside each
+  group: `fnptr_*` varies where the pointer lives (heap / stack / .bss), how it is
+  reached (overflow vs. an unchecked table index), and what is available to point
+  at (a win function vs. only `system@plt`); `objptr_*` varies the unsigned
+  arithmetic that decouples an allocation size from a copy length over a bump
+  allocator (`sz + 1`, `(n + 7) & ~7UL`, a 32-bit truncation, a multiplication) and
+  where the arena lives. `objptr_25_pie_leak_first` is the one PIE + Full RELRO
+  target: with no fixed address to write, the hijacked pointer pair is first used
+  as an **arbitrary read** to leak a live code pointer and recover the image base,
+  which proves the primitive is a read as well as a write.
+
+  The shell proof is `echo SH$((6*7))OK` rather than a token echo, and that is
+  measured rather than stylistic: **11 of the 12 targets echo the naive token
+  back**, so a token-echo oracle is demonstrably foolable on this family.
+
+  Attempt ordering is load-bearing and was measured: attempted first, positives
+  solve in 10-16 s; reached last under the default order the same targets took
+  20-42 s. A capability that exists but is never reached inside the budget is
+  indistinguishable from one that does not exist.
+
+  `auth-or-out` still does **not** solve, and this is what changed: `objptr_hijack`
+  is now the first technique attempted on it and declines at ANALYSIS with a named
+  reason -- "no win function in the image and no `system@plt`, so there is nothing
+  to point the hijacked pointer at" -- rather than by exhausting the budget in
+  silence. Six remaining gaps are numbered `UNDERIVED` notes in the module. HTB
+  score is unchanged at 4/7.
+
 - New technique `subprocess_injection`: command injection into a sink that parses
   shell grammar (`system`, `popen`, a hand-rolled `execl("/bin/sh","-c",…)`). This
   is the framework's **first non-memory-safety category** — there is no overflow,

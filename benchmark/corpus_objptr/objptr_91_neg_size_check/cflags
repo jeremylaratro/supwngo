@@ -1,0 +1,23 @@
+# Protections for group (b) of the indirect-call-hijack corpus (objptr_*):
+# THE ARITHMETIC THAT DECOUPLES ALLOCATION SIZE FROM COPY LENGTH. Held
+# IDENTICAL across every target in this group except objptr_25, whose whole
+# axis is PIE (see its own cflags).
+#
+# -fno-stack-protector  a canary is not in the way of this category at all:
+#                       the corrupted pointer is a struct member inside a
+#                       pool, the call happens mid-loop, and main never
+#                       returns on the exploit path. Disabled so that a
+#                       canary can never be mistaken for the reason a
+#                       variant failed.
+# -no-pie               the payload is the ADDRESS of spawn_shell, so a fixed
+#                       image base is what makes this variant solvable
+#                       without a leak. The leak-first shape is not dropped
+#                       from the corpus -- it is objptr_25_pie_leak_first.
+# -O0                   the primitive depends on the object's `print` member
+#                       being RELOADED from memory at the call site. At higher
+#                       -O gcc keeps it in a register across the read() (or
+#                       devirtualises it outright) and the target silently
+#                       stops being in this category.
+-fno-stack-protector
+-no-pie
+-O0

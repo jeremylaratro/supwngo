@@ -1,0 +1,204 @@
+# Challenge-variation corpus manifest: indirect-call hijack.
+#
+# WHAT THIS CORPUS MEASURES, AND WHAT IT DOES NOT
+#
+# Measures: whether one solve capability GENERALISES across the particulars of a
+# single vulnerability category. The category is held constant -- a function
+# pointer that the program later CALLS is reachable from attacker-controlled
+# bytes -- and each variant changes exactly one particular that an implementation
+# shaped around a single target is likely to have baked in. Each target's own
+# source header names, in a `VARIES FROM THE ANCHOR:` line, the one thing it
+# changes; read those rather than inferring from the slug.
+#
+# Does NOT measure: anything about format strings, PRNG secrets, or the HTB
+# targets themselves. In particular it does not claim `auth-or-out` is solved --
+# see "WHAT THIS CORPUS DID NOT BUY" at the bottom, which is the honest part.
+#
+# WHY THE HIJACK LANDS ON A CALL SITE AND NOT A RETURN ADDRESS
+#
+# The structural fact that defines the category: the corrupted pointer is invoked
+# by a `call *<reg>` in the MIDDLE of a function, not by a `ret` at its end. So a
+# stack canary never gets a chance to notice -- the epilogue check that would have
+# caught a return-address overwrite is simply never reached. That is why the
+# `fnptr_*` group is built `-fno-stack-protector`: not to make the targets easier,
+# but so a canary cannot be mistaken for the reason a variant failed when it is in
+# fact irrelevant to the category.
+#
+# TWO GROUPS, ONE CATEGORY
+#
+#   fnptr_*   HOW THE POINTER IS REACHED. The overwrite is direct; the variable is
+#             where the pointer lives (heap / stack / .bss), how it is reached
+#             (overflow vs. an unchecked table index), and what is available to
+#             point at (a win function vs. only system@plt).
+#   objptr_*  HOW THE COPY OUTRUNS THE ALLOCATION. An unsigned size computation
+#             decouples the allocation size from the copy length over a bump
+#             allocator, so the copy runs off the end of a too-small region into a
+#             live object's function pointer. The variable is the ARITHMETIC that
+#             wraps (`sz + 1`, `(n + 7) & ~7UL`, a 32-bit truncation, a
+#             multiplication) and where the arena lives.
+#
+# PROTECTIONS -- MEASURED 2026-09-28, not copied from the cflags files
+#
+# `cflags` is byte-identical within each group, so protections are held constant
+# and only the particular varies. Three distinct groups, verified by md5:
+#
+#   a8898ba5  fnptr_10..14 + fnptr_90        -fno-stack-protector -no-pie -O0
+#   210f8fa6  objptr_20..23 + objptr_91      (group b's flags)
+#   898d9859  objptr_25                      the ONE -pie target, deliberately
+#
+# Each control shares its group's flags with the positives it controls for, which
+# is what makes its refusal attributable to the bug's absence rather than to
+# different hardening.
+#
+# read with supwngo.core.binary.Binary.load(...).protections:
+targets:
+  - slug: fnptr_10_heap_struct_baseline
+    group: fnptr
+    role: positive
+    note: anchor of group (a); varies from itself in nothing
+    pie: false
+    canary: false
+    nx: true
+    relro: Partial RELRO
+  - slug: fnptr_11_stack_struct
+    group: fnptr
+    role: positive
+    note: the struct is a local, so the pointer sits on the stack
+    pie: false
+    canary: false
+    nx: true
+    relro: Partial RELRO
+  - slug: fnptr_12_bss_struct
+    group: fnptr
+    role: positive
+    note: the struct is a file-scope static, so the pointer lives in .bss
+    pie: false
+    canary: false
+    nx: true
+    relro: Partial RELRO
+  - slug: fnptr_13_unchecked_table_index
+    group: fnptr
+    role: positive
+    note: nothing overflows -- dispatch through an unchecked table index
+    pie: false
+    canary: false
+    nx: true
+    relro: Partial RELRO
+  - slug: fnptr_14_no_win_function
+    group: fnptr
+    role: positive
+    note: no win function in the image, so the hijack must reach system@plt
+    pie: false
+    canary: false
+    nx: true
+    relro: Partial RELRO
+  - slug: fnptr_90_neg_bounded_read
+    group: fnptr
+    role: control
+    note: the read is bounded to the array it targets; same flags as fnptr_10..14
+    pie: false
+    canary: false
+    nx: true
+    relro: Partial RELRO
+  - slug: objptr_20_add_wrap_local_arena
+    group: objptr
+    role: positive
+    note: anchor of group (b); `bump(sz + 1)` wraps in size_t
+    pie: false
+    canary: false
+    nx: true
+    relro: Partial RELRO
+  - slug: objptr_21_align_wrap_bss_arena
+    group: objptr
+    role: positive
+    note: the align-up `(n + 7) & ~7UL` inside the allocator wraps; arena in .bss
+    pie: false
+    canary: false
+    nx: true
+    relro: Partial RELRO
+  - slug: objptr_22_int_truncation_local_arena
+    group: objptr
+    role: positive
+    note: a 32-bit truncation decouples the sizes; arena is a local
+    pie: false
+    canary: false
+    nx: true
+    relro: Partial RELRO
+  - slug: objptr_23_mul_overflow_bss_arena
+    group: objptr
+    role: positive
+    note: a multiplication overflows; arena in .bss
+    pie: false
+    canary: false
+    nx: true
+    relro: Partial RELRO
+  - slug: objptr_25_pie_leak_first
+    group: objptr
+    role: positive
+    note: >
+      the one -pie + Full RELRO target. There is no fixed address to write, so the
+      hijacked pointer pair must first be used as an ARBITRARY READ to leak a live
+      code pointer and recover the image base -- the write target is only chosen
+      after that. Kept in the corpus rather than dropped because it is the shape
+      that proves the primitive is a read AND a write, not just a write.
+    pie: true
+    canary: false
+    nx: true
+    relro: Full RELRO
+  - slug: objptr_91_neg_size_check
+    group: objptr
+    role: control
+    note: >
+      the size computation is checked; same flags as objptr_20..23. Its refusal is
+      an exhausted search rather than an early exit: measured 147.6 s running the
+      full ladder to the end, versus 9.6-18.8 s for every positive.
+    pie: false
+    canary: false
+    nx: true
+    relro: Partial RELRO
+
+# VALIDATED BEFORE USE
+#
+#   benchmark/reference_exploits/objptr_variants_reference.py
+#
+# 10/10 positives obtain a real shell, 0/2 controls do. Run three times with the
+# same result. The oracle was shown able to go RED with a WRONG-BUT-PRESENT
+# mutation -- same exploit, payload fully delivered, destination swapped for a real
+# non-shell function -- which went red on all 10.
+#
+# The shell proof is `echo SH$((6*7))OK` -> `SH42OK`, not a token echo, and that
+# choice is measured rather than stylistic: 11 of these 12 targets echo the naive
+# token back, so a token-echo oracle is demonstrably foolable on this family.
+# Arithmetic expansion is a shell builtin, so it needs no PATH and its answer is
+# absent from the bytes sent.
+#
+# END-TO-END THROUGH THE REAL CLI (measured 2026-09-28 by the orchestrator, not
+# relayed: `benchmark/measure_family.py benchmark/corpus_objptr --timeout 300`)
+#
+#   unwired (executor not registered):  0/10 positives, 0/2 controls, exit 3
+#   wired   (registered + first):      10/10 positives, 0/2 controls, exit 0
+#
+# Per target, wired: fnptr_10..12 9.6-10.2 s, fnptr_13 10.0 s, fnptr_14 10.0 s,
+# objptr_20 12.4 s, objptr_21 13.2 s, objptr_22 12.7 s, objptr_23 13.8 s,
+# objptr_25 18.8 s. Controls: fnptr_90 not solved (54.8 s), objptr_91 not solved
+# (147.6 s). `legacy_fallback` was `not_reached` on every row of both runs, so no
+# solve is attributable to the legacy engine.
+#
+# Attempt ORDER is load-bearing and was measured, not assumed: with the technique
+# first, positives solve in 10-16 s; reached last under the default order the same
+# targets took 20-42 s. See the comment on `objptr_hijack` in
+# `supwngo/exploit/pipeline/orchestrator.py`'s FIRST_TECHNIQUES.
+#
+# WHAT THIS CORPUS DID NOT BUY
+#
+# `auth-or-out` still does not solve. `objptr_hijack` is the FIRST technique
+# attempted on it and SKIPs at ANALYSIS with a named reason -- "no win function in
+# the image and no system@plt, so there is nothing to point the hijacked pointer
+# at" -- so the decline is a measured property of the target, not starvation by
+# attempt ordering. It does recover the indirect call at `image+0x176b`, the
+# pointer member `+0x30`, the argument member `+0x20`, `PrintNote` at
+# `image+0x1219`, `authors[]` at `image+0x2030c0`, record size `0x38`, and the
+# jump-table menu at `image+0x1cfc`. Six gaps block the chain and each is a
+# numbered `UNDERIVED` note in `objptr_hijack_techniques.py`. A precise decline is
+# a different and more useful answer than a timeout, and it is what the next
+# increment starts from.

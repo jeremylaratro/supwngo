@@ -1,0 +1,19 @@
+# Protections for objptr_25_pie_leak_first -- the ONE target in this corpus
+# built PIE, and deliberately so. PIE *is* this variant's axis: with no fixed
+# image base and the arena on the stack, the address of spawn_shell cannot be
+# written until two leaks have been chained (unterminated-%s -> arena address;
+# the hijacked note pointer used as an arbitrary read -> a live code pointer ->
+# image base). Every other flag matches the rest of group (b) so that PIE is
+# the only difference.
+#
+# -fno-stack-protector  as the rest of group (b): the canary is not on the
+#                       path, and disabling it keeps it from being blamed.
+# -pie -fPIE            THE AXIS. Forces leak-first: a target that can be
+#                       solved by writing a constant address is not measuring
+#                       the capability this variant exists to measure.
+# -O0                   as the rest of group (b): the `print` member must be
+#                       reloaded from memory at the call site.
+-fno-stack-protector
+-pie
+-fPIE
+-O0
