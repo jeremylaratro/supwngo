@@ -38,6 +38,14 @@
 # executable name, so a shell that merely mentions the pattern is excluded by
 # construction, and so is this script.
 #
+# YOUR PATTERN IS STILL YOUR RESPONSIBILITY. Filtering on `comm` removes shells;
+# it does NOT tell your work apart from another project's. Measured on first use:
+# the pattern 'pytest|measure_family' matched a 12-day-old abandoned pytest from an
+# unrelated repo, which is a genuine python process and passes every check here.
+# So each match now reports its cwd, and a caller who sees a foreign cwd should
+# narrow the pattern rather than wait on someone else's job. Prefer a pattern that
+# names a path you own ('pytest tests/', 'benchmark/measure_family.py').
+#
 # Deliberately NOT a general process manager. It waits and it reports; it never
 # kills anything.
 set -uo pipefail
@@ -73,7 +81,7 @@ is_interpreter() {
 # script worked only while it had nothing to wait for. That is what the positive
 # control in this file's red-proofs exists to catch.
 count_real() {
-    local n=0 pid comm rest detail=""
+    local n=0 pid comm rest cwd detail=""
     while read -r pid rest; do
         [ -n "${pid:-}" ] || continue
         # Skip ourselves unconditionally, belt and braces alongside the comm test.
@@ -82,7 +90,15 @@ count_real() {
         [ -n "$comm" ] || continue
         if is_interpreter "$comm"; then
             n=$((n + 1))
-            detail="$detail $pid($comm)"
+            # Report the CWD, not just the pid. Filtering by `comm` removes shells
+            # but NOT unrelated projects: this script was first used with the
+            # pattern 'pytest|measure_family' and matched a 12-day-old abandoned
+            # pytest from a different repo entirely (cwd /tmp/st-r16-fix/hybrid,
+            # since deleted), which is a real python process and so passes every
+            # test above. One line of cwd makes that obvious instead of leaving the
+            # caller to assume a match is theirs. A bare count is not auditable.
+            cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || echo "?")
+            detail="$detail $pid($comm,cwd=$cwd)"
         fi
     done < <(ps -eo pid,cmd 2>/dev/null | grep -E "$PATTERN" | grep -v "await_procs.sh" || true)
     printf '%s\t%s' "$n" "$detail"
