@@ -1,0 +1,239 @@
+# Challenge-variation corpus manifest: HEAP OFF-BY-NUL -> OVERLAPPING
+# PROGRAM-OWNED RECORDS (CWE-193 -> CWE-122). Item 7 of the stage-4 gap queue
+# in docs/reference/2026-09-28-vulnerability-category-coverage.md.
+#
+# WHAT THIS CORPUS MEASURES, AND WHAT IT DOES NOT
+#
+# Measures: whether one solve capability GENERALISES across five different
+# PLACES a program can trust the same corrupted field, while the corruption
+# mechanism itself -- an inclusive bound letting n == CAP survive a clamp, and
+# the terminating NUL landing one byte past a fixed-capacity data field --
+# stays IDENTICAL. Held constant across every target (positive and control):
+#
+#   CAP = 24              the record's data-field byte capacity
+#   HDR_SZ = 16            4-byte corrupted field + 4 bytes pad + 8-byte
+#                          function pointer (`handler`), pointer always at
+#                          header offset +8
+#   record init            `memcpy(hdr_at(idx), &HDR_TEMPLATE, sizeof HDR_TEMPLATE)`
+#                          from a `static const struct hdr HDR_TEMPLATE` --
+#                          deliberately NOT a `lea <fn>; mov [obj+N],<fn>`
+#                          instruction pair (see NON-DUPLICATION below)
+#   MAX_RECS = 8, one contiguous `malloc()`ed pool, no per-record allocation
+#   the clamp               `if (n > CAP) n = CAP;` -- literal compare against
+#                          the literal constant CAP, INCLUSIVE (survives
+#                          n == CAP), present verbatim in every target
+#   the terminator          an explicit `data_at(idx)[n] = 0;` byte store
+#                          (obn_10/11/12/14/90) or a real `strcpy()` reached
+#                          past an inclusive `strlen(buf) <= CAP` check
+#                          (obn_13 only)
+#   menu shape              create/edit(set)/show/invoke(trigger), discovered
+#                          and prompt-probed at runtime by the executor, never
+#                          hardcoded to a slug
+#
+# Does NOT measure: defeating real glibc >= 2.29 chunk-metadata hardening
+# (malloc_consolidate's "invalid next size" abort). Deliberately out of scope
+# by design -- see the module docstring of heap_offbynul_techniques.py's
+# "WHAT THIS DELIBERATELY DOES NOT DO" section. Every corruption in this
+# corpus lands on a program-owned header field the TARGET wrote and the
+# TARGET later trusts, never anything ptmalloc reads.
+#
+# PROTECTIONS -- byte-identical cflags across all six targets, including the
+# control (md5 confirmed identical against obn_10's cflags at corpus-build
+# time): `-fstack-protector-all -pie -fPIE -Wl,-z,relro,-z,now -O0`.
+#   PIE: ON   canary: ON   RELRO: Full   NX: ON   (dynamic, not stripped)
+# `-O0` is load-bearing: the clamp has to stay a literal compare against a
+# literal constant for the static gate (`inclusive_bound_terminator`) to see
+# it in the disassembly: higher optimisation levels are free to constant-fold
+# or vectorise the bound check into a shape the gate's regex windows would
+# miss, which would make a positive indistinguishable from a false negative.
+#
+# THE ONE VARIABLE: WHICH FIELD THE CORRUPTED BYTE FEEDS, AND HOW IT IS
+# REACHED
+targets:
+  - slug: obn_10_len_scan_handler
+    role: positive
+    reach: >
+      the corrupted field is a `len` a multi-hop `scan()` uses to walk from
+      one record's header to the next record's header. The off-by-one's NUL
+      collapses record 0's `len` from CAP (24) to exactly 0 (a NUL write can
+      only clear bits, and 24 < 256 means the upper three bytes were already
+      zero). A crafted record 1 is then planted as a fake header at the
+      offset the corrupted-to-0 `len` makes `scan()` land on, and
+      `trigger(1)` -- called DIRECTLY on the corrupted record's own index,
+      not `trigger(0)` -- reaches the fake header's function pointer, since
+      `scan()` computes its next hop from the CURRENT record's own (possibly
+      corrupted) header field regardless of which index the walk started at.
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: obn_11_cap_resize_handler
+    role: positive
+    reach: >
+      the corrupted field is a `cap` a single-hop, realloc-style `resize()`
+      trusts to know where a record's contiguous room begins/ends. Same
+      collapse-to-0 mechanism as obn_10, but the walk is single-hop rather
+      than multi-hop -- structurally the closest variant to obn_10, kept
+      separate because a `cap` field feeding a resize path is a materially
+      different trust site than a `len` field feeding a scan path, even
+      though the executor's own move sequence (Recipe A) ends up identical
+      for both.
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: obn_12_limit_underflow_append
+    role: positive
+    reach: >
+      the corrupted field is a `limit` an `append()`'s `room = limit -
+      filled` subtracts against. Collapsing `limit` to 0 while `filled` is
+      already a legitimate positive count UNDERFLOWS the unsigned subtraction
+      to a huge value, turning a bounded append into a direct, attacker-sized
+      overwrite of the successor record's header in ONE call -- structurally
+      different from the other four (Recipe B: three creates, a leak, a FILL
+      step that establishes a nonzero `filled`, the corrupting write, then a
+      combined OVERWRITE+notify call that both plants the fake header and
+      invokes `win()` in the same call, via `invoke`'s own "notify next
+      record" side effect).
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: obn_13_strcpy_len_scan
+    role: positive
+    reach: >
+      the SAME corruption as obn_10 (a `len` a multi-hop `scan()` trusts),
+      produced by a REAL `strcpy()` reached past an inclusive `strlen(buf) <=
+      CAP` check rather than a manual clamp-then-explicit-store -- the
+      textbook shape the category is named for, and the only target whose
+      gate evidence is `strcpy-call` rather than `byte-store`. `strcpy()`
+      cannot carry an embedded NUL mid-string, so the fake header's function
+      pointer is planted using the guaranteed-zero top two bytes of any
+      canonical x86-64 user-space address (< 2**48): the payload sends only
+      the low 6 bytes of `win_addr`, strcpy's own terminator supplies byte 6,
+      and the record's still-memset-zero, never-explicitly-written tail
+      supplies byte 7 "for free".
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: obn_14_liveness_bypass_scan
+    role: positive
+    reach: >
+      the same multi-hop walk as obn_10, with an added checksum that is
+      LOGGED when it looks "off" but never wired to a `return` -- a
+      validation that observes without enforcing, deliberately included
+      because that is the shape a real codebase produces far more often than
+      a clean absence of any check at all, and an executor that only
+      recognises the "no check present" shape would miss it.
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: obn_90_neg_slack_byte
+    role: control
+    reach: >
+      the IDENTICAL off-by-one code shape as obn_10 in `set()` -- same
+      inclusive clamp, same CAP constant, same explicit `data_at(idx)[n] = 0`
+      store -- so the static gate opens on it exactly as it does on every
+      positive (a fact about the CODE, not a special-cased corpus exemption).
+      What makes it a control: `SLOT_SZ` adds ONE byte of program-owned
+      slack between the data field and the next record's header
+      (`HDR_SZ + CAP + SLACK`, `SLACK = 1`), so the overflowing NUL lands on
+      that slack byte -- read by nothing, ever -- instead of on the
+      neighbour's `len` field. `HDR_TEMPLATE.len` is seeded to `CAP + SLACK`
+      (25) rather than `CAP` (24) so ordinary multi-record walking still
+      works correctly with the slack byte present. MEASURED: the identical
+      positive-recipe attack against this binary crashes (EOFError) instead
+      of producing a shell, and record 1's `len` field is measured UNCHANGED
+      (still 25) after the corrupting write that would have zeroed it on any
+      positive.
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+
+# NON-DUPLICATION -- THE DISCRIMINATING FACT AGAINST ITS TWO NEAREST
+# NEIGHBOURS, PROVEN BY MEASUREMENT IN BOTH DIRECTIONS (2026-09-28)
+#
+# Against heap_strlen_ofb1 (`HeapStrlenOffByOneExecutor`, gate
+# `strlen_feeds_length`): that gate requires the ABSENCE of any intervening
+# cmp/test/cmov between a tainted `strlen()` result and the copy sink it
+# feeds -- an UNCLAMPED-length bug that reaches REAL glibc chunk metadata
+# (benchmark/corpus_bon). This category's gate (`inclusive_bound_terminator`)
+# requires the OPPOSITE: the PRESENCE of an inclusive-bound compare against a
+# small immediate, immediately followed by a single-byte NUL store or a
+# `strcpy()` call -- a CLAMPED-but-off-by-one bug that never touches
+# allocator metadata. A binary can satisfy at most one shape at a given code
+# site.
+#
+#   `python3 scripts/gate_sweep.py heap_strlen_ofb1_techniques \
+#       HeapStrlenOffByOneExecutor corpus_bon` with `GATE_SWEEP_ROOTS` narrowed
+#   to `benchmark/corpus_offbynul`: **gate OPEN on: 0** of the 6 offbynul
+#   ELFs (exit 2 is gate_sweep.py's own harness-sanity check failing because
+#   no `corpus_bon`-fragment ELF exists under the narrowed root -- expected,
+#   since the check was intentionally run away from its own family; the
+#   number that matters is the 0/6).
+#
+# Against heap_record_hijack (`HeapRecordHijackExecutor`, gate
+# `_publishes_handler`): that gate requires a `lea <fn>; mov [obj+N],<fn>`
+# INSTRUCTION PAIR that publishes a function pointer into a freshly allocated
+# record. Every record in this family is initialised via
+# `memcpy(hdr_at(idx), &HDR_TEMPLATE, sizeof HDR_TEMPLATE)` from a
+# `static const` global, PIE-relocated by the dynamic linker before `main()`
+# runs -- that instruction pair never appears in these images.
+#
+#   `python3 scripts/gate_sweep.py heap_techniques HeapRecordHijackExecutor \
+#       corpus_heap_variants` with `GATE_SWEEP_ROOTS` narrowed to
+#   `benchmark/corpus_offbynul`: **gate OPEN on: 0** of the 6 offbynul ELFs.
+#
+# And the reverse direction -- this category's own gate over
+# heap_record_hijack's family:
+#
+#   `python3 scripts/gate_sweep.py heap_offbynul_techniques \
+#       HeapOffByNulOverlapExecutor corpus_offbynul` with `GATE_SWEEP_ROOTS`
+#   narrowed to `benchmark/corpus_heap_variants`: **gate OPEN on: 0** of its
+#   6 ELFs.
+#
+# All three directional measurements: 0 opens. No attempt was ever made from
+# the wrong seat (is_applicable returned False in every case), so there is no
+# verified-solve question to ask from that seat either.
+#
+# WHOLE-TREE GATE SWEEP (2026-09-28,
+# `python3 scripts/gate_sweep.py heap_offbynul_techniques
+# HeapOffByNulOverlapExecutor corpus_offbynul`, default roots
+# `("benchmark", "tests/htb-targets")`): exit 0 (own family opened, not
+# broken). gate OPEN on: 8 total -- all 6 of this family, plus 2 OUTSIDE it:
+# `benchmark/corpus_offbyone/obo_13_saved_ptr_low_byte` and
+# `benchmark/corpus_offbyone/obo_14_snprintf_ret_caller_frame`. Zero raises.
+# Reported honestly rather than rounded off: this is a wider-than-own-family
+# gate (a known, accepted shape here -- "loose gates ... are explicitly
+# permitted" per this project's scope), not a claim of perfect narrowness.
+#
+# ---------------------------------------------------------------------------
+# END-TO-END THROUGH THE REAL CLI (measured 2026-09-28 with the IN-TREE
+# wiring, `python3 benchmark/measure_family.py benchmark/corpus_offbynul
+# --timeout 300 --jobs 3`)
+# ---------------------------------------------------------------------------
+#
+#   obn_10_len_scan_handler       SOLVED  verified=SHELL_ACCESS   98.6 s
+#   obn_11_cap_resize_handler     SOLVED  verified=SHELL_ACCESS   98.7 s
+#   obn_12_limit_underflow_append SOLVED  verified=SHELL_ACCESS   99.2 s
+#   obn_13_strcpy_len_scan        SOLVED  verified=SHELL_ACCESS   98.3 s
+#   obn_14_liveness_bypass_scan   SOLVED  verified=SHELL_ACCESS   98.6 s
+#   obn_90_neg_slack_byte         not solved, verified=NONE      137.3 s
+#
+# positives solved: 5/5. controls wrongly solved: 0/1. exit 0, ALL OK.
+# `--jobs 3` is the MEASURED configuration; whether a lower or higher job
+# count changes outcomes has not been tested.
+#
+# GATED BEFORE USE (2026-09-28):
+#   * slug set and directory set are IDENTICAL -- no manifest entry without a
+#     binary, no binary without an entry.
+#   * the compiler flags are byte-identical (md5-confirmed) across all six
+#     targets, including the control.
+#   * `HeapOffByNulOverlapExecutor` is registered in
+#     `build_default_registry()` and DELIBERATELY NOT added to
+#     `FIRST_TECHNIQUES` in orchestrator.py, per this category's own
+#     instructions -- attempt ordering for it falls back to the
+#     applicability-gated default rather than a priority slot.

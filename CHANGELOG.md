@@ -9,6 +9,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **New category: heap off-by-NUL → overlapping program-owned records
+  (CWE-193 → CWE-122) — `heap_offbynul_overlap`.** A `strcpy`/manual-copy
+  path writes its terminating NUL one byte past a fixed-capacity record
+  field because its bound check is inclusive (`if (n > CAP) n = CAP;` lets
+  `n == CAP` survive), and that byte lands on the low byte of the NEXT
+  record's own length/capacity-like field — never real glibc chunk
+  metadata, since every record lives inside one `malloc()`ed pool and every
+  corrupted field is a program-owned header the target wrote and later
+  trusts. The corrupted field's true value is always < 256 by construction
+  (its own byte capacity, `CAP`), so a NUL write — which can only clear
+  bits — always collapses it to exactly 0, a KNOWN post-corruption value
+  rather than a partial or ambiguous one. Five variants share the mechanism
+  and differ only in which trust site the corrupted field feeds (a
+  multi-hop `scan()`'s `len`, a single-hop `resize()`'s `cap`, an
+  `append()`'s `limit` whose corruption underflows `room = limit - filled`,
+  the same shape reached through a REAL `strcpy()` past an inclusive
+  `strlen(buf) <= CAP` check, and a walk with a logged-but-unenforced
+  liveness checksum). Two recipes cover all five, selected by a MEASURED
+  fact (whether `invoke`'s own probed prompt sequence asks for a size) —
+  never a per-slug branch. Adds `benchmark/corpus_offbynul/` (5 positives +
+  1 negative control, `cflags` byte-identical across all six),
+  `benchmark/corpus_offbynul/corpus_offbynul.yaml`,
+  `benchmark/reference_exploits/offbynul_variants_reference.py`,
+  `supwngo/exploit/pipeline/executors/heap_offbynul_techniques.py`, and
+  `tests/test_heap_offbynul_executor.py` (43 tests). Registered in
+  `build_default_registry()`; deliberately NOT added to
+  `orchestrator.py`'s `FIRST_TECHNIQUES`.
+
+  **The negative control's gate opens on purpose, and that is stated
+  rather than hidden.** `obn_90_neg_slack_byte` keeps the identical
+  off-by-one code shape in `set()` — same inclusive clamp, same constant,
+  same explicit NUL store — so the static gate
+  (`inclusive_bound_terminator`) opens on it exactly as it does on every
+  positive; a gate that special-cased the control's slug would be
+  discriminating on the corpus rather than the code. What makes it a
+  control is a runtime property invisible to any disassembly-only gate:
+  its record layout adds one byte of program-owned slack between the data
+  field and the next record's header, so the overflowing NUL lands on that
+  slack byte — read by nothing, ever — instead of on a trusted field.
+  MEASURED: the identical positive-recipe attack against this binary
+  crashes (`EOFError`) instead of producing a shell, and the neighbour's
+  corrupted field is measured unchanged post-corruption.
+
+  Measured through the real CLI (`python3 benchmark/measure_family.py
+  benchmark/corpus_offbynul --timeout 300 --jobs 3`): **5/5 positives
+  SOLVED, all credited to `heap_offbynul_overlap` with
+  `verified=SHELL_ACCESS`** — `obn_10_len_scan_handler` 98.6 s,
+  `obn_11_cap_resize_handler` 98.7 s, `obn_12_limit_underflow_append`
+  99.2 s, `obn_13_strcpy_len_scan` 98.3 s, `obn_14_liveness_bypass_scan`
+  98.6 s — and the control (`obn_90_neg_slack_byte`) **not solved**,
+  `verified=NONE`, after 137.3 s of live measurement, exit 0.
+
+  Gate sweep over the whole benchmark tree (`python3 scripts/gate_sweep.py
+  heap_offbynul_techniques HeapOffByNulOverlapExecutor corpus_offbynul`):
+  **opened on 8 — all 6 of its own family (including the control, on
+  purpose) and 2 outside it**, `benchmark/corpus_offbyone/obo_13_saved_ptr_low_byte`
+  and `benchmark/corpus_offbyone/obo_14_snprintf_ret_caller_frame`, **0
+  raised**, mean 482 ms/image, exit 0.
+
+  **Non-duplication against its two nearest neighbours, proven by
+  measurement in both directions, not merely asserted.** Against
+  `heap_strlen_ofb1` (gate `strlen_feeds_length`, requires the ABSENCE of
+  any clamp between a tainted `strlen()` and its copy sink — an
+  unclamped-length bug reaching real chunk metadata) and against
+  `heap_record_hijack` (gate `_publishes_handler`, requires a
+  `lea <fn>; mov [obj+N],<fn>` instruction pair, absent here because every
+  record is initialised via `memcpy()` from a `static const` template):
+  running each of the three gates over the other family's corpus with
+  `GATE_SWEEP_ROOTS` narrowed gives **0 opens in all three directions** —
+  this category's own gate over `corpus_heap_variants/`, and both
+  neighbours' gates over `corpus_offbynul/`.
+
+  **The oracle was proven able to go RED before being trusted.** Two
+  mutation tests in `tests/test_heap_offbynul_executor.py` degrade only the
+  gate's byte-store or strcpy-call evidence regex to a pattern that can
+  never match (WRONG-BUT-PRESENT, not removed) and assert the expected
+  targets' gates close while the target relying on the OTHER evidence path
+  stays open, proving the two detection paths are independent rather than
+  one silently covering for the other. `python3 -m pytest
+  tests/test_heap_offbynul_executor.py -q`: **43 passed**.
+
 - **New category: loop-counter overflow (CWE-190 gating CWE-787) —
   `loop_counter_overflow`.** A bounded record-copy loop guards its WHOLE
   transfer with one narrow-arithmetic size check computed up front

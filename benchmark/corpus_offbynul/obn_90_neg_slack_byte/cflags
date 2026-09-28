@@ -1,0 +1,52 @@
+# Protection flags for benchmark/corpus_offbynul/ -- the heap off-by-NUL ->
+# overlapping program-owned records family (CWE-193 -> CWE-122).
+#
+# HELD IDENTICAL ACROSS EVERY TARGET IN THIS FAMILY ON PURPOSE. The only thing
+# that varies between targets is WHICH HEADER FIELD the off-by-NUL corrupts and
+# HOW a later legitimate operation (`trigger`) trusts that field; the menu, the
+# record layout convention (header + CAP-byte data field, one contiguous pool),
+# the leak channel and the off-by-one bug in set() are byte-identical across
+# all six targets, including the negative control. A protection difference
+# would confound that measurement.
+#
+# -fstack-protector-all  canary=ON. Nothing in this category touches a return
+#                        address, so the canary must not be what stops the
+#                        exploit -- and a family that left it off would not
+#                        model the modern case.
+# -pie -fPIE             PIE=ON. Makes a code-address leak MANDATORY: win()'s
+#                        address is only known after show() has dumped a
+#                        record and disclosed its (still-default) handler
+#                        pointer.
+# -Wl,-z,relro,-z,now    RELRO=FULL. There is no GOT overwrite available in
+#                        this category at all -- the writable code pointer
+#                        this family aims at is a program-owned record's own
+#                        `handler` field on the heap, never the GOT.
+# -O0                    the family's geometry IS the measurement. The header
+#                        layout must stay exactly as written (a fixed-width
+#                        length/capacity-like field immediately followed by a
+#                        function pointer, immediately followed by a CAP-byte
+#                        data array) and the off-by-one clamp
+#                        (`if (n > CAP) n = CAP;`) must stay a literal
+#                        comparison against the literal constant CAP -- at
+#                        higher -O gcc is free to fold the clamp into the
+#                        surrounding arithmetic or reorder the struct, and the
+#                        target silently stops being in this category.
+#
+# NX is ON (default, no -z execstack).
+#
+# BUILT AND TESTED AGAINST
+# ------------------------
+#   glibc   2.35   (Ubuntu GLIBC 2.35-0ubuntu3.15)   <-- `ldd --version`
+#   gcc     11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3)
+#   kernel  6.8.0 x86-64, Ubuntu 22.04
+#
+# This category deliberately does NOT depend on any glibc allocator internals
+# -- there is no chunk header anywhere in the exploited path, so unlike
+# corpus_heap_variants/ or corpus_bon/ nothing here is version-sensitive with
+# respect to tcache/safe-linking/aligned_OK(). The only allocator call this
+# family makes at all is the single `malloc(POOL_SZ)` that creates the pool.
+-fstack-protector-all
+-pie
+-fPIE
+-Wl,-z,relro,-z,now
+-O0
