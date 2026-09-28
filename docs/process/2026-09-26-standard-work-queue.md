@@ -1325,10 +1325,20 @@ repetition *ratio* (total non-blank lines / distinct non-blank lines) and
 `tests/test_output_spin_detector.py::test_fires_on_a_multi_line_menu_block` is the
 regression guard.
 
-**Still owed:** this *diagnoses* the spin after the fact; it does not prevent the wasted
-budget or the multi-MB capture. A streaming guard that kills the run as soon as the ratio
-crosses the threshold is the actual fix, and `M-2`'s rescore will still pay the full
-timeout for each spinning target until it exists.
+**Prevented as well as diagnosed, same day.** `verify_script` no longer uses
+`subprocess.run`; `_run_script_bounded` reads incrementally, caps the capture at 4 MB,
+and re-tests the spin ratio as output arrives, abandoning the run on detection. Measured
+against `auth-or-out` driven to EOF with a **90 s** budget: abandoned in **0.6 s** with
+the correct diagnosis, a 150x saving, and the normal path is unaffected (the injection
+anchor still reaches a proven shell in 6.6 s).
+
+**Known limit, measured, not glossed:** the guard only sees output that reaches
+`verify_script`'s pipe. A generated script that buffers the target internally — e.g.
+one whose driver does a single `recvrepeat(120)` and prints at the end — defeats it, and
+that case was measured waiting out the full 120 s budget with only `script timed out` to
+show for it. So the saving applies to scripts with an incremental driver loop, which is
+most of them but not all. The residual fix is a convention for generated drivers (drain
+and flush as you go), not more detector logic.
 
 #### G-9 — no executor can express "leak first, then finish in libc"
 
