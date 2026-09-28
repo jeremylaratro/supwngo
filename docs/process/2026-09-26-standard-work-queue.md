@@ -91,14 +91,15 @@ recorded beneath it (queue rule 2). The chronological record is §6.
 |---|---|---|---|
 | 1 | `G-5` | `eintr_accumulator_rop` generalised across its variation corpus | **done** — 0/6 → 6/6, control unsolved |
 | 2 | `G-6` | `srop_symtab_pivot` generalised across its variation corpus | **in-sprint** |
-| 3 | `A-2` | survey for vuln types this tool cannot yet reach | **in-sprint** (partial, see below) |
-| 4 | `G-7a` | heap category — `bon-nie-appetit`'s class | **in-sprint** |
-| 5 | `G-7c` | unbounded `scanf`/`strtoull` scalar overwrite — `auth-or-out`'s class | **in-sprint** |
+| 3 | `A-2` | survey for vuln types this tool cannot yet reach | **done** — classification returned; 2 of 3 categories reclassified |
+| 4 | `G-7b` | `sabotage`'s class — **reclassified**: self-inflicted env/PATH hijack, not memory corruption | **in-sprint** (hand-shell proven 3/3) |
+| 5 | `G-7c` + `G-8b` | **merged** — indirect-call hijack over a custom allocator (`auth-or-out`'s real class) | **in-sprint** (hand-shell proven 3/3) |
 | 6 | `G-8a` | **new category** — predictable pseudo-random secrets | **in-sprint** |
-| 7 | `G-7b` | `sabotage`'s class (env/path/file handling) | open — awaiting `A-2` classification |
-| 8 | `G-8b` | **new category** — function-pointer / indirect-call hijack | open |
+| 7 | `G-7a` | heap off-by-one via `strlen` on an unterminated chunk — `bon-nie-appetit` | **unblocked**, awaiting a free slot (runtime found, see below) |
+| 8 | `G-9` | **new P0** — no executor can express "leak first, then finish in libc" | open — shared machinery for `G-7a`/`G-7c` |
 | 9 | `G-8c` | **new category** — injection into a subprocess sink (`system`/`popen`/`exec*`) | **done** — 5/5, control fails two ways |
-| 10 | `M-2` | full pytest + every HTB challenge + every variation corpus, re-run | open |
+| 10 | `I-16` | `verify_script`'s shell oracle credits an echo as a shell | open — P1, inflates the headline metric |
+| 11 | `M-2` | full pytest + every HTB challenge + every variation corpus, re-run | open |
 | — | `T-3` | the breadth target the whole run serves | open |
 
 **Revised ordering, and why (queue rule 4 — re-triage inline when the evidence
@@ -218,6 +219,61 @@ variation corpus holding the category constant, red-proof it both ways with a
 deterministic reference exploit, baseline, generalise, re-measure, regress the real
 target. A single-target solve does **not** close a sub-item — queue rule: the category
 is the unit.
+
+**2026-09-27 RE outcome — all three reversed, two already at a shell by hand.** The
+classification cycle did not just classify: it produced working exploits.
+
+| sub-item | target | RE result | provenance |
+|---|---|---|---|
+| `G-7b` | `sabotage` | **SHELL, 3/3** — `benchmark/reference_exploits/sabotage_env_path_reference.py` | measured |
+| `G-7c` | `auth-or-out` | **SHELL, 3/3** — `benchmark/reference_exploits/auth_or_out_objptr_reference.py` | measured |
+| `G-7a` | `bon-nie-appetit` | bug + chunk overlap + **libc leak** measured 3/3 — `benchmark/reference_exploits/bon_nie_appetit_leak_reference.py`; finisher not built | measured |
+
+Revised classifications, which are **not** what the import lists suggested:
+
+* `G-7b` `sabotage` is **not** a memory-corruption category in its payoff. It is an
+  unsigned size wrap plus an unsigned loop bound giving an unbounded heap write, whose
+  reachable sink is a `putenv`'d **heap environment string**, escalated through a
+  relative-path `system("panel")` — i.e. a PATH hijack the target performs on *itself*.
+  No leak, no ASLR dependence: every offset used is a fixed intra-heap distance (the
+  target is `0x20` above the allocation). The menu **ordering** is load-bearing — option
+  2 before option 1, or the chunk lands above everything and glibc aborts with
+  `malloc(): corrupted top size`.
+* `G-7c` `auth-or-out` is **not** the scanf/scalar path the `strtoull` import suggested.
+  It is a size wrap (`NoteSize + 1` → 0) over a **bump allocator whose arena is a local
+  array in `main`**, corrupting a live object's function pointer, which is then reached
+  by `call rax` with `rdi` fully controlled. It carries a *second* independent defect —
+  `modify_author` reads 17 bytes into `Surname[16]`, so `printf("%s")` runs off the end
+  and leaks the adjacent `Note` pointer, which is the stack leak that beats PIE. That
+  makes it the same category as `G-8b`, so the two are now **one cycle**.
+* `G-7a` `bon-nie-appetit` is a missing NUL terminator (`read` fills a chunk exactly,
+  never terminating it) so that `strlen` on it returns a length reaching into the next
+  chunk's `size` field — a strict **off-by-one**, not an arbitrary-length overflow.
+
+##### `G-7a` was reported blocked. It is not — the runtime is on this host.
+
+The RE cycle concluded `bon-nie-appetit` was "out of reach until a real `ld-2.27.so` is
+obtained", because `challenge/glibc/ld-linux-x86-64.so.2` is a **0-byte file** and the
+host runs 2.35. **Measured, this session:** a genuine glibc 2.27 loader ships inside snap
+`core18`, and it loads the target's own bundled libc:
+
+```
+/snap/core18/3084/lib/x86_64-linux-gnu/ld-2.27.so \
+  --library-path tests/htb-targets/a12c7383-.../challenge/glibc \
+  tests/htb-targets/a12c7383-.../challenge/bon-nie-appetit
+```
+
+Measured: the target starts and reaches its menu. Loader is 2.27-3ubuntu1.6+esm6 against
+the target's libc 2.27-3ubuntu1.5 — same upstream release, so the ABI matches. `docker`
+is also present as a fallback route to an 18.04 sysroot. **`G-7a` is therefore unblocked**
+and waiting only on a free agent slot, not on an acquisition.
+
+One precision note for whoever builds the finisher: `__free_hook` is **still an exported
+symbol in 2.35** (measured, `nm -D` finds it in the host libc). What changed in 2.34 is
+that the malloc path no longer *calls* it. So a capability test that greps for the symbol
+will wrongly conclude the 2.35 finisher works — the version check has to be on the glibc
+release, not on symbol presence. Measured in the target's own 2.27: `__free_hook` at
+`0x3ed8e8`, `system` at `0x4f420`.
 
 #### A-2 — survey VRv5 agents/skills for vuln types this tool cannot reach
 
@@ -1176,6 +1232,89 @@ credited. That is a per-executor workaround, not a fix — the pipeline-wide ora
 still unsound, and any future executor that bridges stdin naively will inherit the bug.
 Fix it centrally in `verify_script` rather than re-deriving the workaround.
 
+#### I-17 — four HTB challenge dirs ship a 0-byte dynamic loader
+
+| field | value |
+|---|---|
+| type | issue (fixture integrity) |
+| relevance | 3 — **downgraded after measurement**; the scored impact is one target, and it is now worked around |
+| complexity | 1 |
+| priority | P3 |
+| lane | document-and-move-on |
+| status | open (mitigated) |
+| evidence | measured, `find tests/htb-targets -name ld-linux-x86-64.so.2 -printf '%s\t%p\n'`: `0` for `a12c733e`, `a12c7359`, `a12c7382` (`sabotage`), `a12c7383` (`bon-nie-appetit`); `240936` for `a12c7380` (`rocket_blaster_xxx`) |
+| provenance | measured |
+| exit | recorded, with the per-target impact resolved (done below) |
+
+The RE cycle raised this as potentially invalidating a recorded `SOLVED`, on the grounds
+that `rocket_blaster_xxx`'s loader is "byte-identical in size to this host's". **Measured
+and resolved: it is not the host's loader.** `cmp` against
+`/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2` differs at byte 729 — same size,
+different build (bundled libc `2.35-0ubuntu3.6` vs host `2.35-0ubuntu3.15`). So
+`rocket_blaster_xxx` has a genuine bundled runtime and **its `SOLVED` is not in
+question.** Recording the resolution here rather than leaving the doubt open.
+
+Scored-target impact, target by target: `sabotage` is unaffected (bundled 2.35 matches
+the host closely enough to run, and it has been shelled). `bon-nie-appetit` *was* the
+one real casualty and is now handled via the snap `core18` 2.27 loader — see `G-7a`.
+`a12c733e` and `a12c7359` are **not among the seven scored targets** (they have no
+`organized/` symlink), so their broken loaders cost nothing; note `a12c7359` bundles
+glibc **2.39**, which this host could not run anyway.
+
+#### I-18 — every unsolved HTB target spins its menu forever on EOF, at >20k redraws/s
+
+| field | value |
+|---|---|
+| type | bug (harness robustness) |
+| relevance | 4 — it is the **measured** cause of timeouts previously attributed to a missing search budget |
+| complexity | 2 |
+| priority | P1 |
+| lane | next |
+| status | open |
+| evidence | measured over 5 s: `auth-or-out` 238,243 menu redraws, `bon-nie-appetit` 125,900, `sabotage` 109,995 |
+| provenance | measured |
+| exit | the pipeline detects an EOF spin and abandons the attempt, instead of filling a pipe until its timeout |
+
+Cause is the same shape in all three: a number reader that cannot distinguish EOF from
+`0` (`scanf("%32s")`, or `read(…,0x1f)`+`atoi`, or `fgets`+`strtol`) feeding a menu loop
+that re-displays on an out-of-range choice. At EOF the buffer stays zeroed, the parse
+yields 0, and the menu redraws forever.
+
+Two consequences, both worth acting on. It **reattributes** a recorded diagnosis:
+`auth-or-out`'s `TIMEOUT ×3 @300s` (and the 600 s retry) in
+`docs/research/2026-09-27-legacy-baseline-measured.md:100` was read as GAP-B, "no
+search-budget discipline". It is not — the process was alive and productive, printing
+menus. And it is a live hazard for any harness that reads to EOF: hundreds of MB of
+stdout for a target that is doing nothing.
+
+Related input-shape landmine, same source: `bon-nie-appetit`'s `read_num` is a raw
+31-byte `read`, so a batched "send every line at once" strategy is swallowed whole by the
+first prompt and desyncs into "Invalid option" permanently. One prompt, one send.
+
+#### G-9 — no executor can express "leak first, then finish in libc"
+
+| field | value |
+|---|---|
+| type | gap |
+| relevance | **5** — it is the shape of *every* remaining HTB target, so it gates the score more than any single technique |
+| complexity | 4 |
+| priority | P0 |
+| lane | now (next free slot after `G-7`) |
+| status | open |
+| evidence | grounded in source: `heap_techniques.py:174` `tcache_poison_got.is_applicable` returns False on `context.protections.pie` (`:189` skip reason "PIE enabled (GOT addresses not fixed)"); `heap_and_bypass.py:209,308` — `uaf` and `double_free` both require a `win_addr` symbol. All three remaining targets are PIE + Full RELRO with no `win()` |
+| provenance | measured (read at the cited lines) |
+| exit | an executor, or shared machinery, that chains: obtain a leak → resolve a base → build the finisher against the *resolved* library, with the libc release branching the choice of finisher |
+
+Every heap executor in the set assumes a world these targets are not in: fixed GOT
+addresses, or a `win()` symbol in the image. Full RELRO independently rules out the GOT
+path. The consequence is not "these techniques fail" but "there is no way to *express*
+the exploit at all", which is why the three targets read as three separate category gaps
+when they share one missing capability.
+
+Note this is a **shared-machinery** item, not a new technique: `G-7a`, `G-7c` and any
+future PIE heap target all need the same leak→resolve→finish plumbing, and the libc
+release must select the finisher (see the `__free_hook` precision note under `G-7a`).
+
 ---
 
 ## 6. Autonomous run log — 2026-09-27 onward
@@ -1194,3 +1333,8 @@ moved an item; measured numbers only, no projections.
 | 7 | 2026-09-27 | `G-5` | **closed.** `0/6 → 6/6` positives at `SHELL_ACCESS` on `benchmark/corpus_eintr`, control gate-applicable but FAILED, `ancient_interface` unregressed (13.5 s). The baseline includes the anchor at **0**, so the executor had stopped working on a rebuild of the very target it was written for — one gcc's sign-extension order was load-bearing. Cost logged as `I-15` (out-of-band signal delivery ⇒ local-only). |
 | 8 | 2026-09-27 | `G-8c` | orchestrator took the subprocess-injection category directly (6 targets built: anchor `system()`, `popen()`, hand-rolled `execl /bin/sh -c`, a blocklist with a command-substitution gap, a mid-pipeline injection position, and an `execv`-argv control). First **non-memory-safety** category in the set; its `cflags` deliberately enable the full modern protection set to make the point that none of them apply. |
 | 9 | 2026-09-27 | `G-8c`, `I-16` | **closed, and it surfaced a tool bug worth more than the category.** Executor `subprocess_injection`: 5/5 positives at `SHELL_ACCESS` in 4.6 s each; control rejected by the gate AND failed when forced through all 14 rungs. On all five, the *first* rung tried was the winning one, so the derivations (command template + suffix, the reject set read from `.rodata`, decoder presence) did the work rather than the retries. Along the way, **measured** that `verify_script`'s `echo <token>` oracle reports SHELL_ACCESS on a target with no shell at all whenever the target echoes its input → filed as `I-16`, priority P1, because it inflates the run's headline metric. |
+| 10 | 2026-09-27 | `G-7a`/`G-7b`/`G-7c` | **the RE cycle produced exploits, not just classifications.** `sabotage` and `auth-or-out` both at a real **shell, 3/3 reps**, by hand; `bon-nie-appetit`'s bug, chunk overlap and libc leak all measured 3/3. Two of the three classifications were **wrong** in the import-list reading: `sabotage`'s payoff is an environment/PATH hijack it performs on itself (no leak, no ASLR dependence), and `auth-or-out` is an indirect-call hijack over a stack-resident bump allocator, not a scanf/scalar bug — so `G-7c` and `G-8b` were merged into one cycle. All three exploits preserved under `benchmark/reference_exploits/` before `/tmp` could be cleaned. |
+| 11 | 2026-09-27 | `I-17` | two claims from the RE cycle **checked and corrected.** `rocket_blaster_xxx`'s bundled loader is NOT the host's — same size, differs at byte 729, bundled libc `2.35-0ubuntu3.6` vs host `2.35-0ubuntu3.15` — so its recorded `SOLVED` stands and the doubt is closed rather than left open. And of the four 0-byte loaders, two belong to directories that are not scored targets at all. |
+| 12 | 2026-09-27 | `G-7a` | **unblocked.** The RE cycle declared `bon-nie-appetit` out of reach pending acquisition of a real `ld-2.27.so`. Measured: snap `core18` ships one (`2.27-3ubuntu1.6+esm6`), and it loads the target's own bundled libc `2.27-3ubuntu1.5` — the target starts and reaches its menu. `__free_hook` is at `0x3ed8e8` in that libc. Also recorded: `__free_hook` is still an exported *symbol* in 2.35, so a grep-for-symbol capability test would wrongly pass — branch on the glibc release instead. |
+| 13 | 2026-09-27 | `G-9` | new P0 filed: no executor can express "leak first, then finish in libc", which is the shape of all three remaining targets. Grounded at `heap_techniques.py:174/189` (refuses PIE) and `heap_and_bypass.py:209/308` (require a `win_addr` that none of these targets has). Filed as shared machinery, not a technique, because `G-7a`/`G-7c` need the same plumbing. |
+| 14 | 2026-09-27 | `I-18` | `auth-or-out`'s recorded `TIMEOUT ×3 @300s` **reattributed**: not GAP-B search-budget indiscipline. All three targets spin their menu forever on EOF (238,243 / 125,900 / 109,995 redraws in 5 s) because their number readers cannot tell EOF from `0`. The process was alive and printing the whole time. |
