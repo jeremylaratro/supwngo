@@ -173,6 +173,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it does not provide — otherwise the reader is sent hunting a number that does not
   exist.
 
+  - `scanf_scalar` (`supwngo/exploit/walkthrough/families/scanf_scalar.py`, score
+    `0.93`) — seven steps that teach the inversion the category turns on: find the
+    READ the missing bound gives you before looking at the write, because on a
+    canary + PIE + Full RELRO target the write is useless until the canary (to
+    replay) and the PIE base (to aim at) are known, and both come out of the same
+    defect. Verified to select on **6/6** positives in `benchmark/corpus_scanf/`
+    with **four distinct write shapes derived** — `fnptr`, `len_rip`,
+    `bound_then_read`, `index_store` — so the narrative is a function of the
+    binary. The control declines and keeps `stack_bof`.
+
+    Scored above `stack_bof`'s `0.75` for a specific reason: `stack_bof` was
+    *applicable* on these targets and therefore winning, and the route it teaches
+    cannot work — a cyclic pattern walking up through the frame destroys the
+    canary, so every wrong offset crashes identically and the offset hunt teaches
+    nothing. A followable wrong walkthrough, not an absent one.
+
   Also runnable 0-to-pwn templates under `benchmark/walkthrough/prng/` (six
   per-slug scripts plus `control_resists.py`) and `benchmark/walkthrough/scanf/`
   (three scripts). The PRNG control contrast is measured: the anchor solves on
@@ -185,6 +201,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is that entry.
 
 ### Fixed
+
+- **`supwngo explain` raised instead of rendering on three families' targets**
+  (`I-23`). `subprocess_injection`, `weak_prng` and `scanf_scalar` each pasted
+  shell transcripts into `Step.code`:
+
+  ```
+  $ objdump -R prng_10_time_seed_token | grep -E "rand|random"
+  ```
+
+  `Step.code` is emitted **verbatim as a Python function body**, so that is a
+  `SyntaxError`, `render_script` refused the whole walkthrough, and `explain`
+  raised on every target those families claimed. Two of the three were already
+  released.
+
+  The walkthrough suite was **396 passed** throughout. That is the defect worth
+  recording: a family can be selected, scored and route-swept without anything
+  ever *rendering* its script, so the tests asserted the right family won and never
+  that the artifact was usable.
+
+  Fixed with `common.shell_transcript()`, which **runs** each command rather than
+  commenting it out — a commented command turns a runnable step into prose, which
+  would have satisfied the parser while quietly removing the teaching. Gated by
+  `tests/test_walkthrough_render_all.py`: all **66** corpus binaries now render and
+  `ast.parse`, with a WRONG-BUT-PRESENT red-proof (a plausible authored shell block
+  must make the gate fail) **and** its paired positive (the same block through the
+  helper must pass), so "rejects everything" cannot masquerade as "catches the
+  defect".
 
 - Three narrowly-gated techniques were reached too late to be reached at all.
   `subprocess_injection`, `weak_prng_replay` and `scanf_scalar_overwrite` were
