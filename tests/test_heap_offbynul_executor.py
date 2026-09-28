@@ -169,18 +169,47 @@ def test_registered_under_its_own_class():
     assert isinstance(matches[0], HeapOffByNulOverlapExecutor)
 
 
-def test_not_added_to_first_techniques():
-    """Explicit instruction for this category: registered, but not prioritised.
+def test_seated_immediately_behind_the_narrower_heap_gate():
+    """DECISION REVERSED 2026-09-28, by measurement. This test asserted the
+    opposite until then, and the reversal is recorded here rather than by
+    deleting the test.
 
-    Attempt ordering for `heap_offbynul_overlap` falls back to the
-    applicability-gated default rather than a `FIRST_TECHNIQUES` priority
-    slot. A future edit that adds it there would be a scope change this test
-    is meant to catch.
+    The original instruction for this category was "registered, but not
+    prioritised", and this test pinned `heap_offbynul_overlap` OUT of
+    `FIRST_TECHNIQUES`. Then the two justifications for a seat were actually
+    measured:
+
+        forced (`--strategy`, the technique's own cost)   15.8 s
+        unordered, via the applicability tail            98.3-99.2 s
+        seated                                           17.2 s
+
+    ~83 s per target was time spent failing through earlier gates -- the same
+    order as the savings that justified `type_confusion_tag` (108.8 -> 25.9 s)
+    and `heap_record_hijack` (105.6 -> 20.5 s). Attribution needed nothing:
+    unordered, all five positives were already credited correctly with 0
+    misattributed. So the seat was granted for SPEED alone.
+
+    That the same test run also DENIED `loop_counter_overflow` a seat (forced
+    5.09 s vs unordered 9.4 s, a ~4.3 s saving) is what makes this a decision
+    rather than a default.
+
+    POSITION is asserted, not just membership. The seat sits immediately behind
+    `heap_strlen_ofb1`, the narrower of the two heap off-by-one gates, and that
+    order is load-bearing: this gate also opens on two `corpus_offbyone` images,
+    so seating it AHEAD of the narrower gate is what would start stealing
+    attribution from `off_by_one_guard`.
     """
     from supwngo.exploit.pipeline.orchestrator import FIRST_TECHNIQUES
 
     assert len(FIRST_TECHNIQUES) > 10  # the list itself is not empty/broken
-    assert "heap_offbynul_overlap" not in FIRST_TECHNIQUES
+    assert "heap_offbynul_overlap" in FIRST_TECHNIQUES
+    assert "heap_strlen_ofb1" in FIRST_TECHNIQUES
+    assert FIRST_TECHNIQUES.index("heap_offbynul_overlap") == (
+        FIRST_TECHNIQUES.index("heap_strlen_ofb1") + 1
+    ), "the seat must stay immediately behind the narrower heap off-by-one gate"
+    # No duplicates: a second entry would be reached only once but would make
+    # the ordering rationale above unreadable.
+    assert len(FIRST_TECHNIQUES) == len(set(FIRST_TECHNIQUES))
 
 
 # ---------------------------------------------------------------------------

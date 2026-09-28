@@ -68,9 +68,16 @@ def _make_fake_engine_class(*, successful):
     fallback's guard condition true, `True` to force it false."""
 
     class _FakeEngine:
+        # `**kwargs` rather than an enumerated mirror of the real constructor's
+        # signature. Enumerating it made these four tests fail the moment
+        # `solve` began forwarding `win=`/`ret2=`/`rop=`, with a TypeError about
+        # an unexpected keyword -- a failure that says nothing about the legacy
+        # fallback these tests exist to pin. The double only needs to ACCEPT
+        # whatever `solve` passes; it asserts nothing about the arguments, so
+        # mirroring them buys a maintenance tax and no coverage.
         def __init__(self, bin_obj, timeout=None, libc_path=None, strategy=None,
                      force_all=None, input_vector=None, input_name=None,
-                     input_argv=None):
+                     input_argv=None, **kwargs):
             self.context = _FakeContext()
             self.successful = False
             self.technique_used = None
