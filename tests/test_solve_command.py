@@ -154,6 +154,13 @@ def _compile(source: str, out_path: Path, extra_flags=()) -> None:
     )
 
 
+#: Wall-clock cap for a full-ladder `solve` subprocess. Grows with the ladder, so
+#: it is a measured number, not a guess -- see `_run_solve`'s docstring. Last
+#: measured 2026-09-28: an expected-to-fail solve on the hard-offset fixture costs
+#: 103.0 s, so this is ~3x headroom.
+_SOLVE_WALL_BUDGET = 300
+
+
 def _run_solve(*args: str, input_text: str = "") -> subprocess.CompletedProcess:
     """Drive `solve` via a REAL subprocess (`python3 -m supwngo.cli solve
     ...`), not `click.testing.CliRunner`. `CliRunner` replaces
@@ -167,11 +174,53 @@ def _run_solve(*args: str, input_text: str = "") -> subprocess.CompletedProcess:
     not a `solve` bug). A real subprocess gives pwntools genuine
     (pipe-backed, `fileno()`-capable) stdio, matching how `solve` is
     actually invoked and matching the manual verification in this
-    branch's final report."""
-    return subprocess.run(
-        ["python3", "-m", "supwngo.cli", "solve", *args],
-        input=input_text, capture_output=True, text=True, timeout=90,
-    )
+    branch's final report.
+
+    ON THE WALL BUDGET -- this is what `I-14` actually was
+
+    This helper deliberately passes NO `--timeout`, so every technique in the
+    ladder gets its default budget and the wall time grows with the LADDER, not
+    with the binary. That is the structural difference between this call site and
+    the other tests that drive the same CLI as a subprocess:
+    `tests/test_cli_autopwn_json_wiring.py` passes `--timeout 3`, so the CLI's own
+    per-technique governor bounds it and its 60 s cap stays safe at any ladder
+    length. Nothing bounds this one.
+
+    `FIRST_TECHNIQUES` has grown to 28 ordered names plus an unordered tail, and
+    the FIRST step of `test_guided_fallback_resumes_to_success_with_supplied_offset`
+    is an expected-to-FAIL solve -- which by definition walks the whole ladder
+    before it can report the offset as a blocking unknown. Measured 2026-09-28 on
+    a quiet host: that plain run takes **103.0 s** wall and exits 1 with exactly
+    the message the test asserts. The old 90 s cap therefore converted a passing
+    assertion into `subprocess.TimeoutExpired`, deterministically -- which is why
+    it kept failing on an idle machine and was mistaken for a load artifact.
+
+    300 s is ~3x the measured cost and matches the budget the walkthrough
+    subprocess tests already use. Raising the cap is the whole fix; the assertions
+    below were never wrong, they just never got to run."""
+    try:
+        return subprocess.run(
+            ["python3", "-m", "supwngo.cli", "solve", *args],
+            input=input_text, capture_output=True, text=True,
+            timeout=_SOLVE_WALL_BUDGET,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # A bare TimeoutExpired is what made `I-14` expensive: it says nothing
+        # about WHY, so it reads as a hang in `solve` rather than as a budget the
+        # ladder outgrew. Name the mechanism at the point of failure so the next
+        # occurrence costs one read instead of a fresh measurement.
+        raise AssertionError(
+            f"`solve` exceeded this helper's {_SOLVE_WALL_BUDGET}s wall budget. "
+            f"This helper passes no `--timeout`, so its cost scales with the "
+            f"LENGTH OF THE TECHNIQUE LADDER, and an expected-to-fail solve walks "
+            f"all of it. If a vulnerability category landed recently, that cost "
+            f"is the likely cause and not a hang: re-measure with "
+            f"`time python3 -m supwngo.cli solve <target>` and raise "
+            f"_SOLVE_WALL_BUDGET to ~3x the measured value, recording the number "
+            f"next to it. Do NOT add `--timeout` to silence this -- that changes "
+            f"the per-technique budget and so changes what these tests verify.\n"
+            f"args: {args!r}"
+        ) from exc
 
 
 @pytest.mark.skipif(not GCC_AVAILABLE, reason="gcc not available")

@@ -28,6 +28,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`I-14` was a test budget the technique ladder outgrew, not a defect in `solve`.**
+  `tests/test_solve_command.py`'s `_run_solve` helper passes no `--timeout`, so its
+  wall cost scales with the LENGTH OF THE LADDER — and the first step of
+  `test_guided_fallback_resumes_to_success_with_supplied_offset` is an
+  expected-to-*fail* solve, which by construction walks the whole ladder before it
+  can report the offset as a blocking unknown. With `FIRST_TECHNIQUES` at 28 ordered
+  names plus an unordered tail, that run costs **103.0 s** (measured, quiet host) and
+  exits 1 with exactly the message the test asserts, against a **90 s** cap. So every
+  vulnerability category added over the last rounds was pushing this test toward
+  failure, and its assertions were never wrong — they stopped getting to run. The
+  budget is now a named `_SOLVE_WALL_BUDGET = 300` (~3x measured, matching what the
+  walkthrough subprocess tests already use) and the test passes in 212.9 s. The
+  neighbouring subprocess tests in `test_cli_autopwn_json_wiring.py` were never
+  affected because they pass `--timeout 3`, letting the CLI's own per-technique
+  governor bound them at any ladder length. A timeout here also no longer surfaces as
+  a bare `TimeoutExpired` — which is what made this expensive to diagnose, since it
+  reads as a hang in `solve` — but as an assertion naming the mechanism and telling
+  the next reader to re-measure rather than add `--timeout`, which would silence it by
+  changing what the test verifies.
+
 - **`objptr_hijack`'s walkthrough no longer claims a dispatch-table site it cannot
   teach.** Adding `benchmark/corpus_finiarray/` gave the family a target whose
   indirect call really does run through `.init_array`, so every earlier gate
