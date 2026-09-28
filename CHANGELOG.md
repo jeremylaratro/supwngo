@@ -9,6 +9,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The teaching half of three categories that could only be solved, never
+  explained** — walkthrough families for `off_by_one_guard`, `fini_array_write`
+  and `alloc_size_overflow`. All three shipped working pipeline executors with no
+  family behind them, so the one thing `supwngo explain` exists for was missing on
+  targets the pipeline already solves. MEASURED by re-running selection with the
+  three new families excluded: `corpus_finiarray` and `corpus_offbyone` fell to
+  `triage` (0.15) while probing and `corpus_allocsize` fell to `heap` (0.25); with
+  `--no-probe` all three fell to `stack_bof`'s `ret2win` (0.75). 0.75 is the floor
+  they had to clear and the reason they had to: a cyclic-pattern return-address
+  hunt is the wrong lesson for all three, and it is *followable*, so a reader
+  spends real time on it before discovering it explains nothing. Scores are
+  `fini_array_write` **0.86**, `alloc_size_overflow` **0.84**,
+  `off_by_one_guard` **0.83** — deliberately BELOW `objptr_hijack`'s 0.87 rather
+  than in the free slots above it, because a family scoring higher would reach
+  into `corpus_objptr` on images where both gates open, which is the direction of
+  the `for k in ():` regression fixed above. Distinct by invariant, not by
+  convention: `max()` keeps the first maximum, so a tie would hand a target to
+  whichever family sits earlier in the registry list.
+  What each one teaches is a measured route fact, not a restatement of the
+  category name. `fini_array_write` computes runtime writability as **`PF_W`
+  `PT_LOAD` minus `PT_GNU_RELRO`**, because the section header's `WA` flag lies —
+  on this host (gcc 11.4.0, ld 2.38) Partial RELRO does **not** leave
+  `.fini_array` writable, and on `fini_14` `.fini_array` at `0x403d98` carries
+  `WA` while sitting inside `PT_GNU_RELRO` `[0x403d90, 0x404000)`, whereas the
+  table actually chosen (`plugin_hooks` at `0x404080`) is past the RELRO end. It
+  also teaches walk order, since glibc's `call_fini()` walks `.fini_array`
+  **backwards**: candidate order is `[3, 2, 1, 0]` on `fini_11`'s four-entry
+  table but forward `[0, 1, 2]` on `fini_12`, whose reload path walks
+  `.init_array` itself. `alloc_size_overflow` teaches the **narrowing** window
+  first and drops the width windows, so the count it hands the reader is the one
+  that wraps; it recovers the checked-multiply guard from
+  `movabs rdx, 0xfffffffffffffff; cmp rax, rdx`, which an immediate-only scan
+  misses entirely (making a guarded image look unguarded), and it applies a
+  `C >= W - 1` floor so a transfer clamp such as `if (want > 0x100) want = 0x100`
+  is not mistaken for an overflow check it never was. `off_by_one_guard` routes on
+  **where the extra byte lands**, at `-(X - N)(%rbp)`, with all three numbers in
+  the prose, across four shapes and four distinct steps.
+  **The saved-RBP pivot is presented as probabilistic, because it is.**
+  `arch_align_stack` re-randomises the saved frame pointer's low byte per exec and
+  an already-256-aligned one makes the one-byte write a no-op, capping any single
+  attempt at **15/16**; the walkthrough states that ceiling and names the
+  mechanism, while the three deterministic routes are required not to quote it.
+  Declining is a first-class outcome here: each family refuses its corpus's
+  negative control with a reason naming its own missing fact — `PT_GNU_RELRO`
+  covering every reached table (while stating the write primitive *is* present),
+  a wrap of `1152921504606846976` closed by a comparison against
+  `0xfffffffffffffff`, and an *exclusive* bound that is the corrected form —
+  rather than borrowing a neighbouring gate's sentence.
+  156 new tests (`tests/test_walkthrough_fini_array.py` 40,
+  `tests/test_walkthrough_alloc_size.py` 52,
+  `tests/test_walkthrough_off_by_one.py` 64). **308 passed** measured for
+  `pytest tests/test_walkthrough_scores.py tests/test_walkthrough_render_all.py`
+  plus the three new files. Every test asserts its own premise is still live — a
+  "no empty candidate loop" test also asserts the candidate set is non-empty and
+  the shape is still the shape under test — and **10 new gates were red-proved by
+  mutating each to wrong-but-present**, not merely absent, which is how two tests
+  that passed under a real mutation were found and replaced.
+
 - **`scripts/await_procs.sh` — a wait-for-processes helper that cannot match itself.**
   Two related traps have now cost this project five separate incidents.
   `pgrep -f "pytest tests/ -k"` matches full command lines, including the waiter
