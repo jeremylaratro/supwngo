@@ -259,6 +259,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Script verification poisoned its own interpreter on every target shipping an
+  older glibc** (`I-26`). `PipelineVerifier.verify_script` runs
+  `[sys.executable, script]` under the environment `Binary.libc_env()` builds for
+  the **target**, which sets `LD_LIBRARY_PATH=<challenge>/glibc` so the target
+  loads the libc it was compiled against. Correct for the target; fatal for the
+  interpreter, which then cannot start:
+
+  ```
+  LD_LIBRARY_PATH=<challenge>/glibc python3 -c pass
+  -> python3: symbol lookup error: .../glibc/libc.so.6:
+     undefined symbol: __tunable_is_initialized, version GLIBC_PRIVATE
+  ```
+
+  The only symptom reaching a caller was `script exited rc=127`, which reads as
+  "the exploit failed". Measured on this tree: of the five HTB challenges shipping
+  a `glibc/`, the two at **2.27 and 2.39 poison the interpreter** while the three
+  at **2.35 do not** — so the bug was silent, target-dependent, and looked exactly
+  like a broken exploit rather than a broken harness.
+
+  `_interpreter_safe_env` now **probes** the interpreter under the target's env and
+  strips `LD_LIBRARY_PATH`/`LD_PRELOAD` only when it genuinely cannot start.
+  Stripping unconditionally was rejected on measurement, not taste: pwntools'
+  `process` hands `os.environ` to the child, so every target that works today *by*
+  inheriting its shipped libc would have broken. Stripped values are republished as
+  `SUPWNGO_TARGET_LD_LIBRARY_PATH` / `SUPWNGO_TARGET_LD_PRELOAD`, and the emitted
+  note states the consequence rather than just the action — a script that relied on
+  inheritance now runs the target against the **host** libc and must read the
+  republished variable.
+
+  Proven by a paired measurement through the real `verify_script`, same verifier,
+  same script, same poisoned env, only the fix toggled:
+
+  | arm | level | note |
+  |---|---|---|
+  | fix disabled | `NONE` | `script exited rc=127` |
+  | fix enabled | `SHELL_ACCESS` | `LOADER ENV: dropped LD_LIBRARY_PATH …` |
+
+  Stated honestly: the probe script in that measurement is deliberately
+  echo-shaped, so `SHELL_ACCESS` there proves only that the interpreter *ran* — it
+  is not evidence of a real shell. Gated by `tests/test_verifier_loader_env.py`,
+  which red-proofs **four** ways, each WRONG-but-present rather than absent: the
+  defect restored (never strips), stripping unconditionally (probe ignored),
+  republishing an empty value, and a note that states the action but omits the
+  consequence. Each mutation fails exactly the one test that owns it. The harmless
+  case is asserted as its own control, because without it "strips everything" would
+  have passed as "fixes the bug".
+
 - **`supwngo explain` raised instead of rendering on three families' targets**
   (`I-23`). `subprocess_injection`, `weak_prng` and `scanf_scalar` each pasted
   shell transcripts into `Step.code`:
