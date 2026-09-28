@@ -45,7 +45,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `C >= W - 1` floor so a transfer clamp such as `if (want > 0x100) want = 0x100`
   is not mistaken for an overflow check it never was. `off_by_one_guard` routes on
   **where the extra byte lands**, at `-(X - N)(%rbp)`, with all three numbers in
-  the prose, across four shapes and four distinct steps.
+  the prose, across four shapes and four distinct steps. It also reaches a
+  round-1 target that had been abstaining since the corpus was built:
+  `benchmark/corpus/13_off_by_one` routed to `triage` at 0.15 because its single
+  overwritten byte was claimed by nothing, and now routes to `off_by_one_guard`
+  at **0.83** (MEASURED — it surfaced as a red
+  `tests/test_walkthrough_route_sweep.py` pin, which is that sweep working: a
+  capability arriving looks exactly like a regression until you read which way
+  the score moved).
   **The saved-RBP pivot is presented as probabilistic, because it is.**
   `arch_align_stack` re-randomises the saved frame pointer's low byte per exec and
   an already-256-aligned one makes the one-byte write a no-op, capping any single

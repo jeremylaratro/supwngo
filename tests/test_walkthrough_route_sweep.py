@@ -40,18 +40,26 @@ CORPUS = Path(__file__).resolve().parent.parent / "benchmark" / "corpus"
 #: as measured after consolidating the ``fmtstr`` and ``integer`` families onto
 #: the walkthrough engine.
 #:
-#: The three ``triage`` entries are not filler -- they are the abstention design
-#: working.  04 (canary leak) and 08 (ret2dlresolve) have no family yet; 13 is an
-#: off-by-one whose single overwritten byte no shipped family claims.  Each is a
-#: target a family could plausibly capture by accident, which is exactly why
-#: they are pinned.
+#: The two remaining ``triage`` entries are not filler -- they are the abstention
+#: design working.  04 (canary leak) and 08 (ret2dlresolve) have no family yet.
+#: Each is a target a family could plausibly capture by accident, which is
+#: exactly why they are pinned.
 #:
-#: 11 and 12 moved from ``triage`` to ``heap`` when the heap family landed, and
-#: they are the only two entries that moved.  That is the whole point of pinning
-#: all fifteen: a detection-only family scoring 0.25 sits just above the triage
-#: floor, so the risk it carries is not that it loses -- it is that it quietly
-#: outbids a *real* technique on some target that merely calls ``malloc``.  The
-#: thirteen unmoved rows are the evidence it did not.
+#: Three entries have moved off ``triage``, each time because a family that
+#: genuinely owns the target landed.  11 and 12 moved to ``heap``; **13 moved to
+#: ``off_by_one_guard`` on 2026-09-28** at 0.83, when the off-by-one walkthrough
+#: family shipped -- until then its single overwritten byte was claimed by
+#: nothing and it sat on the 0.15 triage floor.  That move is the pin doing its
+#: job in the direction that matters least dramatically and most often: it
+#: FAILED the suite, and the failure was a capability arriving rather than a
+#: regression.  Read a change here that way first, then check it is not a family
+#: outbidding a better one.
+#:
+#: That is the whole point of pinning all fifteen: a detection-only family
+#: scoring 0.25 sits just above the triage floor, so the risk it carries is not
+#: that it loses -- it is that it quietly outbids a *real* technique on some
+#: target that merely calls ``malloc``.  The unmoved rows are the evidence it did
+#: not.
 EXPECTED: dict[str, tuple[str, str]] = {
     "01_shellcode_stack": ("shellcode_stack", "stack_bof"),
     "02_ret2plt_system": ("ret2plt_system", "rop_chain"),
@@ -65,7 +73,7 @@ EXPECTED: dict[str, tuple[str, str]] = {
     "10_int_overflow": ("int_overflow", "integer"),
     "11_heap_uaf_leak": ("heap_uaf_leak", "heap"),
     "12_heap_tcache_poison": ("heap_tcache_poison", "heap"),
-    "13_off_by_one": ("off_by_one", "triage"),
+    "13_off_by_one": ("off_by_one", "off_by_one_guard"),
     "14_negative_index": ("negative_index", "integer"),
     "15_win_function": ("win_function", "stack_bof"),
 }
@@ -73,6 +81,13 @@ EXPECTED: dict[str, tuple[str, str]] = {
 #: A substring of the route name each target must select, where the family alone
 #: is not specific enough.  ``rop_chain`` owns two routes and ``stack_bof`` two,
 #: so a change that swapped ret2shellcode for ret2win would otherwise pass.
+#:
+#: 13 is pinned here even though ``off_by_one_guard`` currently declares exactly
+#: one route, which is a deliberate departure from "only where the family alone
+#: is ambiguous".  A single-route family is the case where the family assertion is
+#: *temporarily* equivalent to the route assertion, so the pin costs nothing today
+#: and is the only thing that would notice a second route silently taking the
+#: target later.
 EXPECTED_ROUTE_SUBSTRING: dict[str, str] = {
     "01_shellcode_stack": "ret2shellcode",
     "02_ret2plt_system": "ret2plt",
@@ -82,6 +97,7 @@ EXPECTED_ROUTE_SUBSTRING: dict[str, str] = {
     "07_ret2libc_leak": "ret2libc",
     "09_srop": "SROP",
     "10_int_overflow": "truncation",
+    "13_off_by_one": "one byte the inclusive bound admits",
     "14_negative_index": "negative index",
     "15_win_function": "ret2win",
 }
