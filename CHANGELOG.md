@@ -60,6 +60,105 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   binaries it opens on 4, all of them its own, capturing nothing outside the family
   and raising nowhere.
 
+- New shape `menu_libc` inside the existing `objptr_hijack` technique: an
+  indirect-call (function-pointer) hijack on a record manager whose image carries
+  **no win function and no `system@plt`**, so the call target has to be resolved
+  in **libc** from a leak. No registry or ordering change — `ObjPtrHijackExecutor`
+  (`name = "objptr_hijack"`) was already registered and already 5th in
+  `FIRST_TECHNIQUES`; the four pre-existing shapes (`single_read`, `table_index`,
+  `menu`, `menu_leak`) take unchanged code paths.
+
+  **This bought the seventh HTB solve.** `auth-or-out` now SOLVED through the
+  sanctioned harness — `scripts/htb_rescore.py --reps 3 --timeout 300`: **3/3**
+  reps `level=SHELL_ACCESS technique=objptr_hijack` at 23.4 / 23.5 / 23.4 s.
+  HTB moves **5/7 → 7/7** (`benchmark/results_htb/full-rescore-FINAL-20260928.json`).
+
+  Six capabilities the executor did not have, each a numbered `UNDERIVED` note,
+  now closed (or closed in part — said so at the note):
+
+  | was UNDERIVED | now |
+  |---|---|
+  | libc call target (note 4) | the image's own `R_X86_64_COPY` relocations name a .bss slot holding a libc pointer; the pointee is named from **libc's own** `R_X86_64_64` relocation, not a table kept here; libc base validated page-aligned |
+  | jump-table menu whose op bodies are called functions (note 6) | `find_menu_ops` = 4-byte-relative/8-byte-absolute tables **plus** `cmpq $N,-0x8(%rbp)`/`jne` chains, tolerating `notrack`/`bnd` |
+  | members object-relative only through a frame slot (note 7) | subtracted only after proving the slot is **fed by a table load**, and proven **per function** |
+  | create and allocate as one operation (note 4/5 analysis half) | the op that installs the callback into the called member *is* the create op; its constant-size call gives the record stride |
+  | no free/delete in the driver (note 5) | the op that NULLs an object-table slot is the delete op; the driver deletes before every wrapping create |
+  | recycled block's arena offset (note 5) | **measured at runtime**, `PREFIX = (note_victim - RECORD_SIZE) - recycled`, from two leaks and one image constant |
+
+  New corpus `benchmark/corpus_objptr_libc/` (6 positives, 3 controls), measured
+  through the real `autopwn` CLI with the baseline taken the attributable way —
+  same harness, same corpus, only the new route disabled by an **out-of-tree**
+  `sitecustomize.py` that monkeypatches `build_libc_plan` (chosen over
+  unregistering the executor, which would also have removed the four pre-existing
+  shapes and made a zero unattributable):
+
+  | arm | positives | controls | per-target |
+  |---|---|---|---|
+  | libc route disabled (shim) | **0/6** | 3/3 declined | 313–315 s, budget exhausted |
+  | final | **6/6** `SHELL_ACCESS` | 3/3 declined | 10.8–11.5 s |
+
+  **The front position is load-bearing and measured, not assumed.** With
+  `objptr_hijack` still registered but removed from `FIRST_TECHNIQUES`,
+  `auth-or-out` exhausts its 300 s budget having attempted **7** techniques, all
+  SKIPPED at applicability, and `objptr_hijack` is **never reached** —
+  `success=false`. Ordered, it solves in 23.4 s.
+
+  Two traps recorded because both looked green:
+
+  * The first version subtracted the **call site's** frame-slot displacement from
+    member offsets measured in **other functions'** bodies. That is correct only
+    when every operation shares a frame layout — true of `auth-or-out` and of the
+    corpus anchor, false for `reclibc_32_table_call_site` (call site straight off
+    the table, op bodies through a slot), where every member came out `0x10` low
+    with no error raised anywhere. Fixed by `object_slots`, which proves the slot
+    per function.
+  * The first baseline arm passed the shim on a **relative** PYTHONPATH.
+    `measure_family.py` runs each target with `cwd` set to the target's directory,
+    so the entry resolved to nothing, `sitecustomize` was never imported, and the
+    "baseline" silently re-measured the final arm and agreed with it (6/6). The arm
+    is only trustworthy with a positive control first: one target run from its own
+    directory must report `success=false` before the family is measured.
+
+  Controls keep the surrounding bug and remove one link, so an oracle that credits
+  a leak, a crash, or an echo wrongly solves them: `_90` keeps the leak op but
+  bounds its read so a NUL fits (no address leak), `_91` keeps everything but names
+  no libc stream (no `R_X86_64_COPY`, so the image carries no libc address of its
+  own), `_92` keeps the allocator and the size wrap but has no delete op (no freed
+  block below a live record).
+
+  No regression: `benchmark/corpus_objptr` re-measured **10/10** positives
+  `SHELL_ACCESS` (9.1–14.9 s) with both controls declined.
+
+- **TOCTOU file races as a category** — `ToctouPathRaceExecutor`
+  (`toctou_path_race`), `benchmark/corpus_toctou/` (6 targets), and
+  `benchmark/reference_exploits/toctou_variants_reference.py`. The third
+  non-memory-safety route after `subprocess_injection` and `weak_prng_replay`, and
+  the first whose payoff is a **file the target is raced into reading** rather than
+  redirected control flow.
+
+  Orthogonality to the mitigations is demonstrated rather than claimed: every target
+  is **PIE + canary + NX + Full RELRO** (measured off the built images, not read out
+  of `cflags`, which is byte-identical across all six) and all five positives are
+  solved, because the entire payload is a filename plus a symlink. The one varied
+  axis is which `(check, use)` pair straddles the window — `stat`/`open`,
+  `lstat`/`fopen`, `realpath`/`fopen`, `lstat`/`open(O_NOFOLLOW)` over a swapped
+  *directory* component, and the degenerate CWE-377 member with no window at all.
+
+  **The race is reported as a race.** Measured per-attempt win rates are 1.5%-17.8%
+  across three uninstrumented runs; reliability comes from the targets' own unbounded
+  request loop (1200 attempts x 3 passes, two `RENAME_EXCHANGE` swapper threads), not
+  from pretending the rate is 1. Running the same harness under `strace` lifts every
+  rate to ~21%, so the quoted numbers are deliberately taken uninstrumented.
+
+  Two things that would have shipped green were caught by measurement and are
+  recorded in the corpus manifest: a **hard link** solved two variants with no race
+  at all (closed with an `st_nlink == 1` rule in the family's constant policy), and a
+  won exploit **left its symlinks in `/tmp`**, so the next run against
+  `toctou_14` would have disclosed the flag to any caller that merely typed a
+  filename — caught by a deliberately wrong-but-present staging path that still
+  reported `FLAG_CAPTURED`, and closed with an `unplant()` cleanup in both the
+  generated script and the reference exploit.
+
 - **The teaching half of `env_path_hijack`**: a walkthrough family for the
   data-only route, so `supwngo explain` teaches what the pipeline already flies.
 

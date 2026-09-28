@@ -82,6 +82,19 @@ corpus_objptr/*/*
 !corpus_objptr/*/*.c
 !corpus_objptr/*/cflags
 
+# corpus_objptr_libc/ -- the SAME class with the destination removed from the
+# image: no win function, no system@plt, so the hijacked pointer has to be
+# aimed into libc. Needs its own three lines because a family name is not a
+# prefix match: `corpus_objptr/*/*` does not cover `corpus_objptr_libc/`, and
+# the corpus-wide flag.txt rule (.gitignore:269) covers only flag.txt. Measured
+# before adding this, with `git add -n benchmark/corpus_objptr_libc`: **9
+# compiled ELF images** were staged for commit while flag.txt was correctly
+# ignored -- which is the failure mode this comment exists to stop repeating,
+# because the ignored secret makes the whole block look like it is working.
+corpus_objptr_libc/*/*
+!corpus_objptr_libc/*/*.c
+!corpus_objptr_libc/*/cflags
+
 # corpus_bon/ -- bon-nie-appetit's class: a strlen()-derived length on a heap
 # buffer that is never NUL-terminated. Same artifact rule: sources + cflags
 # tracked, binaries and flag.txt not. Added when the family landed; before this

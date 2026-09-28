@@ -1,0 +1,19 @@
+# Protections for the objptr_libc family. Byte-identical across every target,
+# positives and controls alike, so the only thing that varies between them is
+# the particular each one's header names.
+#
+# -fno-stack-protector  the hijack lands on a `call *<reg>` in the middle of a
+#                       function, so no epilogue canary check is ever reached;
+#                       disabling it keeps the canary from being blamed for a
+#                       failure it has nothing to do with.
+# -pie -fPIE            INHERENT to this category, not an axis. With a known
+#                       image base the destination could be written without any
+#                       leak, and the capability under test is precisely the
+#                       leak-then-resolve chain.
+# -O0                   the `print` member must be RELOADED from memory at the
+#                       call site; at -O1+ it can be kept in a register and the
+#                       category disappears.
+-fno-stack-protector
+-pie
+-fPIE
+-O0
