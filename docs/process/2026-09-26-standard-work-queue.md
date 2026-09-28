@@ -92,16 +92,21 @@ recorded beneath it (queue rule 2). The chronological record is §6.
 | 1 | `G-5` | `eintr_accumulator_rop` generalised across its variation corpus | **done** — 0/6 → 6/6, control unsolved |
 | 2 | `G-6` | `srop_symtab_pivot` generalised across its variation corpus | **done** — 1/5 → 5/5, control declined |
 | 3 | `A-2` | survey for vuln types this tool cannot yet reach | **done** — classification returned; 2 of 3 categories reclassified |
-| 4 | `G-7b` | `sabotage`'s class — **reclassified**: self-inflicted env/PATH hijack, not memory corruption | **in-sprint** (hand-shell proven 3/3) |
-| 5 | `G-7c` + `G-8b` | **merged** — indirect-call hijack over a custom allocator (`auth-or-out`'s real class) | **in-sprint** (hand-shell proven 3/3) |
+| 4 | `G-7b` | `sabotage`'s class — **reclassified**: self-inflicted env/PATH hijack, not memory corruption | **done** — `env_path_hijack` 0/4 → 4/4, control declined at 341 s, and **`sabotage` itself solves through the real CLI** (8.2 s, rung 1/48). Every target PIE+canary+NX+Full RELRO and all four still shell, because the route is data-only |
+| 5 | `G-7c` + `G-8b` | **merged** — indirect-call hijack over a custom allocator (`auth-or-out`'s real class) | **category done** — `objptr_hijack` 0/10 → 10/10, 0/2 controls. **`auth-or-out` itself still unsolved**, but now declines at ANALYSIS for a NAMED reason (no win function, no `system@plt`) rather than by exhausting the budget; 6 gaps are numbered `UNDERIVED` notes in the module |
 | 6 | `G-8a` | **new category** — predictable pseudo-random secrets | **done** — 6/6, control declines 64/64 ×3 reps, gate claims 6 of 68 binaries |
 | 7 | `G-7a` | heap off-by-one via `strlen` on an unterminated chunk — `bon-nie-appetit` | **unblocked**, awaiting a free slot (runtime found, see below) |
 | 8 | `G-9` | **new P0** — no executor can express "leak first, then finish in libc" | open — shared machinery for `G-7a`/`G-7c` |
 | 9 | `G-8c` | **new category** — injection into a subprocess sink (`system`/`popen`/`exec*`) | **done** — 5/5, control fails two ways |
 | 10 | `I-16` | `verify_script`'s shell oracle credits an echo as a shell | **mitigated** — receipts now carry `shell_proven`/`echo_ambiguous` |
-| 11 | `G-10` | **new category** — unbounded `scanf`/`strtoull` scalar-and-bound overwrite | **done** — 6/6 by reference exploit; pipeline number pending |
-| 12 | `I-19` | `verify_script` could not prove a shell that has no `PATH` | **closed** — third probe `echo SH$((6*7))OK` → `SH42OK` |
-| 13 | `M-2` | full pytest + every HTB challenge + every variation corpus, re-run | open |
+| 11 | `G-10` | **new category** — unbounded `scanf`/`strtoull` scalar-and-bound overwrite | **done** — 6/6 end-to-end through the real CLI (~101 s each), control declined at 245 s. Teaching half landed too: `scanf_scalar` walkthrough family, 6/6 selected at 0.93 with 4 distinct write shapes derived |
+| 12 | `G-11` | **new category** — indirect-call hijack (`objptr_hijack`), the corpus form of `G-7c`/`G-8b` | **done** — 0/10 → 10/10, 0/2 controls, ordering measured (first: 10-16 s; last: 20-42 s) |
+| 13 | `G-12` | **new category** — relative-`system()` hijack via unbounded heap write (`env_path_hijack`) | **done** — 0/4 → 4/4, control declined, **bought HTB solve #5** |
+| 14 | `I-23` | three walkthrough families shipped unable to render; `explain` RAISED while the suite was 396 green | **closed** — `common.shell_transcript()` + `tests/test_walkthrough_render_all.py` (66 targets render and parse, red-proof + paired positive) |
+| 15 | `I-24` | **new** — the recorded whole-tree baseline `1 failed, 1320 passed` was STALE; 6 tests red since `1e263737` (2026-09-26) | **closed** — `_bare_engine()` never set `_force_all`/`_strategy` after they entered `_attempt_techniques`; 13/13 now pass |
+| 16 | `I-25` | **new** — `scripts/htb_rescore.py --reps 1` can NEVER return SOLVED (`verdict()` needs `counted >= 2`), so it reports INCONCLUSIVE on a target that shelled | **noted** — harness is right, the invocation was wrong; always use the default `--reps 3` |
+| 17 | `I-19` | `verify_script` could not prove a shell that has no `PATH` | **closed** — third probe `echo SH$((6*7))OK` → `SH42OK` |
+| 18 | `M-2` | full pytest + every HTB challenge + every variation corpus, re-run | open |
 | — | `T-3` | the breadth target the whole run serves | open |
 
 **Revised ordering, and why (queue rule 4 — re-triage inline when the evidence
