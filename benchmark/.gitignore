@@ -30,3 +30,19 @@ corpus*/.run_bench.lock
 corpus_variants/*/*
 !corpus_variants/*/*.c
 !corpus_variants/*/cflags
+
+# Signal-underflow variant family: same rule again (built via
+# SUPWNGO_BENCH_CORPUS=benchmark/corpus_eintr benchmark/build_all.sh). Sources +
+# flags tracked, binaries and flag.txt not.
+corpus_eintr/*/*
+!corpus_eintr/*/*.c
+!corpus_eintr/*/cflags
+
+# No-writable-segment SROP variant family: same rule again (built via
+# SUPWNGO_BENCH_CORPUS=benchmark/corpus_srop benchmark/build_all.sh). Sources
+# (.c/.S), cflags, and any linker script are tracked; binaries and flag.txt not.
+corpus_srop/*/*
+!corpus_srop/*/*.c
+!corpus_srop/*/*.S
+!corpus_srop/*/cflags
+!corpus_srop/*/*.ld
