@@ -307,6 +307,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`supwngo explain` died with an uncaught `PermissionError` on a target the
+  pipeline solves in ten seconds** (`I-28`). The format-string probe spawned the
+  image directly and nothing caught the spawn failure, so a fact-collection step
+  whose whole contract is "return UNKNOWN if you cannot measure it" took down the
+  entire command instead. HTB `sabotage` — 3/3 reps `SHELL_ACCESS`, 10.2–10.9 s —
+  could be exploited but not explained.
+
+  The cause is `I-17`, and it is worth stating because the error message points at
+  the wrong file. Three HTB challenge dirs ship a **0-byte, non-executable**
+  `glibc/ld-linux-x86-64.so.2` (measured: mode 664) and the image's own `PT_INTERP`
+  is the *relative* path `./glibc/ld-linux-x86-64.so.2`. The kernel reports EACCES
+  against the **executable's** path — so the exception names a file that is plainly
+  mode 755, and the first place you look is the one place nothing is wrong. The
+  executor already worked around this by passing the host loader explicitly; only
+  this probe ran the image directly.
+
+  `_deliver` now returns a sentinel `_SPAWN_FAILED = -1000` rather than `(b"", 0)`.
+  `(b"", 0)` is already what budget exhaustion returns *and* what a silent clean
+  exit produces, so reusing it would fold three different situations into one
+  value; -1000 is outside the range a real process can report (exit status 0..255,
+  signal death -1..-64). All six call sites discard the rc today, so this cannot
+  change a decision — it exists so whoever next reads one can tell the cases apart.
+
+  Gated by `tests/test_fmtstr_probe_unspawnable.py`, which **builds** the failure
+  rather than mocking it: monkeypatching `Popen` to raise would prove only that
+  `except OSError` catches `OSError`, while the interesting part of `I-28` is the
+  shape of the real failure. A donor ELF's `.interp` is patched in place to the
+  relative path (26 chars fits inside 27, so no offset moves) and a 0-byte
+  non-executable loader is dropped beside it. A positive control asserts the
+  premise **first** — and earned its place immediately, by catching that the
+  failure is EACCES only when cwd is the binary's own directory; run from anywhere
+  else the relative interp resolves nowhere and the kernel says ENOENT instead,
+  which is a different failure than the one the guard has to survive.
+
 - **The shell-vs-echo flags never left the process, which made the owed audit
   impossible rather than merely un-run** (`I-27`).
   `VerificationReceipt.to_dict()` serialized `shell_confirmed` but dropped
