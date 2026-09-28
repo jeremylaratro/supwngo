@@ -72,8 +72,173 @@ keeps its ID and gains a `SUPERSEDED — see <ID>` line; IDs are never reused.
 
 ### Lane: `now`
 
-*(empty — Sprint 2′ Wave 3 is mid-verification; see `M-1a`/`M-1b` below for what it
-owes before it can close.)*
+**Autonomous capability run — opened 2026-09-27, worked to completion without further
+authorisation.** The operative directive is per-category generalisation, not target
+count:
+
+> go one by one on category / vuln type and make it work, then test it on variants,
+> adjust until they work too, then repeat on the next category
+
+and the run serves `T-3`: the capability to **identify, walk through, and solve as many
+distinct binary/software vulnerability types — and variations of each — as possible.**
+
+Items are worked in the order below. `M-2` is re-run after every category lands and
+gates the next one: **green → advance; red → iterate on the failure before advancing.**
+This block is the live queue — status is edited in place, and each item's observation is
+recorded beneath it (queue rule 2). The chronological record is §6.
+
+| order | ID | item | status |
+|---|---|---|---|
+| 1 | `G-5` | `eintr_accumulator_rop` generalised across its variation corpus | **in-sprint** |
+| 2 | `G-6` | `srop_symtab_pivot` generalised across its variation corpus | **in-sprint** |
+| 3 | `M-2` | full pytest + every HTB challenge + every variation corpus, re-run | open |
+| 4 | `G-7` | the three unsolved HTB categories solved (`a` `b` `c`) | open |
+| 5 | `A-2` | survey VRv5 agents/skills for vuln types this tool cannot yet reach | open |
+| 6 | `G-8` | new corpora + executors for whatever `A-2` surfaces | open |
+| — | `T-3` | the breadth target the whole run serves | open |
+
+#### G-5 — `eintr_accumulator_rop` generalised across a variation corpus
+
+| field | value |
+|---|---|
+| type | gap |
+| relevance | 5 — one of the three executors written this session with no variant evidence behind it |
+| complexity | 3 — corpus is built and the primitive is proven; the work is derivation, not discovery |
+| priority | P0 |
+| lane | now |
+| status | in-sprint |
+| evidence | `benchmark/corpus_eintr/` (7 targets); anchor reaches a shell under `/tmp/eintr/proto.py` (measured) |
+| provenance | measured |
+| exit | all 5 positive variants reach `SHELL_ACCESS` via `eintr_accumulator_rop`, `eintr_90_neg_checked_read` does not, and `ancient_interface` is unregressed |
+| owes | executor baseline + final measurement |
+| blocks | `M-2` |
+
+The corpus is engineered so each variant breaks one named assumption in the current
+executor: `eintr_14` kills the help-string vocabulary heuristic and uses `setitimer`;
+`eintr_15` removes the banner's trailing NUL and its `!` and brackets the prompt;
+`eintr_11` moves every frame offset; `eintr_12` changes the signal count and puts the
+count slot on the other side of the cursor; `eintr_13` emits the accumulate as a
+memory-add. A variant failure therefore names the thing that broke.
+
+#### G-6 — `srop_symtab_pivot` generalised across a variation corpus
+
+| field | value |
+|---|---|
+| type | gap |
+| relevance | 5 — the third session executor, and the only one with no corpus at all |
+| complexity | 4 — a no-writable-segment ELF with a mapped symbol table needs a hand-built link |
+| priority | P0 |
+| lane | now |
+| status | in-sprint |
+| evidence | `supwngo/exploit/pipeline/executors/srop_nowrite_techniques.py`; `sick_rop` SOLVED in `benchmark/results_htb/full-rescore-20260927.json` |
+| provenance | recorded |
+| exit | every positive variant reaches a shell via `srop_symtab_pivot`, the negative control does not, and `sick_rop` is unregressed |
+| owes | corpus, reference-exploit red-proof, baseline + final measurement |
+| blocks | `M-2` |
+
+#### M-2 — full suite + every challenge + every variation corpus, re-run
+
+| field | value |
+|---|---|
+| type | gate |
+| relevance | 5 — the only thing that distinguishes "a category generalised" from "a category traded for another" |
+| complexity | 2 |
+| priority | P0 |
+| lane | now |
+| status | open |
+| evidence | prior full-suite state at `0c79463`: `1 failed, 1320 passed, 16 skipped`, the one failure pre-existing (`I-14`) |
+| provenance | measured |
+| exit | pytest shows no NEW failure against the recorded baseline; all 7 HTB challenges re-scored; `corpus_variants`, `corpus_eintr`, `corpus_srop` each re-run with positives solved and controls unsolved |
+| owes | the run itself |
+| blocked-by | `G-5`, `G-6` |
+
+**Iterate-on-fail is part of this gate, not an exception to it.** A red result does not
+advance the queue: the failure is fixed and `M-2` re-run. Only a green `M-2` releases
+`G-7`.
+
+#### G-7 — the three unsolved HTB categories
+
+| field | value |
+|---|---|
+| type | gap |
+| relevance | 5 — the remaining 3/7, and three categories this tool has no technique for |
+| complexity | 5 — all three are PIE + canary + Full RELRO, so every technique needs a leak first |
+| priority | P1 |
+| lane | now |
+| status | open |
+| evidence | `benchmark/results_htb/full-rescore-20260927.json`: `auth-or-out` INCONCLUSIVE, `bon-nie-appetit` NOT_SOLVED, `sabotage` NOT_SOLVED |
+| provenance | measured |
+| exit | each of `G-7a`/`G-7b`/`G-7c` closed by its own variation corpus, not by a single-target solve |
+| blocked-by | `M-2` |
+
+Decomposition, with protections read off the images (measured, `pwntools ELF`):
+
+| ID | target | measured shape | imports that hint at the category |
+|---|---|---|---|
+| `G-7a` | `bon-nie-appetit` | PIE, canary, Full RELRO, NX | `malloc` `free` `alarm` `atoi` `strlen` — heap |
+| `G-7b` | `sabotage` | PIE, canary, Full RELRO, NX | `malloc` `free` `getenv` `putenv` `setenv` `open` `close` `rand`/`srand` `strcat` |
+| `G-7c` | `auth-or-out` | PIE, canary, Full RELRO, NX, **with debug_info** | `__isoc99_scanf` `strtoull` `putchar` `read` — scalar/scanf path |
+
+Each sub-item follows the same cycle as `G-5`/`G-6`: classify the defect, build a
+variation corpus holding the category constant, red-proof it both ways with a
+deterministic reference exploit, baseline, generalise, re-measure, regress the real
+target. A single-target solve does **not** close a sub-item — queue rule: the category
+is the unit.
+
+#### A-2 — survey VRv5 agents/skills for vuln types this tool cannot reach
+
+| field | value |
+|---|---|
+| type | assessment |
+| relevance | 4 — decides what `G-8` builds; without it `G-8` is guesswork |
+| complexity | 2 — read-only survey of an existing local corpus of agents/skills |
+| priority | P1 |
+| lane | now |
+| status | open |
+| evidence | VRv5 ships specialist agents per class (heap, kernel, browser, crypto, firmware, mobile, .NET, IIS, concolic, SROP/AEG) — enumerated in the session's agent list |
+| provenance | recorded |
+| exit | a ranked coverage table: every vuln type VRv5's agents/skills name, marked covered / partially covered / absent in supwngo's executor set, with the cheapest buildable fixture named for each absent one |
+| blocked-by | `G-7` |
+
+Deliverable is a finding, not code (`A-` namespace). It is explicitly allowed to
+conclude that a class is out of reach for a local fixture corpus (kernel, browser,
+firmware) and say so rather than inventing a fixture that does not model it.
+
+#### G-8 — new-category corpora + executors for what `A-2` surfaces
+
+| field | value |
+|---|---|
+| type | gap |
+| relevance | 5 — this is `T-3` |
+| complexity | 5 |
+| priority | P1 |
+| lane | now |
+| status | open |
+| evidence | — (opened by `A-2`) |
+| provenance | inferred |
+| exit | for each class `A-2` ranks as buildable: a variation corpus red-proved both ways, an executor that solves its positives and not its control, and a walkthrough that a follower can run (`T-3` has a teaching half, not just a solving half) |
+| blocked-by | `A-2` |
+
+Decomposed into `G-8a`, `G-8b`, … as `A-2` names the classes; IDs are assigned when the
+class is accepted, never in advance.
+
+#### T-3 — breadth: types **and** variations, identified, walked through, and solved
+
+| field | value |
+|---|---|
+| type | target |
+| relevance | — (targets are metrics, never sprints) |
+| complexity | — |
+| priority | — |
+| lane | now |
+| status | open |
+| evidence | today: 4/7 HTB, 3 categories with a red-proved variation corpus (`corpus_variants` closed, `corpus_eintr`/`corpus_srop` in flight) |
+| provenance | measured |
+| exit | never "done" — reported as a count of categories with (a) a red-proved variation corpus, (b) an executor that solves its positives and not its control, and (c) a runnable walkthrough |
+
+Per `T-3`'s three-part exit, a category is only counted when it can be **taught**, not
+merely solved — a bare pass with no runnable 0-to-pwn walkthrough counts as (a)+(b) and
+is reported as such.
 
 ### Lane: `next`
 
@@ -797,3 +962,35 @@ would make removal a correctness fix rather than a preference.
 **Deliberately not in scope here:** the fallback's *own* robustness. Per the standing
 exclusion, hardening the tool is out of scope; this item is about whether the path
 should exist at all.
+
+---
+
+#### I-14 — `test_guided_fallback_resumes_to_success_with_supplied_offset` fails, and did before this work
+
+| field | value |
+|---|---|
+| type | issue (pre-existing failure) |
+| relevance | 2 — it is not caused by the category work and must not be absorbed into it |
+| complexity | 2 |
+| priority | P2 |
+| lane | later |
+| status | open |
+| evidence | `tests/test_solve_command.py::TestSolveEndToEnd::test_guided_fallback_resumes_to_success_with_supplied_offset`; **proven pre-existing** by running that file in a `git worktree` at `0c79463` — identical `1 failed, 15 passed` |
+| provenance | measured |
+| exit | the test passes, or is retired with a recorded reason |
+
+Named here so `M-2` can exclude it **explicitly** rather than tolerating it quietly
+(queue rule 5). `M-2` is green when pytest shows no failure *other than* this one.
+
+---
+
+## 6. Autonomous run log — 2026-09-27 onward
+
+Chronological record for the `now`-lane capability run. One entry per observation that
+moved an item; measured numbers only, no projections.
+
+| # | when | item | observation |
+|---|---|---|---|
+| 1 | 2026-09-27 | container category | **closed.** `0/5 → 5/5` positives on `benchmark/corpus_variants`, control unsolved, `snow_scan` 2/2 unregressed. Landed `0c79463` + `0d4f0f2`, fast-forwarded to `main`, branch deleted. |
+| 2 | 2026-09-27 | `G-5` | corpus `benchmark/corpus_eintr/` built: 5 positives + anchor + 1 negative control. Anchor reaches a **real shell** deterministically (`PWNED_OK` + `uid=…`), so the primitive is proven before the executor is asked to find it. |
+| 3 | 2026-09-27 | `G-5`, `G-6` | both cycles dispatched in parallel on disjoint files; git, `CHANGELOG.md` and `docs/` held by the orchestrator so the two cycles land as separate commits. |
