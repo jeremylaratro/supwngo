@@ -338,3 +338,119 @@ Same cycle for `eintr_accumulator_rop` (signal-interrupted accumulator underflow
 and then `srop_symtab_pivot` (no-writable-segment SROP): build the variation
 corpus, prove it can go RED both ways with a deterministic reference exploit,
 measure, then generalise until the variants pass.
+
+---
+
+## 7. Five categories added 2026-09-28 — what is deferred
+
+`toctou_path_race`, `uninit_disclosure`, `path_traversal_read`,
+`library_path_hijack`, `heap_record_hijack`. All five are measured and merged
+(`0d17df1`, `6d41e34`, `1615144`, `344dead`); everything below is a real
+deficiency I chose to log rather than fix, per the standing "move forward and
+build, log deficiencies for later" directive.
+
+### 7.1 A solve that is not a captured flag
+
+`uninit_disclosure` proves **`SHELL_ACCESS` with `flag=False`** on all five
+positives. The disclosure leaks the bytes needed to reach a shell, but no target
+in the family plants and reads back a flag, so the stronger oracle is untested
+for this category. `toctou_path_race`, `path_traversal_read` and
+`library_path_hijack` do reach `FLAG_CAPTURED`; `heap_record_hijack` is also
+shell-only.
+
+### 7.2 Two controls decline by wall clock, not by an exhausted ladder
+
+`uninit_disclosure`'s control is "not solved" after **420.1 s of wall time**, and
+`path_traversal_read`'s after **318.8 s**. A timeout and a genuinely exhausted
+technique ladder are different claims, and only the second is evidence that the
+corpus discriminates. `toctou_path_race`'s control does exhaust honestly (316.6
+s), as does `heap_record_hijack`'s (146.9 s). The two timeout-based controls
+should be given a cheaper shape or a longer budget before their narrowness is
+described as proven.
+
+### 7.3 `corpus_libhijack` cannot be provisioned from `cflags` alone
+
+Every other corpus in the tree is reproducible from tracked sources plus a
+`cflags` file. This one is not: `install_plugins.sh` has to run **before**
+`build_all.sh`, and one target's `lib/` directory is legitimately **empty**,
+which git cannot track. A fresh checkout that builds without reading the corpus
+README therefore produces a target whose gate **declines** — and it declines for
+a provisioning reason that looks exactly like a capability reason. This is the
+worst of the five deficiencies, because it degrades silently.
+
+### 7.4 `trav_14` depends on how deep the repository is checked out
+
+Its truncation route needs room in a path buffer: **234 characters available, 95
+used** at the current checkout depth. A deeper clone path shrinks that margin
+until the route stops working, with no diagnostic that says so.
+
+### 7.5 Both filesystem gates read `-O0` frame slots
+
+`path_traversal_read` and `library_path_hijack` locate their operands at fixed
+frame offsets that only hold at `-O0`. Untested at `-O2`, where the slots move or
+vanish into registers. The corpora pin `-O0` in `cflags`, so the gates are
+consistent with their own fixtures and will simply decline elsewhere rather than
+misfire — but the category's reach is narrower than the CWE suggests.
+
+### 7.6 Everything heap is pinned to glibc 2.35
+
+`heap_record_hijack` depends on safe-linking, `tcache_count == 7`, the 0x410
+tcache ceiling and the fastbin stash path. Pinned in `cflags` and stated in the
+commit; untested on any other glibc. The same is true of the pre-existing
+`tcache_poison_got` and `heap_strlen_ofb1`, so this is a framework-wide pin, not
+a new one.
+
+### 7.7 Ordering positions cost time to buy correct attribution
+
+`heap_record_hijack` sits in `FIRST_TECHNIQUES` for **attribution, not speed**:
+without the entry, `uaf`/`double_free` escalate into its shapes and are credited
+with 4 of its 5 positives. The entry costs roughly **80 s per run** of earlier
+attempts (100.8 s at that depth vs 20.5–20.9 s reached directly). Accepted
+deliberately — a wrong technique label is a reporting defect no pass/fail count
+would surface — but it is a real cost and the list will keep accumulating it.
+
+### 7.8 One negative control opens its gate statically, by design
+
+`heap_90_neg_handle_dropped` is the anchor minus one dynamic line, so static
+analysis cannot tell them apart and the gate opens on it. Closing it statically
+would make the corpus discriminate on a compile-time artifact instead of on the
+primitive, so this is intentional — recorded here so a future sweep does not
+"fix" it.
+
+### 7.9 Two `FIRST_TECHNIQUES` names have no executor
+
+`off_by_one_guard` and `heap_uaf_read` are ordered but unimplemented. The
+orchestrator skips unknown names, so they cost nothing at runtime — but they read
+as coverage in the one place a reader would look for it. See
+`docs/reference/2026-09-28-vulnerability-category-coverage.md`.
+
+### 7.10 Lessons that are invisible in the sources
+
+- **A sweep that declines on everything looks like a perfectly narrow gate.** The
+  sweep that eventually narrowed `heap_record_hijack` was preceded by one
+  returning `opened=0` on all 133 images — *including its own positives*. Cause:
+  `Binary(path)` instead of `Binary.load(path)`, which leaves the ELF unparsed so
+  every image declines with a plausible-sounding reason. It was caught only
+  because the script asserts its own positives must open. Any gate sweep without
+  that assertion is decoration.
+- **A family's own tests can pass while the family crashes.** `objptr_hijack`'s 66
+  tests assert `_Analysis.complete is False` on declining targets and never call
+  `propose()`, so a `TypeError` in the decline path was invisible to them and was
+  caught by a different suite (`9ae5637`). This is the `I-23` class recurring:
+  testing the analysis is not testing the thing that renders.
+- **A mutation the model rejects proves nothing.** Red-proof mutations have to be
+  wrong-but-present *and* structurally valid, or the model's own validation
+  swallows them and the proof is vacuous.
+
+### 7.11 Owed measurements
+
+- A **solo re-run of `I-14`** on a quiet host. It fails as a 90-second
+  `subprocess.TimeoutExpired`, and the gate that observed it was running
+  alongside three compiling agents, so "defect" and "budget too tight under
+  load" are currently indistinguishable (run-log row 47).
+- A **post-integration whole-tree gate**. The 1588-passed figure was taken while
+  the tree was being edited, which makes it a valid pre-integration baseline and
+  nothing more.
+- A **gate sweep for `heap_record_hijack` run by me**. Its narrowing to 6 of 133
+  images is the one number in this cycle I took from an agent without
+  re-measuring.
