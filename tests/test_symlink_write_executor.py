@@ -146,6 +146,43 @@ def test_the_registered_name_is_the_one_the_orchestrator_would_order_on():
     assert SymlinkFollowWriteExecutor.name == "symlink_follow_write"
 
 
+def test_seated_immediately_behind_the_narrower_path_gate():
+    """The ordering seat, and the POSITION, both measured 2026-09-28.
+
+    Granted for SPEED on the same two-justification test that DENIED
+    `loop_counter_overflow` a seat:
+
+        forced (`--strategy`, the technique's own cost)   5.0-5.2 s
+        unordered, via the applicability tail           61.6-62.1 s
+        seated                                           3.8-4.2 s
+
+    ~58 s per target, in the band that earned seats for
+    `heap_offbynul_overlap` (98.6 -> 17.2 s) and `type_confusion_tag`
+    (108.8 -> 25.9 s), not the ~4.3 s that got one denied. Attribution needed
+    nothing: unordered, all five positives were already credited to
+    `symlink_follow_write` at `FLAG_CAPTURED` with 0 misattributed.
+
+    POSITION is pinned, not just membership. The seat sits immediately behind
+    `toctou_path_race`: both are writes that follow an attacker-controlled path,
+    and toctou is the narrower of the pair because it additionally needs a usable
+    race window. Narrower gate first -- the same rule that puts
+    `heap_offbynul_overlap` behind `heap_strlen_ofb1`.
+
+    Unlike that pair, this seat cannot cost another family anything, and that was
+    measured rather than assumed: a gate sweep over 203 ELFs opens on 5 images,
+    all of them its own, 0 outside and 0 raised. There are no shared images for
+    the ordering to outbid anyone on.
+    """
+    from supwngo.exploit.pipeline.orchestrator import FIRST_TECHNIQUES
+
+    assert "symlink_follow_write" in FIRST_TECHNIQUES
+    assert "toctou_path_race" in FIRST_TECHNIQUES
+    assert FIRST_TECHNIQUES.index("symlink_follow_write") == (
+        FIRST_TECHNIQUES.index("toctou_path_race") + 1
+    ), "the seat must stay immediately behind the narrower path-following gate"
+    assert len(FIRST_TECHNIQUES) == len(set(FIRST_TECHNIQUES))
+
+
 # --------------------------------------------------------------------------
 # The static derivation, measured against the corpus
 # --------------------------------------------------------------------------

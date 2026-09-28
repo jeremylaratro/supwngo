@@ -289,8 +289,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directions (each executor's real `is_applicable` swept over the other's
   corpus): 0 opens either way for either pairing.
 
-  Not added to `FIRST_TECHNIQUES` — ordering is deliberately left for a
-  separate decision.
+  **Ordered** in the technique ladder, immediately behind `toctou_path_race`.
+  That decision was deferred when the category landed and is now made on
+  measurement, all of it re-run first-hand rather than relayed (host load 2.10,
+  against the 16.95–22.35 the original figures were taken under):
+
+  | | measured | per-target |
+  |---|---|---|
+  | forced (`--strategy`, the technique's own cost) | 5/5 `FLAG_CAPTURED` | 5.0–5.2 s |
+  | unordered, reached via the applicability tail | 5/5 `FLAG_CAPTURED` | 61.6–62.1 s |
+  | **seated** | 5/5 `FLAG_CAPTURED` | **3.8–4.2 s** |
+
+  ~58 s per target, a ~15× speedup, in the band that earned seats for
+  `heap_offbynul_overlap` (98.6 → 17.2 s) and `type_confusion_tag`
+  (108.8 → 25.9 s) — not the ~4.3 s that got `loop_counter_overflow`'s seat
+  DENIED on the same test. Attribution needed nothing and was checked rather
+  than assumed: unordered, all five positives were already credited to
+  `symlink_follow_write` with 0 misattributed, so **speed is the sole
+  justification**.
+
+  Seated behind `toctou_path_race` because the two are the same shape — a write
+  that follows an attacker-controlled path — and toctou is the narrower of the
+  pair, needing a usable race window this one does not. Narrower gate first, the
+  same rule that places `heap_offbynul_overlap` behind `heap_strlen_ofb1`. Unlike
+  that pair this seat **cannot cost another family anything**, which was measured
+  rather than argued: the gate opens on 5 of 203 swept ELFs and all 5 are its
+  own, so there are no shared images for the ordering to outbid anyone on. Its
+  control also declines *statically* (6 own-family ELFs, gate opens on 5), so no
+  runtime budget is spent on it at all — unlike the `g23` and `offbynul`
+  controls, which open and then fail at runtime.
+
+  One discrepancy recorded rather than reconciled away: the unordered figures
+  above (61.6–62.1 s) are faster than the 83.4–93.7 s first reported for the same
+  harness and the same command. The difference is host load, not code — but only
+  one variable was controlled, so it is left as an observation and neither range
+  is presented as *the* cost.
 
 - **The teaching half of three categories that could only be solved, never
   explained** — walkthrough families for `off_by_one_guard`, `fini_array_write`
