@@ -136,6 +136,17 @@ def run_rep(slug: str, binary: Path, timeout: int) -> dict:
             "slug": slug, "elapsed_sec": elapsed, "timed_out": timed_out,
             "returncode": rc, "level": None, "technique": None,
             "secret_reproduced": False, "shell_confirmed": False,
+            # `I-27`, added 2026-09-28. `shell_confirmed` alone cannot tell a
+            # shell from a target that echoes its input -- measured: 11 of 12
+            # targets in one family echo a naive token straight back. The verifier
+            # has always distinguished the two (`shell_proven` needs a signal the
+            # target could not produce by echoing, e.g. `echo SH$((6*7))OK` ->
+            # `SH42OK`), but the receipt's `to_dict()` dropped both flags, so no
+            # report could be audited. Recorded here so a score that counts an
+            # echo-ambiguous solve has to say so. Default None, not False: "the
+            # build that produced this report did not report the flag" must not
+            # read as "the flag was measured and it was clean".
+            "shell_proven": None, "echo_ambiguous": None,
             "parse_error": None, "hard_error": None,
         }
 
@@ -183,6 +194,12 @@ def run_rep(slug: str, binary: Path, timeout: int) -> dict:
                 rep["secret_reproduced"] = True
             if r.get("shell_confirmed"):
                 rep["shell_confirmed"] = True
+            # Absent from the receipt means an older build produced it; leave the
+            # field None in that case so the three states stay distinguishable.
+            if r.get("shell_proven") is not None:
+                rep["shell_proven"] = bool(rep["shell_proven"]) or bool(r["shell_proven"])
+            if r.get("echo_ambiguous") is not None:
+                rep["echo_ambiguous"] = bool(rep["echo_ambiguous"]) or bool(r["echo_ambiguous"])
 
         if winning:
             rep["technique"] = winning[0].get("technique")

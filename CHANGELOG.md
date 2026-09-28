@@ -307,6 +307,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The shell-vs-echo flags never left the process, which made the owed audit
+  impossible rather than merely un-run** (`I-27`).
+  `VerificationReceipt.to_dict()` serialized `shell_confirmed` but dropped
+  `shell_proven` and `echo_ambiguous`.
+
+  Those two fields have existed since `I-16`, when it was measured that a target
+  which merely echoes its input satisfies the plain token check — 11 of 12 targets
+  in one family echo a naive token straight back. The verifier has always set them,
+  the dataclass documents them at length, and both directions are pinned by tests.
+  None of that reached an artifact: every JSON report ever written credited
+  `shell_confirmed` and said nothing about whether that shell was real. The queue's
+  standing question — *does any recorded HTB solve carry `echo_ambiguous`?* — could
+  not be answered from any report, and nothing said so.
+
+  The existing tests could not catch it because they inspect the receipt **object**,
+  never its serialized form. That is the same defect class as `I-23`, where three
+  walkthrough families stayed 396-green while `explain` raised, because nothing ever
+  rendered them: a field can be set, documented and unit-tested and still be absent
+  from the only artifact a human reads.
+
+  Both keys are now serialized, and `scripts/htb_rescore.py` records them per rep —
+  defaulting to `None` rather than `False`, so "an older build produced this report"
+  cannot read as "measured, and clean". Gated by
+  `tests/test_receipt_serialises_shell_proof.py`, red-proofed three ways: the defect
+  restored (keys dropped), **hardcoded to the reassuring value** (present but always
+  `shell_proven=True, echo_ambiguous=False`), and aliased to `shell_confirmed`
+  (populated, carrying no information). The middle mutation is the one that matters —
+  it is the failure mode that inflates a score while looking measured — and it goes
+  red.
+
 - **Script verification poisoned its own interpreter on every target shipping an
   older glibc** (`I-26`). `PipelineVerifier.verify_script` runs
   `[sys.executable, script]` under the environment `Binary.libc_env()` builds for
