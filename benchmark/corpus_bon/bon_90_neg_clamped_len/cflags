@@ -1,0 +1,74 @@
+# bon_90: NEGATIVE CONTROL -- anchor with the edit length clamped to the saved size. MUST NOT be solvable.
+#
+# Protections for the bon-nie-appetit (strlen-derived heap reach) variant
+# corpus. Held IDENTICAL across all four targets in this family on purpose:
+# the *reach of the strlen-derived length* is the only variable, so a
+# protection difference would confound the measurement.
+#
+# -fno-stack-protector  the primitive is entirely heap-side; a canary in the
+#                       menu functions would only add noise. The real target
+#                       DOES have a canary, but it is never in the way (the
+#                       off-by-one writes forward into heap metadata, never
+#                       back over a saved return address), so removing it
+#                       changes nothing about the category being measured.
+# -no-pie               see the RELRO note below -- the >=2.34 finisher this
+#                       corpus uses needs a fixed .got.plt address. The real
+#                       target IS PIE; that difference is deliberate and is
+#                       the cost of the glibc pin recorded below.
+# -Wl,-z,relro,-z,lazy  PARTIAL RELRO: leaves .got.plt WRITABLE. This is the
+#                       finisher gate (see GLIBC PIN below). gcc on this host
+#                       defaults to full RELRO + BIND_NOW, which would close
+#                       it, so it must be asked for explicitly.
+# -O0                   the whole primitive depends on `read(0, p, strlen(p))`
+#                       actually calling strlen on the live heap pointer each
+#                       time, and on the fill loop not being turned into a
+#                       constant-length copy. At higher -O gcc is free to fold
+#                       or hoist these and the target silently stops being in
+#                       this category.
+#
+# ---------------------------------------------------------------------------
+# GLIBC PIN -- DELIBERATE CHOICE, AND ITS CONSEQUENCE
+# ---------------------------------------------------------------------------
+# This corpus is pinned to the BUILD HOST's glibc (measured here: 2.35), NOT to
+# the 2.27 that the real bon-nie-appetit target bundles.
+#
+# Why (measured, not assumed):
+#   * benchmark/build_all.sh builds with the host gcc, and a host-gcc binary
+#     records a `GLIBC_2.34` version requirement (from Scrt1.o /
+#     __libc_start_main). Measured: running such a binary against the target's
+#     bundled libc fails outright with
+#         version `GLIBC_2.34' not found (required by ./t)
+#     so a 2.27-pinned corpus would need either a committed ~100MB Ubuntu 18.04
+#     sysroot plus an absolute --sysroot path baked into this file, or a docker
+#     build step. Both break the one property a corpus must have: rebuilding
+#     from a fresh clone on any host with `benchmark/build_all.sh`.
+#
+# The consequence, stated plainly:
+#   * The PRIMITIVE is version-independent and IS measured faithfully here:
+#     strlen-derived length -> chunk-size corruption -> overlapping chunks ->
+#     unsorted-bin (main_arena) libc leak off the "%s" print -> tcache poison.
+#   * The FINISHER is NOT version-independent, so this corpus measures a
+#     DIFFERENT finisher than the real target needs:
+#       - target, glibc 2.27 (<=2.33): __free_hook is still honoured by the
+#         malloc path, so the finisher is __free_hook = system, then
+#         free("/bin/sh").
+#       - this corpus, glibc 2.35 (>=2.34): __free_hook is no longer called,
+#         safe-linking mangles tcache `next`, and tcache_get gates on
+#         counts[] > 0. The finisher here is the structural analogue:
+#         overwrite free@got.plt with system (hence -no-pie + partial RELRO),
+#         then free("/bin/sh").
+#   * Net effect on coverage: this is a FEATURE, not a gap. The executor must
+#     branch its finisher on the resolved glibc RELEASE. This corpus exercises
+#     the >=2.34 branch; bon-nie-appetit itself, run under its own bundled
+#     2.27, exercises the <=2.33 branch. Both branches therefore get a live
+#     proof instead of one being asserted.
+#
+# MEASURED PRECISION TRAP (do not "fix" this by testing for the symbol):
+#   __free_hook is STILL an exported symbol in 2.35 -- `nm -D` finds it in the
+#   host libc -- but the malloc path stopped calling it in 2.34. A capability
+#   test that greps for the symbol therefore wrongly concludes the 2.35 path
+#   works. Branch on the glibc RELEASE, never on symbol presence.
+-fno-stack-protector
+-no-pie
+-Wl,-z,relro,-z,lazy
+-O0

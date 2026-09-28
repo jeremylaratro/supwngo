@@ -81,3 +81,25 @@ corpus_envpath/*/*
 corpus_objptr/*/*
 !corpus_objptr/*/*.c
 !corpus_objptr/*/cflags
+
+# corpus_bon/ -- bon-nie-appetit's class: a strlen()-derived length on a heap
+# buffer that is never NUL-terminated. Same artifact rule: sources + cflags
+# tracked, binaries and flag.txt not. Added when the family landed; before this
+# rule existed `git check-ignore` reported the compiled binaries as NOT ignored
+# while `flag.txt` already was (caught by .gitignore:269, the corpus-wide flag
+# rule), so a path-scoped `git add benchmark/corpus_bon` would have committed
+# four ELF images. The per-family binary rule is not redundant with the
+# corpus-wide flag rule -- each family needs its own line.
+corpus_bon/*/*
+!corpus_bon/*/*.c
+!corpus_bon/*/cflags
+
+# TOCTOU file-race family: same rule again. This is the third non-memory-safety
+# category in the set (after corpus_inject/ and corpus_prng/) and the artifact rule
+# is unchanged -- sources + cflags tracked, binaries and flag.txt not. Worth being
+# explicit about flag.txt here: in this family the flag file is not a fallback for
+# a shell-obtaining target, it is THE object of the exploit (the target is raced
+# into reading it and printing it), so committing it would publish the answer.
+corpus_toctou/*/*
+!corpus_toctou/*/*.c
+!corpus_toctou/*/cflags

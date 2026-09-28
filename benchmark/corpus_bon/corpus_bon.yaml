@@ -1,0 +1,210 @@
+# Challenge-variation corpus manifest: a `strlen()`-derived length on a heap
+# buffer that is never NUL-terminated. The corpus derived from HTB
+# `bon-nie-appetit` (tests/htb-targets/a12c7383-817e-4cff-a354-e050da854ad6).
+#
+# WHAT THIS CORPUS MEASURES, AND WHAT IT DOES NOT
+#
+# Measures: whether one solve capability GENERALISES across the particulars of a
+# single vulnerability category. Everything about the BUG is held identical across
+# all four targets and exactly one thing varies -- **how far past the allocation
+# the strlen()-derived length reaches**. A per-target difference is therefore
+# attributable to the reach, not to a different bug.
+#
+# Held identical in every target (the source headers say it at length, and each
+# one names the address in the real target it was modelled on):
+#
+#   the defect      `edit_order` takes its length from `strlen(orders[i])` and
+#                   passes it straight to `read(0, orders[i], that_length)`
+#   why strlen lies `new_order` does `malloc(size)` then `read(0, ptr, size)`,
+#                   filling the chunk EXACTLY and never writing a terminator, so
+#                   strlen() runs off the end of the allocation
+#   the leak        `show_order` prints the buffer with `"%s"`, so the same
+#                   missing terminator reads adjacent heap bytes back out
+#   no naive UAF    `delete_order` frees AND clears the slot, so the easy bug an
+#                   executor might find instead is deliberately absent
+#   the BAG class   menu option 5, an arbitrary-size allocation. Present because
+#                   the ORDER size is FIXED per variant (the reach has to be a
+#                   property of the PROGRAM -- if the caller chose the size the
+#                   caller would choose the reach and the three variants would
+#                   collapse into one binary), and a fixed-size-only fixture can
+#                   never reclaim a forged chunk or request past tcache, so it
+#                   has neither an overlap nor an unsorted-bin libc leak.
+#   menu, bounds    the 8 slots, the index bounds check, the prompts
+#
+# Does NOT measure: the <=2.33 finisher. See the GLIBC PIN section, which states
+# that gap rather than rounding it off.
+#
+# PROTECTIONS -- MEASURED OFF THE BINARIES 2026-09-28, NOT COPIED FROM cflags
+#
+# All four: **NX on, Partial RELRO, no PIE, no canary** -- identical, so no
+# protection difference can confound the reach axis. `-no-pie` and the explicit
+# `-Wl,-z,relro,-z,lazy` are load-bearing rather than lazy: the >=2.34 finisher
+# this corpus exercises overwrites `free@got.plt`, which needs a fixed .got.plt
+# address and a WRITABLE one. gcc on this host defaults to Full RELRO + BIND_NOW,
+# which would close it, so partial RELRO has to be asked for.
+#
+# MEASUREMENT TRAP FOUND WHILE GATING THIS FILE (2026-09-28, worth more than the
+# numbers it nearly corrupted): `Binary(path).protections` returns the
+# **all-False dataclass default** -- `nx=False`, `pie=False`, `canary=False`,
+# `relro="No RELRO"` -- because the dataclass constructor never runs
+# `_detect_protections()`. Only `Binary.load(path)` measures. Read the wrong way,
+# every one of the 72 corpus binaries "has no protections at all", which is the
+# most plausible-looking wrong answer available and would have been written
+# straight into this file. `Binary.load()` agrees with pwntools' own checksec on
+# **72 of 72** binaries, zero disagreements. The framework is not at fault and
+# already guards this: `Binary.protections_measured` exists precisely so that
+# "never measured" cannot read the same as "measured and every flag is False" --
+# assert it before trusting a protection field.
+#
+# THE ONE VARIABLE: HOW FAR THE STRLEN-DERIVED LENGTH REACHES
+targets:
+  - slug: bon_10_reach_size_lsb
+    role: positive
+    reach: >
+      ONE byte -- the next chunk's size LSB. ORDER_SZ 0x18 gives a 0x20 chunk with
+      usable 0x18, so the fill ends exactly on the neighbour's `size` field, whose
+      LSB is 0x21 and whose byte 1 is zero. strlen() returns 0x18 + 1 = 25: a
+      strict OFF-BY-ONE. MEASURED strlen = 0x19, tail = b'!'. This is the anchor,
+      the shape measured in the HTB target, and re-editing cannot widen it.
+    pie: false
+    canary: false
+    nx: true
+    relro: Partial RELRO
+  - slug: bon_11_reach_size_byte1
+    role: positive
+    reach: >
+      TWO bytes -- size LSB plus size byte 1. ORDER_SZ 0x108 gives a 0x110 chunk,
+      so the neighbour's size field reads 0x111: byte 0 is 0x11 AND byte 1 is
+      0x01, both non-NUL, and byte 2 is the first zero. strlen() returns
+      0x108 + 2 = 266, so the forged size is 16 bits wide instead of 8 and one
+      edit can request a much larger overlap. MEASURED strlen = 0x10a, tail =
+      b'\x11\x01'. Recorded because it is the trap: reaching byte 1 needs the
+      NEIGHBOUR's chunksize >= 0x100, so the 0x28 one might first reach for
+      yields a 1-byte reach IDENTICAL to the anchor. 0x108 is the smallest
+      uniform order size that actually moves this axis.
+    pie: false
+    canary: false
+    nx: true
+    relro: Partial RELRO
+  - slug: bon_12_reach_neighbour_data
+    role: positive
+    reach: >
+      POINTER-WIDTH AND BEYOND -- through the neighbour's header into the adjacent
+      in-use chunk's DATA, i.e. an unbounded heap overflow rather than an
+      off-by-N. The fill is ORDER_SZ + 8, one pointer longer than usable, so it
+      covers the neighbour's ENTIRE 8-byte size field with non-NUL bytes and that
+      field stops terminating strlen(). MEASURED with two filled 0x18 orders:
+      strlen = 0x3b = 59, 27 bytes past the fill, tail
+      b'BBBBBBBBBBBBBBBBBBBBBBBB!\xfd\x01'. The fill had to change to get here and
+      that is the point, not a cheat: when fill == usable, strlen() ALWAYS
+      terminates inside the neighbour's size field, because no chunksize a brk
+      heap can hold has 8 NUL-free bytes -- 1..3 bytes is the hard ceiling for
+      any fill == usable variant. The 8-byte overrun is the axis knob, stated in
+      the source on purpose so it cannot be mistaken for a hidden second bug.
+    pie: false
+    canary: false
+    nx: true
+    relro: Partial RELRO
+  - slug: bon_90_neg_clamped_len
+    role: control
+    reach: >
+      the anchor with ONE line changed -- the edit clamps the strlen-derived
+      length to the size recorded at allocation:
+      `read(0, o[i], strlen(o[i]) < sz[i] ? strlen(o[i]) : sz[i])`.
+      The READ primitive is deliberately left intact: strlen() still over-reads
+      and `show` still leaks adjacent bytes (MEASURED strlen = 0x19, tail = b'!'),
+      so the control is NOT "the bug removed" -- it is the write removed while the
+      leak stays. That is the harder control, because an oracle that credits a
+      leak, a crash, or an echo will wrongly solve it. MEASURED proof the clamp
+      holds: after editing with 25 bytes ending 0x91 the neighbour's size field
+      still reads 0x21 and the 25th byte is left UNREAD in the pipe, so read()
+      took only min(25, 0x18) = 0x18.
+    pie: false
+    canary: false
+    nx: true
+    relro: Partial RELRO
+
+# GATED BEFORE USE (2026-09-28, by the orchestrator, not relayed)
+#
+#   * slug set and directory set are IDENTICAL -- no manifest entry without a
+#     binary, no binary without an entry.
+#   * every `pie`/`canary`/`nx`/`relro` field above was re-measured off the
+#     binaries with `Binary.load()`, cross-checked against pwntools checksec:
+#     zero mismatches.
+#   * the COMPILER FLAGS are byte-identical across all four targets
+#     (`-fno-stack-protector -no-pie -Wl,-z,relro,-z,lazy -O0`). Stated
+#     precisely because the md5 of the `cflags` FILES differs: each carries a
+#     leading one-line comment naming its own variant. The flags are identical;
+#     the files are not. A whole-file md5 comparison would report a difference
+#     that does not exist in the build.
+#
+# END-TO-END THROUGH THE REAL CLI (measured 2026-09-28 by the orchestrator with
+# the IN-TREE wiring, not through a shim:
+# `benchmark/measure_family.py benchmark/corpus_bon --timeout 300 --jobs 1`)
+#
+#   executor unregistered   **0/3** positives, 52.8-52.9 s each, `technique=`
+#                           empty and `verified=NONE` on every row -- the registry
+#                           EXHAUSTED, not a timeout (the budget was 300 s and no
+#                           row came near it). Taken the attributable way: same
+#                           harness, same corpus, the executor removed from
+#                           `build_default_registry()` and from
+#                           `FIRST_TECHNIQUES`, both files then restored and
+#                           asserted byte-identical. Harness exit 3, INCOMPLETE.
+#   registered + first      **3/3** positives SHELL_ACCESS, control declined,
+#                           exit 0 ALL OK
+#
+# Per target wired: bon_10 20.6 s, bon_11 19.9 s, bon_12 21.3 s, every solve
+# attributed `technique=heap_strlen_ofb1 verified=SHELL_ACCESS`. Control
+# bon_90 not solved at 52.2 s, `technique=` empty and `verified=NONE` -- it
+# declined rather than spending the budget.
+#
+# `--jobs 1` is what was MEASURED. Unlike `corpus_envpath`, no property of this
+# family is known to forbid parallelism -- these targets plant no shared file --
+# but parallel has not been run here, so treat `--jobs 1` as the measured
+# configuration rather than as a proven requirement either way.
+#
+# ---------------------------------------------------------------------------
+# GLIBC PIN -- A DELIBERATE CHOICE, ITS CONSEQUENCE, AND WHAT STAYS UNMEASURED
+# ---------------------------------------------------------------------------
+#
+# This corpus is pinned to the BUILD HOST's glibc (measured: 2.35), NOT to the
+# 2.27 the real `bon-nie-appetit` bundles. The reason is measured, not assumed:
+# `benchmark/build_all.sh` builds with the host gcc, and a host-gcc binary
+# records a `GLIBC_2.34` requirement from `Scrt1.o`/`__libc_start_main`, so
+# running one against the target's bundled libc fails outright with
+# ``version `GLIBC_2.34' not found``. A 2.27-pinned corpus would need a committed
+# ~100 MB Ubuntu 18.04 sysroot with an absolute `--sysroot` baked in, or a docker
+# build step. Both break the one property a corpus must have: rebuilding from a
+# fresh clone on any host with `benchmark/build_all.sh`.
+#
+# The consequence, stated plainly rather than rounded off:
+#
+#   * The PRIMITIVE is version-independent and IS measured faithfully here:
+#     strlen-derived length -> chunk-size corruption -> overlapping chunks ->
+#     unsorted-bin (main_arena) libc leak off the `"%s"` print -> tcache poison.
+#   * The FINISHER is NOT version-independent, so this corpus measures a
+#     DIFFERENT finisher than the real target needs:
+#       - target, glibc 2.27 (<=2.33): `__free_hook` is still honoured, so the
+#         finisher is `__free_hook = system` then `free("/bin/sh")`.
+#       - this corpus, glibc 2.35 (>=2.34): `__free_hook` is no longer called,
+#         safe-linking mangles tcache `next`, and `tcache_get` gates on
+#         `counts[] > 0`. The finisher is the structural analogue -- overwrite
+#         `free@got.plt` with `system`, then `free("/bin/sh")`.
+#     Both branches therefore get a live proof instead of one being asserted:
+#     this corpus exercises >=2.34, and `bon-nie-appetit` under its own bundled
+#     2.27 exercises <=2.33.
+#
+# UNMEASURED, and named so nobody reads the two proofs above as three:
+#
+#   * The **2.30/2.31 middle case** falls out of the same code with `key = 0` and
+#     has NOT been run. Two branches are proven, on 2.27 and 2.35; the middle is
+#     inferred.
+#   * A **PIE target on a >=2.34 libc** is DECLINED by design -- the got.plt
+#     finisher needs a fixed address and this family forbids the leak that would
+#     supply one. That is a stated limit, not a silent failure.
+#
+# MEASURED PRECISION TRAP (do not "fix" this by testing for the symbol):
+# `__free_hook` is STILL an exported symbol in 2.35 -- `nm -D` finds it in the
+# host libc -- but the malloc path stopped calling it in 2.34. A capability test
+# that greps for the symbol therefore wrongly concludes the 2.35 path works.
+# Branch on the glibc RELEASE, never on symbol presence.

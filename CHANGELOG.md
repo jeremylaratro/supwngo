@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New technique `heap_strlen_ofb1`: a `strlen()`-derived length taken on a heap
+  buffer that was filled exactly and therefore **never NUL-terminated**, so the
+  length source itself runs past the allocation and the resulting `read()` writes
+  into the neighbouring chunk's metadata. Derived from HTB `bon-nie-appetit`.
+
+  Measured end-to-end through the real `autopwn` CLI on `benchmark/corpus_bon/`
+  (4 targets), with the baseline taken the attributable way — same harness, same
+  corpus, only the executor's registration removed:
+
+  | arm | positives | control | per-target |
+  |---|---|---|---|
+  | executor unregistered | **0/3** | declined | 52.8–52.9 s, registry exhausted |
+  | registered + ordered first | **3/3** `SHELL_ACCESS` | declined | 19.9–21.3 s |
+
+  No unregistered row came near the 300 s budget, so the baseline is the registry
+  running out of applicable techniques rather than a timeout. Both wiring files
+  were restored and asserted byte-identical after the baseline arm.
+
+  The single varied axis is **how far the strlen-derived length reaches**: 1 byte
+  (the neighbour's size LSB — a strict off-by-one), 2 bytes (size LSB + byte 1),
+  and pointer-width-and-beyond into the neighbour's *data*. The second point is
+  the one worth recording: reaching size byte 1 requires the neighbour's chunksize
+  to be ≥ `0x100`, so the `0x28` order size one might first reach for yields a
+  reach **identical to the anchor** and the variant would silently not vary.
+
+  The negative control keeps the **read** primitive and removes only the write
+  (the edit length is clamped to the size recorded at allocation). `strlen()` still
+  over-reads and `show` still leaks adjacent bytes, so an oracle that credits a
+  leak, a crash, or an echo wrongly solves it — which is the point of shaping the
+  control that way rather than deleting the bug.
+
+  Stated as a limit rather than rounded off: the corpus is pinned to the build
+  host's glibc 2.35, so it proves the **≥2.34** finisher (`free@got.plt` →
+  `system`), while `bon-nie-appetit` under its own bundled 2.27 proves the
+  **≤2.33** one (`__free_hook`). The 2.30/2.31 middle case is **unmeasured**, and
+  a PIE target on a ≥2.34 libc is declined by design. A related precision trap is
+  recorded in the manifest: `__free_hook` is still an exported symbol in 2.35, so
+  a capability test that greps for the symbol concludes the wrong thing — branch
+  on the glibc release, never on symbol presence.
+
 - New technique `weak_prng_replay`: a secret (token, PIN, password, session nonce)
   produced by `rand`/`random`/`rand_r` from a predictable seed, reproduced rather
   than guessed. This is the **second non-memory-safety category** after
