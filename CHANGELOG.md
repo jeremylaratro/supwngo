@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`scripts/await_procs.sh` — a wait-for-processes helper that cannot match itself.**
+  Two related traps have now cost this project five separate incidents.
+  `pgrep -f "pytest tests/ -k"` matches full command lines, including the waiter
+  shell's own argv, so `until ! pgrep -f ...` never exits — recorded in
+  `benchmark/sample_load.sh` as hanging three agents (four stale waiters parked on
+  this host, oldest ~12 hours), and it hung a fourth on 2026-09-28 for ~59 minutes
+  after its tests had already finished. The obvious fix, `ps -eo cmd | grep -c
+  "[p]ytest tests/"`, cures only *self*-matching: it still counts unrelated shells
+  whose argv mentions the string, and on 2026-09-28 it reported 4 live pytest runs
+  when the true count was 0 (every match a 0%-CPU waiter, one from an unrelated
+  project 12 days old) — a status report was made on that basis. Both share one
+  shape: a check that looks like it is measuring the world while it is measuring
+  itself, and so cannot fail in a way that looks like failure. This helper asks the
+  kernel what a process *is* via `/proc/<pid>/comm` instead of trusting argv, so
+  shells are excluded by construction. It reports three states, not two — exit 2
+  means "gave up waiting", explicitly not "done", because a caller that cannot tell
+  those apart will read a partial result as a final one. Red-proved with a positive
+  control that caught a real bug the self-match tests could not see: the first
+  version assigned its detail string inside `$(...)`, i.e. a subshell, then read it
+  in the parent, so under `set -u` it aborted the instant it found anything — it
+  worked only while it had nothing to wait for.
+
 - **`scripts/gate_sweep.py` — the gate-narrowness sweep is now a committed tool.**
   Every new vulnerability category owes a sweep of its executor's applicability
   gate over the whole benchmark tree (condition 3 of "how a new category is judged
