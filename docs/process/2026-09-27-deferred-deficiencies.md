@@ -444,10 +444,16 @@ as coverage in the one place a reader would look for it. See
 
 ### 7.11 Owed measurements
 
-- A **solo re-run of `I-14`** on a quiet host. It fails as a 90-second
-  `subprocess.TimeoutExpired`, and the gate that observed it was running
-  alongside three compiling agents, so "defect" and "budget too tight under
-  load" are currently indistinguishable (run-log row 47).
+- ~~A **solo re-run of `I-14`** on a quiet host.~~ **DONE 2026-09-28, and it
+  closed the item rather than just measuring it (`40e986a`).** The solo re-run
+  did fail, which ruled out load — but the framing above offered only two
+  options, "defect" or "budget too tight under load", and the answer was a third:
+  the budget was too tight *deterministically*, because `_run_solve` passes no
+  `--timeout` so its cost scales with the LADDER, and the test's first step is an
+  expected-to-fail solve that walks all of it. Measured 103.0 s against a 90 s
+  cap. Every category added over these rounds was pushing this test toward
+  failure. Budget is now a named `_SOLVE_WALL_BUDGET = 300`; test passes in
+  212.88 s.
 - A **post-integration whole-tree gate**. The 1588-passed figure was taken while
   the tree was being edited, which makes it a valid pre-integration baseline and
   nothing more.
@@ -593,4 +599,4 @@ bound on what a seat can buy, not a measurement of it.
   ordering. Pre-existing; `alloc_size_overflow` correctly declines it (no
   allocator in the image) rather than papering over it.
 - `heap_uaf_read` remains the last `FIRST_TECHNIQUES` orphan.
-- The solo `I-14` re-run on a quiet host, still owed from §7.11.
+- ~~The solo `I-14` re-run on a quiet host, still owed from §7.11.~~ **DONE 2026-09-28** — see §7.11; it closed `I-14` outright (`40e986a`).
