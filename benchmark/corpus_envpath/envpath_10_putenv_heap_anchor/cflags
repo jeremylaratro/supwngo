@@ -1,0 +1,34 @@
+# Protections for the env/PATH-hijack corpus. Held IDENTICAL across every target
+# in this family on purpose: the *reachable sink the overflow lands on* is the
+# only variable, so a protection difference would confound the measurement.
+#
+# These mirror the measured target (HTB `sabotage`,
+# tests/htb-targets/a12c7382-edc2-4554-ab36-fe26b48f8fd4/challenge/sabotage),
+# whose checksec reads PIE / canary ON / NX / RELRO FULL. That combination is
+# deliberately the FULL modern set, because this category is data-only: nothing
+# in the exploit path corrupts a return address or a code pointer, so every one
+# of these protections is satisfied while the target stays trivially exploitable.
+# Building the family hardened keeps "hardened" from being quietly re-learned as
+# "not exploitable".
+#
+# -fstack-protector-all  matches the measured target: sabotage's vulnerable
+#                        function enter_command_control() loads fs:0x28 and
+#                        checks it before returning. The overflow never touches
+#                        the frame, so the canary is irrelevant -- which is
+#                        exactly the point of keeping it on.
+# -pie -fPIE             as in the target. No exploit step needs a code or heap
+#                        address, so PIE costs the attacker nothing here: every
+#                        offset used is a fixed intra-heap distance.
+# -Wl,-z,relro,-z,now    Full RELRO, as in the target. There is no GOT write in
+#                        this category.
+# -O0                    the primitive depends on readBuffer() re-reading its
+#                        base pointer and index from the frame each iteration
+#                        and on Malloc()'s `n + 8` actually being computed at
+#                        run time; at higher -O gcc constant-folds the wrap
+#                        check away in the negative control and the family stops
+#                        being a controlled comparison.
+-fstack-protector-all
+-pie
+-fPIE
+-Wl,-z,relro,-z,now
+-O0

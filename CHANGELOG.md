@@ -68,6 +68,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the other four were never reached before the run was superseded by the ordering
   fix below.
 
+- New technique `env_path_hijack`, **and with it the fifth HTB solve**: an
+  unbounded forward heap write whose reachable sink lets the program's own later
+  `system(<relative path>)` be redirected to a planted script. The route is
+  **data-only** — no return address is overwritten, no pointer is corrupted, and no
+  code address is ever needed; the payload is ASCII that changes which file a later
+  `system()` resolves.
+
+  **HTB `sabotage` now solves through the real `autopwn` CLI**: `success=true`,
+  `technique=env_path_hijack`, `verified=SHELL_ACCESS`,
+  `legacy_fallback=not_reached`, in **8.2 s**, on winning rung 1 of 48 (distance
+  `0x20`, payload `PATH=/tmp:/bin`). Three same-day default-set baselines in
+  `results_htb/` record it as `NOT_SOLVED`, so the change is attributable. **HTB
+  moves 4/7 → 5/7.**
+
+  Measured on `benchmark/corpus_envpath/` (5 targets) both ways, with the in-tree
+  wiring rather than a shim:
+
+  | run | positives | control |
+  |---|---|---|
+  | executor unregistered | **0/4** (322–332 s each, registry exhausted) | declined |
+  | registered, attempted first | **4/4** (10.7–16.2 s) | declined at 341.4 s |
+
+  Every target is **PIE + canary + NX + Full RELRO** — the strongest hardening in
+  any corpus here, with `cflags` byte-identical across all five — and all four
+  positives still reach a shell. That is the category's point, not an oversight:
+  there is nothing for a canary to check, nothing for RELRO to protect, and nothing
+  for PIE to randomise.
+
+  The single varied axis is **which reachable sink the overflow lands on**: an
+  already-`putenv`'d heap env entry (the anchor, matching the HTB shape); a heap
+  `char *` command string `system()` is later handed, where the environment is not
+  involved at all; a buffer `putenv`'d only *after* the vulnerable read returns; and
+  a buffer used as the **value** argument of a later `setenv("PATH", value, 1)`,
+  where the program names the variable so the payload carries no `PATH=` prefix.
+  That last one specifically catches an executor that only knows how to write a
+  whole `NAME=value` entry. The winning rung differs per target (1, 3, 1, 2), which
+  is the evidence that each sink needs a different payload *shape*.
+
+  The oracle was shown able to go RED **eight** ways, each wrong-but-present rather
+  than absent: distance ±8 from the measured `0x20`, `PATH=/tmp` without `:/bin`,
+  `XPATH=…`, `PATH=/zzzz:/bin`, the preparation step skipped, `#!/bin/sh` as the
+  planted content, and the setenv-value target handed a whole `NAME=value` entry.
+
+  Attempt ordering is load-bearing and measured: registered but absent from
+  `FIRST_TECHNIQUES` the technique ran as attempt **23 of 23** and survived only
+  because the budget was 300 s — it would not have survived the 150 s that starved
+  `prng_10`. Gate narrowness is measured too: applicable on exactly 4 of 66 built
+  corpus binaries and exactly 1 of 11 HTB ELF executables.
+
+  Four constants are **MEASURED rather than derived**, and each is labelled as such
+  at its point of use: the planted shebang line (`#!/bin/sh` is RED-proved not to
+  work — that shell reads the script instead of our stdin), the `:/bin` PATH tail,
+  `0x20` as the *leading* swept distance rather than an asserted one, and the host
+  loader path, needed only because `sabotage` ships a **zero-byte, non-executable**
+  `ld-linux-x86-64.so.2` so a plain `process(BINARY)` raises EACCES before any
+  exploit byte is sent.
+
 - New technique `objptr_hijack`: a function pointer the program later **calls** is
   reachable from attacker-controlled bytes, so the hijack lands on a live `call
   *<reg>` in the middle of a function rather than on a saved return address. That

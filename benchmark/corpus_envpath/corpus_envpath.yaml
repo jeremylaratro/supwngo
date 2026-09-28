@@ -1,0 +1,186 @@
+# Challenge-variation corpus manifest: relative-`system()` hijack via an
+# unbounded forward heap write. The corpus derived from HTB `sabotage`.
+#
+# WHAT THIS CORPUS MEASURES, AND WHAT IT DOES NOT
+#
+# Measures: whether one solve capability GENERALISES across the particulars of a
+# single vulnerability category. Everything about the BUG is held identical across
+# all five targets and exactly one thing varies -- **which reachable sink the
+# overflow lands on**. A per-target difference is therefore attributable to the
+# sink shape, not to a different bug.
+#
+# Held identical in every target (read the source headers, which say it at length):
+#
+#   size wrap        `Malloc(n)` does `malloc(n + 8)`, so `n = 2**64 - 8` wraps to
+#                    `malloc(0)` and SUCCEEDS
+#   unsigned bound   `readBuffer()`'s `i < n` with `n` a `size_t` never trips, so
+#                    the write runs forward without limit
+#   relative sink    `system()` is handed a RELATIVE path, resolved through $PATH
+#   plant primitive  the target's own `open()`/`write()` pair: 7-character name (no
+#                    `.`, no `/`), one line of <= 30 characters, and no `O_TRUNC`
+#   heap geometry    `read_option()`'s Malloc/Free leaves a 0x20 tcache chunk at
+#                    the bottom of the heap, so the wrapped `malloc(0)` reuses it
+#                    and the sink chunk sits exactly 0x20 bytes above the returned
+#                    pointer -- MEASURED under gdb on every target in the family
+#   menu ordering    option 2 must run BEFORE option 1, because option 2 is what
+#                    puts a heap chunk above the chunk option 1 overflows out of.
+#                    Option 1 alone walks into the top chunk and glibc aborts with
+#                    "corrupted top size".
+#
+# Does NOT measure: anything about the other categories, and it does not claim the
+# variants are equally hard for a human -- only that each is exploitable by the
+# same primitive, which is proven below rather than asserted.
+#
+# WHY THE PROTECTIONS ARE ALL ON AND IT DOES NOT MATTER
+#
+# Measured 2026-09-28 off the binaries, not copied from `cflags`: every target is
+# **PIE + canary + NX + Full RELRO**, the strongest hardening in any corpus here,
+# and `cflags` is byte-identical across all five (md5 f3c4ec9e). All four positives
+# still reach a shell. That is the point of the category rather than an oversight:
+# the route is DATA-ONLY. No return address is overwritten, no pointer is
+# corrupted, and no code address is ever needed -- the payload is ASCII that
+# changes which file a later `system()` resolves. There is nothing for a canary to
+# check, nothing for RELRO to protect, and nothing for PIE to randomise.
+#
+# THE ONE VARIABLE: WHICH SINK
+targets:
+  - slug: envpath_10_putenv_heap_anchor
+    role: positive
+    sink: >
+      a heap-resident environment entry ALREADY registered with putenv() when the
+      overflow happens. Overwriting it with "PATH=/tmp:/bin" installs a second PATH
+      binding after the inherited one in the environ array. This is the anchor --
+      the shape measured in the HTB target.
+    winning_rung: 1
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: envpath_11_heap_cmd_string
+    role: positive
+    sink: >
+      a heap-resident `char *` COMMAND STRING the program itself later passes to
+      system(). The environment is not involved at all, so the payload is a path or
+      a shell name rather than an environment assignment.
+    winning_rung: 3
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: envpath_12_late_putenv_buffer
+    role: positive
+    sink: >
+      a heap buffer NOT yet in the environment at overflow time -- the program
+      registers it with putenv() only AFTER the vulnerable read returns, so the
+      write has to survive until that later call installs it.
+    winning_rung: 1
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: envpath_13_setenv_value_buffer
+    role: positive
+    sink: >
+      a heap buffer used as the VALUE argument of a later setenv("PATH", value, 1).
+      The program, not the payload, names the variable, so the payload is a bare
+      search path ("/tmp:/bin") with NO "PATH=" prefix. An executor that only knows
+      how to write a whole "NAME=value" entry fails here while the mechanism is
+      unchanged -- which is exactly what this variant exists to catch.
+    winning_rung: 2
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: envpath_90_neg_bounded
+    role: control
+    sink: >
+      the same sink as the anchor, with the bug repaired TWO independent ways:
+      `if (n + 8 < n) return;` closes the size wrap, and the system() call is made
+      absolute (`/bin/panel`) so $PATH cannot decide it. Either repair alone would
+      suffice; both are present so the control's refusal is not one edit away from
+      being a positive.
+    winning_rung: null
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+
+# VALIDATED BEFORE USE
+#
+#   benchmark/reference_exploits/envpath_variants_reference.py
+#
+# 4 positives SHELL 2/2 each; control SHELL 0/2. Geometry confirmed under gdb: the
+# sink is exactly 0x20 above the overflowing buffer on all four positives, and the
+# control never reaches `readBuffer` because its wrap is refused.
+#
+# The oracle was shown able to go RED **eight** ways, every one wrong-but-present
+# rather than merely absent: distance -8, distance +8, `PATH=/tmp` without `:/bin`,
+# `XPATH=...`, `PATH=/zzzz:/bin`, the preparation step skipped, `#!/bin/sh` as the
+# planted content, and the setenv-value target handed a whole `NAME=value` entry.
+#
+# END-TO-END THROUGH THE REAL CLI (measured 2026-09-28 by the orchestrator with the
+# IN-TREE wiring, not relayed and not through a shim:
+# `benchmark/measure_family.py benchmark/corpus_envpath --timeout 300 --jobs 1`)
+#
+#   executor unregistered   0/4 positives, control declined, 322-332 s each
+#                           (the registry exhausted -- not a timeout)
+#   registered + first      4/4 positives, control declined, exit 0 ALL OK
+#
+# Per target wired: envpath_10 10.8 s, envpath_11 16.2 s, envpath_12 10.7 s,
+# envpath_13 12.7 s. Control envpath_90 not solved at 341.4 s, having spent the
+# budget rather than exiting early.
+#
+# `--jobs 1` IS REQUIRED, and this is a property of the family rather than of the
+# harness: every target derives its plant filename from its own `system("panel")`
+# string, so all five share `/tmp/panel` and concurrent targets would unlink each
+# other's planted file between the plant and the `system()` call.
+#
+# Attempt ORDER is load-bearing and was measured: registered but NOT in
+# FIRST_TECHNIQUES the anchor still solved, but `env_path_hijack` ran as attempt
+# **23 of 23** and survived only because the budget was 300 s -- it would not have
+# survived the 150 s that starved `prng_10`. Ordered first it solves in 11.7 s.
+#
+# Gate narrowness, measured: applicable on exactly the 4 positives out of 66 built
+# binaries across 14 `benchmark/corpus*` families, and on exactly 1 of 11 HTB ELF
+# executables. The control is declined with a DERIVED reason -- the vulnerable
+# path's `system()` argument is absolute (`['/bin/panel']`).
+#
+# WHAT THIS CORPUS BOUGHT: THE FIFTH HTB SOLVE
+#
+# HTB `sabotage` now solves through the real `autopwn` CLI. Verified by the
+# orchestrator directly:
+#
+#   success=True  technique=env_path_hijack  verified=SHELL_ACCESS
+#   legacy_fallback=not_reached  flag=None  duration=8.2 s
+#   winning rung 1/48, distance 0x20, payload 'PATH=/tmp:/bin'
+#
+# Three same-day default-set baselines in `results_htb/` record `sabotage` as
+# NOT_SOLVED, so the change is attributable. HTB moves 4/7 -> 5/7.
+#
+# CONSTANTS THAT COULD NOT BE DERIVED, AND WHY (labelled at point of use in the
+# executor, per the house rule -- these are MEASURED, not read out of the image)
+#
+#  1. `SHELL_CONTENT = "#!/usr/bin/env -S sh -c sh"` -- nothing in the image says
+#     which <= 30-character single line lands in a shell reading OUR stdin.
+#     `#!/bin/sh` is RED-proved not to: that shell reads the script instead.
+#  2. `PATH_TAIL = ":/bin"` -- RED-proved: `PATH=<plantdir>` alone fails with
+#     `/usr/bin/env: 'sh': No such file or directory`.
+#  3. `MIN_CHUNK = 0x20` as the LEADING swept distance -- derived as glibc's 64-bit
+#     minimum chunk, but only under the assumption "the sink is the immediate
+#     neighbour chunk", which is not readable from the image. So it heads a swept
+#     48-rung ladder instead of being asserted, and +/-8 is RED-proved.
+#  4. The host loader `/lib64/ld-linux-x86-64.so.2` -- emitted only when the
+#     target's own `PT_INTERP` is unusable. `sabotage` ships a ZERO-BYTE,
+#     non-executable `glibc/ld-linux-x86-64.so.2`, so a plain `process(BINARY)`
+#     raises EACCES before a single exploit byte is sent.
+#
+# DELIBERATELY NOT COVERED, stated plainly rather than rounded off
+#
+# The `environ` POINTER ARRAY and a heap FUNCTION-POINTER TABLE are absent on
+# purpose. `readBuffer` writes a NUL where it sees the newline, so any partial
+# pointer write also zeroes the next byte; stopping without a NUL means closing
+# stdin, which kills the shell the oracle needs; and a full 6-byte pointer write
+# needs a leak this family forbids. Four leak-free DATA-ONLY sinks were varied
+# instead, and that choice is vindicated by the winning rungs differing per target
+# (1, 3, 1, 2) -- each sink needs a different payload SHAPE, which is what actually
+# exercises an executor's generality.
