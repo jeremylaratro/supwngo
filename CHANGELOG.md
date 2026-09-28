@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The teaching half of `env_path_hijack`**: a walkthrough family for the
+  data-only route, so `supwngo explain` teaches what the pipeline already flies.
+
+  The gap was measured, not assumed. Before this, all five `corpus_envpath` targets
+  selected **`triage`** — "go and discover the facts yourself" — on a category where
+  the pipeline derives every fact it needs and solves in ~11 s. Across the three
+  categories added this cycle, **21 of 22 targets fell to `triage`** and the
+  twenty-second (`fnptr_11_stack_struct`) won `stack_bof`'s ret2win route, which is
+  the worse outcome: a *followable wrong* walkthrough.
+
+  Seven steps, each deriving its facts from the executor's own `analyse()` rather
+  than re-deriving them — a walkthrough that re-derived the plan could drift from the
+  code it documents, and then the teaching artifact and the tool would disagree about
+  the same binary. The route is taught as what it is: every corpus target is
+  PIE + canary + NX + Full RELRO and all four positives still shell, because nothing
+  is overflowed toward a return address and no code address is ever needed.
+
+  **A correction is recorded at the constant rather than quietly fixed.** The family
+  first scored 0.89 and passed every existing test, because on the corpus no other
+  family proposes an applicable route. It was still wrong: HTB `sabotage` imports
+  `srand`/`time`/`rand`, so `weak_prng` proposed at 0.94 and **took the real
+  target** — and a PRNG replay on `sabotage` stops short of a shell. Generalising
+  from a corpus to a real target is precisely what this family's corpus exists to
+  prevent, and the first draft did it anyway. The score is now 0.99, above
+  `subprocess_injection`'s 0.98, on a stated ground: injection must negotiate the
+  target's input filter and can be shut out **structurally**, while this route's only
+  unknown is a distance, which cannot close and can only cost rungs. That family's
+  comment is amended at the original rather than contradicted from a distance.
+
+  Gated by `tests/test_walkthrough_env_path.py`, whose load-bearing test is on the
+  **real** target, not the corpus — plus a test that pins the *reason* (competing
+  families must still apply and still be outranked, so the ordering check cannot go
+  green because a competitor stopped proposing).
+
 - New technique `heap_strlen_ofb1`: a `strlen()`-derived length taken on a heap
   buffer that was filled exactly and therefore **never NUL-terminated**, so the
   length source itself runs past the allocation and the resulting `read()` writes
