@@ -1,0 +1,528 @@
+# Challenge-variation corpus manifest: HEAP USE-AFTER-FREE USED TO **READ**
+# (CWE-416 use-after-free -> CWE-200 exposure of sensitive information).
+#
+# A record is released and then read again. Nothing is overwritten, no pointer is
+# corrupted into a code address, and no control flow is ever redirected: the
+# program writes bytes it has already handed back to the allocator straight to
+# stdout. The success signal for this whole family is therefore **FLAG_CAPTURED**,
+# not SHELL_ACCESS -- the same outcome level `path_traversal_read`,
+# `library_path_hijack` and `toctou_path_race` already verify at.
+#
+# This family closes the LAST orphan in `orchestrator.py`'s `FIRST_TECHNIQUES`
+# list: `heap_uaf_read` was named there with no executor behind it. The executor
+# it exists to measure is
+# `supwngo/exploit/pipeline/executors/heapuafread_techniques.py`
+# (`HeapUafReadExecutor`, `name = "heap_uaf_read"`).
+#
+# WHY IT IS A SEPARATE CATEGORY FROM THE THREE HEAP CATEGORIES ALREADY SHIPPED
+#
+# `uaf`, `double_free`, `tcache_poison_got` and `heap_record_hijack` all end in a
+# WRITE: a freed chunk is reclaimed and a function pointer, a GOT slot or a
+# record field is made to point somewhere. Every one of them needs a destination
+# in the image and is defeated by not having one. This category needs no
+# destination at all, which is why all six targets here are built PIE + Full
+# RELRO + NX + canary and five of the six are still solved (MEASURED, below): the
+# mitigations have nothing to check.
+#
+# The honest near-neighbour is `uninit_disclosure` (corpus_uninit/), which also
+# ends in a disclosure of stale heap bytes. The difference is WHOSE bytes and
+# WHEN: `uninit_disclosure` reads a *newly allocated* object whose tail was never
+# written, so the read is in-bounds of a live object and the residue is whatever
+# a previous owner left. Here the read is of the *released object itself*,
+# through a handle the program still holds. `uninit_10_stale_heap_chunk` is
+# deliberately the closest target in the tree, and the two gates DO overlap on
+# four `corpus_uninit` images -- named, not hidden, in GATE NARROWNESS below.
+#
+# WHAT THIS CORPUS MEASURES, AND WHAT IT DOES NOT
+#
+# Measures: whether ONE solve capability GENERALISES across the particulars of a
+# single vulnerability category. Everything about the program is held identical
+# across all six targets and exactly one thing varies -- **the mechanism by which
+# already-freed memory gets re-read**. A per-target difference is therefore
+# attributable to that mechanism and to nothing else.
+#
+# Held identical in every target, and MEASURED rather than asserted: strip each
+# source's leading header comment and diff the bodies against the control
+# (`uafr_90`). What comes back is 3 to 6 hunks per positive; ONE of them is the
+# per-target `#define FLAG` literal and every other hunk is inside the command
+# that variant loosens, or in that command's explanatory comment. No hunk touches
+# the record layout, the menu, the prompts, the secret's placement, or main().
+#
+#   the menu         `1) create  2) delete  3) show  4) list` /
+#                    `5) bookmark  6) recall  7) retype  8) report  9) exit`,
+#                    then `> `. Byte-identical in all six, including the two
+#                    commands (`bookmark`, `retype`) that only ONE variant each
+#                    actually uses -- so the menu cannot tell a detector which
+#                    variant it is looking at.
+#   the record       struct note { unsigned long id; unsigned long created;
+#                    char text[1024]; } -- 1040 bytes. `id` and `created` sit at
+#                    +0 and +8 ON PURPOSE: those are the two words an unsorted-bin
+#                    insertion overwrites with `fd`/`bk`, so the secret is placed
+#                    clear of them.
+#   the secret       `text[0..15]` is 16 bytes of 'A' padding and the FLAG starts
+#                    at `text[16]` == body+32, past the fd/bk window. Planted once
+#                    at startup by `seed_vault()`.
+#   the seal         the secret lives in slot 0 marked `SLOT_SYSTEM`, and every
+#                    SAFE reader refuses that state. This is what makes the family
+#                    a measurement: **no target here has a benign path to the
+#                    secret.** MEASURED, not assumed -- see NO BENIGN PATH below.
+#   the geometry     sizeof(struct note) == 1040 -> a 0x420 chunk. glibc 2.35's
+#                    largest tcache bin is 0x410, so every free() in this family
+#                    goes to the unsorted bin or straight into the top chunk, and
+#                    never into tcache. `setvbuf(stdout/stdin, _IONBF)` runs
+#                    BEFORE the first malloc so no stdio buffer is ever allocated
+#                    between the vault chunk and top.
+#   the precondition free() does not wipe the released body. That is the
+#                    PRECONDITION of the category, not the variable.
+#   cflags           byte-identical across all six. MEASURED: md5 of the whole
+#                    file is `dcb7beb89be3ab92ccac88bd8dbfb415` for all six, so
+#                    unlike corpus_uninit/ a whole-file md5 comparison is valid
+#                    here.
+#
+# Does NOT measure: any write primitive, any control-flow hijack, any leak ->
+# resolve -> libc finisher, and any shell. See DELIBERATELY NOT COVERED.
+#
+# PROTECTIONS -- MEASURED OFF THE BINARIES 2026-09-28 WITH `Binary.load()`
+#
+# All six: **canary ON, NX on, PIE on, Full RELRO** -- identical, so no
+# protection difference can confound the mechanism axis. That is the strongest
+# setting available and it is deliberate: this category cares about none of them,
+# and a family built at those settings says so as a measurement instead of a
+# claim.
+#
+# MEASUREMENT TRAP (re-verified here rather than taken on trust):
+# `Binary(path).protections` returns the all-False dataclass default, because the
+# constructor never runs `_detect_protections()`. Only `Binary.load(path)`
+# measures. Read the wrong way all six of these targets "have no protections at
+# all", which would destroy the orthogonality claim this family exists to make.
+#
+# `-O0` is REQUIRED and is load-bearing three times over, not stylistic:
+#   * the struct layout has to stay where the source puts it, because the fd/bk
+#     window at +0/+8 and the secret at +32 are the geometry being measured;
+#   * the control's `memset(..., 0, sizeof *notes[idx])` immediately before each
+#     `free()` must remain a CALL, because that call being the nearest preceding
+#     call is the executor's static discriminator (see STATIC DISCRIMINATOR);
+#   * uafr_12's `malloc` vs the control's `calloc` must not be rewritten into
+#     each other.
+#
+# BUILT AND TESTED AGAINST -- read off this host, not copied
+#   glibc   2.35 (Ubuntu GLIBC 2.35-0ubuntu3.15)   `ldd --version`
+#   gcc     11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3) `gcc --version`
+#   kernel  6.8.0, x86-64, Ubuntu 22.04
+# Safe-linking is ON at this glibc, which is why nothing in this family depends
+# on reading or forging a freelist `next` pointer.
+#
+# THE ONE VARIABLE: HOW THE FREED BODY GETS READ AGAIN
+targets:
+  - slug: uafr_10_show_after_free
+    role: positive
+    breaks: >
+      Nothing -- this is the ANCHOR, the baseline the other four are measured
+      against. A dangling slot pointer, read by the program's own per-index
+      display command. If a detector cannot find this one the family measures
+      nothing.
+    mechanism: >
+      `delete()` frees the body, deliberately KEEPS `notes[idx]` and `lens[idx]`
+      "for the audit trail", and marks the slot `SLOT_RETIRED`. `show()` does not
+      call `readable()`; it spells its refusal set out by hand as a list of
+      states to reject (EMPTY, SYSTEM) and `SLOT_RETIRED` -- added later -- was
+      never added to that list. So the sealed system note becomes readable the
+      moment it is released, and only then.
+    solve: delete(0); show(0)
+    free_sites: 3
+    wipe_preceded: 2
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: uafr_11_stale_count_iteration
+    role: positive
+    breaks: >
+      "The dangling pointer is the slot pointer." Here the slot pointer IS
+      cleared -- `notes[idx] = NULL`, `lens[idx] = 0`, `state[idx] = SLOT_EMPTY`,
+      exactly as the control does it -- and the target is still solvable, because
+      a SECOND array kept its own copy. A gate that watched `notes[]` for a
+      surviving pointer sees a clean release here.
+    mechanism: >
+      `delete()` clears the slot but leaves the `shadow[]` / `shadow_len[]`
+      mirror and does not lower the `high` water mark. `list()` walks
+      `0..high`, skips only `SLOT_SYSTEM`, and prints `shadow[i]->text` for
+      `shadow_len[i]` bytes -- and the state it is consulting for the seal is the
+      one `delete()` just reset to EMPTY, so the seal no longer protects the
+      slot the mirror still points at.
+    solve: delete(0); list()
+    free_sites: 3
+    wipe_preceded: 2
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: uafr_12_reuse_shorter_write
+    role: positive
+    breaks: >
+      "The read has to happen while the chunk is free." It does not. Here the
+      chunk is freed and IMMEDIATELY RE-ALLOCATED -- the body is live, owned, and
+      correctly typed when it is read. Every byte read is in-bounds of a live
+      allocation. What is stale is the LENGTH.
+    mechanism: >
+      `retype()` accepts a SEALED note (the only command that does), frees the
+      body without wiping it, `malloc`s -- not `calloc`s -- a new one of the same
+      size, writes only the `sz` bytes the operator supplies, does NOT update
+      `lens[idx]`, and sets the slot to `SLOT_USER`. The 0x420 chunk comes
+      straight back from the unsorted bin, so the tail past `sz` is the previous
+      owner's bytes; `show()` then prints `lens[idx]` == 1024 of them. Solving it
+      needs a SHORT write: 8 bytes.
+    solve: retype(0, sz=8, "AAAAAAAA"); show(0)
+    free_sites: 3
+    wipe_preceded: 2
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: uafr_13_alias_handle
+    role: positive
+    breaks: >
+      "One release, one read, both naming the same index." Here the read never
+      names the freed index at all -- it names a BOOKMARK id taken before the
+      release. The state check it performs is real and it passes, because it
+      checks the state of the slot the alias remembers and `delete()` set that
+      state to EMPTY.
+    mechanism: >
+      `bookmark()` accepts a SEALED note and stores `(marks[id], mark_len[id],
+      mark_slot[id])`. `delete()` clears `notes[idx]`, `lens[idx]` and
+      `state[idx]` -- but does not call `forget_alias()`. `recall()` re-checks
+      `state[mark_slot[id]] == SLOT_SYSTEM`, which is now false, and then
+      dereferences its own stale `marks[id]`.
+    solve: bookmark(0); delete(0); recall(0)
+    free_sites: 3
+    wipe_preceded: 2
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: uafr_14_coalesced_hole
+    role: positive
+    breaks: >
+      "The program has to hold SOME handle to the freed object." Here it holds
+      none. `delete()` clears everything the control clears -- pointer, length,
+      state, aliases, shadow mirror, high-water mark -- and the target is still
+      solvable, because the disclosure is through a DIFFERENT, unrelated object
+      that lands on the released address. There is no dangling pointer in this
+      program to find; the dangling thing is the ADDRESS.
+    mechanism: >
+      The vault chunk borders the top chunk, so freeing it consolidates into top
+      and writes NOTHING into the user data (no fd/bk, no tcache key). `report()`
+      then `malloc(WS_SZ)` with WS_SZ == 2 * sizeof(struct note), which is carved
+      from the released address, writes a 13-byte banner into the front, and
+      `write(1, ws, WS_SZ)`s the whole workspace -- banner, then 2067 bytes
+      nobody wrote, secret included.
+    solve: delete(0); report()
+    free_sites: 3
+    wipe_preceded: 1
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: uafr_90_neg_cleared_on_free
+    role: control
+    breaks: >
+      NEGATIVE CONTROL. Same menu, same record layout, same sealed secret in slot
+      0, same nine commands including `bookmark`, `retype` and `report` -- and
+      **no path anywhere in the program that reads freed memory.** Every shape a
+      naive oracle credits is KEPT: heap records are allocated and freed, a
+      display command prints record bodies, a workspace is allocated and written
+      out in full, an alias table exists, and the target never crashes.
+    mechanism: >
+      All five loosened commands repaired, each in the smallest way that closes
+      it: `delete()` memsets the whole body before `free()` and then clears the
+      pointer, the length, the state, the aliases, the shadow mirror and the
+      high-water mark; every reader goes through the single `readable()`
+      predicate, which admits `SLOT_USER` only; `recall()` additionally requires
+      `state[slot] == SLOT_USER && notes[slot] == marks[id]`; `retype()` refuses
+      a sealed note, wipes the old body, `calloc`s the new one and updates
+      `lens[idx]`; `report()` uses `calloc` and memsets the workspace before
+      freeing it.
+    solve: none. Expected NOT to solve.
+    free_sites: 3
+    wipe_preceded: 3
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+
+# ---------------------------------------------------------------------------
+# NO BENIGN PATH TO THE SECRET -- MEASURED, because this is the defect the
+# family's own anchor target has
+# ---------------------------------------------------------------------------
+#
+# `benchmark/corpus/11_heap_uaf_leak/heap_uaf_leak` -- the pre-existing corpus
+# target this category was opened against -- prints its flag from `show(0)` with
+# NO free anywhere in the run. MEASURED. So on that target "the flag appeared" is
+# not evidence that a use-after-free was exploited, and any executor scored
+# against it alone could be a plain menu-reader.
+#
+# This family is built so that cannot happen, and it was checked rather than
+# argued. Every read command (`show`, `list`, `recall`, `report`) was driven in
+# its OWN fresh process, on each of the six targets, with every FREEING command
+# (`delete`, `retype`) excluded from the step list:
+#
+#   FREE-FREE read paths that disclose a flag pattern: **NONE**, 6 of 6 targets.
+#
+# The first version of that check was WRONG and is recorded here because the
+# wrong answer was believable: its "benign" step list for uafr_12 included
+# `retype`, which itself frees. It reported a benign leak on uafr_12. `retype`
+# IS that variant's mechanism, not a benign path.
+#
+# ---------------------------------------------------------------------------
+# THE STATIC DISCRIMINATOR -- and why it is a fact about the binary
+# ---------------------------------------------------------------------------
+#
+# `HeapUafReadExecutor.is_applicable` declines an image when EVERY `call free`
+# site in it is immediately preceded by a call to a wipe (`memset`, `bzero`,
+# `explicit_bzero`, and the `_chk` variants), inside a 24-instruction window,
+# derived from `objdump -d`. The reasoning: if every release is wiped first, a
+# released body holds nothing to disclose.
+#
+# MEASURED off the built images 2026-09-28 (`derive_free_sites`, same code path
+# the gate uses):
+#
+#   slug                          free sites   wipe-preceded   gate
+#   uafr_10_show_after_free            3            2          OPEN
+#   uafr_11_stale_count_iteration      3            2          OPEN
+#   uafr_12_reuse_shorter_write        3            2          OPEN
+#   uafr_13_alias_handle               3            2          OPEN
+#   uafr_14_coalesced_hole             3            1          OPEN
+#   uafr_90_neg_cleared_on_free        3            3          CLOSED
+#   corpus/11_heap_uaf_leak (anchor)   1            0          OPEN
+#
+# Two things about this that matter more than the numbers:
+#
+#   * it keys on a FACT ABOUT THE BINARY, not on a corpus artifact. It never
+#     reads a filename, a slug, a path, a section name or a string. Rename every
+#     directory in this family and the verdicts do not move.
+#   * it is CONSERVATIVE in the safe direction. A wipe wrongly attributed to a
+#     free can only make the gate narrower (a missed target), never looser (a
+#     wrongly-credited one). The control is declined statically, which is
+#     preferable to declining it at runtime -- but the discriminator is real, so
+#     that static decline is a measurement and not a shortcut.
+#
+# ---------------------------------------------------------------------------
+# BUILD
+# ---------------------------------------------------------------------------
+#
+#   SUPWNGO_BENCH_CORPUS=benchmark/corpus_uafread benchmark/build_all.sh
+#
+# reached through build_all.sh's per-target `cflags` fail-closed path. The flags
+# are `-fstack-protector-all -pie -fPIE -Wl,-z,relro,-z,now -O0`, and unlike
+# corpus_uninit/ the `cflags` FILES are byte-identical too (md5
+# `dcb7beb89be3ab92ccac88bd8dbfb415`, all six), so a whole-file md5 comparison is
+# a valid check here.
+#
+# The build is clean -- no warnings on any of the six.
+#
+# ---------------------------------------------------------------------------
+# GATED BEFORE USE: THE ORACLE WAS PROVEN ABLE TO GO RED FIRST
+# ---------------------------------------------------------------------------
+#
+#   python3 benchmark/reference_exploits/uafread_variants_reference.py
+#
+# That script was written and run to completion BEFORE a single line of executor
+# code existed, because a corpus nobody has solved by hand is a hypothesis, not a
+# measurement. It hard-codes the menu numbers, the prompts and the ground-truth
+# geometry -- it is not allowed to probe -- and for each positive it demands
+# THREE things, not one:
+#
+#   1. the recipe discloses a flag pattern;
+#   2. the SAME recipe with the freeing step removed discloses nothing;
+#   3. the disclosed flag equals the target's own `flag.txt` byte for byte.
+#
+# MEASURED RESULT: **5/5 positives PASS** on all three conditions. The control
+# PASSes its own three measurements: all five recipes return no flag, its own
+# unsealed note echoes back correctly 3 times (so the driver is not simply
+# broken), and the sealed slot refuses 3 times.
+#
+# THE ORACLE CAN GO RED -- three ablations, each compiled from the CONTROL's own
+# source with the CONTROL's own cflags, by byte substitution. Each substitution
+# is asserted to have actually matched; an ablation that silently changed nothing
+# is declared void rather than counted as a pass.
+#
+#   ABL-A  drop `delete()`'s memset-before-free        -> NOT solved  (expected)
+#   ABL-B  `report()`'s calloc -> malloc, and drop
+#          its memset-before-free                     -> NOT solved  (expected)
+#   ABL-C  both of the above                          -> **SOLVED**, flag
+#                                                        FLAG{supwngo_ablation_abl_c}
+#
+# HONEST READING OF THAT TABLE, since it is weaker than "five independently
+# load-bearing repairs": on the `report()` route the control's repairs are
+# REDUNDANT BY DESIGN. Zeroing on free and calloc-ing the workspace each block
+# the disclosure on their own, so neither ablation alone re-opens it and both
+# together do. What the table proves is that the oracle distinguishes a wiped
+# release from an unwiped one and is not merely detecting "this program frees
+# things" -- it does NOT prove that each of the control's five repairs is
+# individually necessary.
+#
+# ---------------------------------------------------------------------------
+# END-TO-END THROUGH THE REAL CLI -- MEASURED 2026-09-28
+# ---------------------------------------------------------------------------
+#
+#   python3 benchmark/measure_family.py benchmark/corpus_uafread --timeout 400
+#
+# (6 targets, jobs 3, 400 s per-target budget)
+#
+#   slug                            verdict      technique       verified       wall
+#   uafr_10_show_after_free         SOLVED       heap_uaf_read   FLAG_CAPTURED  102.2 s
+#   uafr_11_stale_count_iteration   SOLVED       heap_uaf_read   FLAG_CAPTURED  102.6 s
+#   uafr_12_reuse_shorter_write     SOLVED       heap_uaf_read   FLAG_CAPTURED  102.7 s
+#   uafr_13_alias_handle            SOLVED       heap_uaf_read   FLAG_CAPTURED   95.0 s
+#   uafr_14_coalesced_hole          SOLVED       heap_uaf_read   FLAG_CAPTURED   95.1 s
+#   uafr_90_neg_cleared_on_free     not solved   (none)          NONE            74.1 s
+#   -----------------------------------------------------------------------------
+#   positives solved 5/5; controls 1, wrongly solved 0; harness exit 0 ALL OK
+#
+# Every solved row carries `flag=True`, so the credit is a real captured flag and
+# not an output match. The control's decline is a CLEAN not-solved verdict at
+# 74.1 s, not a harness timeout -- compare corpus_uninit/, whose control passes
+# only by being killed at the wall in every arm.
+#
+# THE PRE-EXISTING ANCHOR NOW PASSES. `benchmark/corpus/11_heap_uaf_leak` is
+# recorded FAILING at 88.0 s in `docs/reports/PHASE1-BASELINE-24SEP2026.md`
+# line 93. MEASURED after this executor landed, from inside the target directory
+# (measure_family.py takes a FAMILY directory and refuses a single target):
+#
+#   PYTHONPATH=/srv/share/dev/supwngo python3 -m supwngo.cli autopwn \
+#       ./heap_uaf_leak --json --no-legacy --timeout 400
+#
+#   success=true  technique=heap_uaf_read  verified=FLAG_CAPTURED
+#   flag=FLAG{4086eb8b4306db9ae0ce1be24ec476bc}  legacy_fallback=not_reached
+#   22 attempts; a timed re-run took 30 s wall.
+#
+# `legacy_fallback=not_reached` matters: the solve is the canonical pipeline's,
+# not the legacy engine's. The executor's own notes on that run ALSO record the
+# target's benign-path defect ("ALREADY DISCLOSES a flag pattern without any
+# free") while still crediting the release-based recipe `[(2, idx=0), (3, idx=0)]`
+# -- i.e. it solved it the category's way and said out loud that the target could
+# also be solved without the category.
+#
+# ---------------------------------------------------------------------------
+# GATE NARROWNESS -- MEASURED, and LOOSE ON PURPOSE
+# ---------------------------------------------------------------------------
+#
+#   python3 scripts/gate_sweep.py \
+#       supwngo.exploit.pipeline.executors.heapuafread_techniques \
+#       HeapUafReadExecutor corpus_uafread
+#
+#   ELF files swept .......... 171
+#   gate OPEN on ............. 23
+#   own family ............... 5 of 6  (the control is CLOSED)
+#   outside the family ....... 18
+#   raised ................... 0
+#   per-image cost ........... mean 557 ms, max 9466 ms
+#
+# Run twice with two copies of the tool -- an earlier scratch copy in /tmp and the
+# committed `scripts/gate_sweep.py` -- and the counts are identical (23 / 5 / 18 /
+# 0); only the timing moves (601 ms vs 557 ms mean), which is host noise.
+#
+# The 18 out-of-family opens, BY NAME, because a loose gate has to be judged and
+# cannot be judged from a count:
+#
+#   benchmark/corpus/11_heap_uaf_leak/heap_uaf_leak          <- intended; it is
+#                                                               the anchor
+#   corpus_allocsize/alloc_10_mul_wrap_u32
+#   corpus_allocsize/alloc_11_add_wrap_sizemax
+#   corpus_allocsize/alloc_12_signed_count_two_faces
+#   corpus_allocsize/alloc_13_realloc_shrink_wrap
+#   corpus_allocsize/alloc_14_shl_wrap_u64
+#   corpus_allocsize/alloc_90_neg_checked_multiply
+#   corpus_heap_variants/heap_10_uaf_reclaim_fnptr
+#   corpus_heap_variants/heap_11_overflow_next_fnptr
+#   corpus_heap_variants/heap_12_tcache_fd_poison_hooks
+#   corpus_heap_variants/heap_13_unsorted_reclaim_fnptr
+#   corpus_heap_variants/heap_14_double_free_fastbin
+#   corpus_heap_variants/heap_90_neg_handle_dropped
+#   corpus_uninit/uninit_10_stale_heap_chunk
+#   corpus_uninit/uninit_12_short_memset
+#   corpus_uninit/uninit_14_struct_padding
+#   corpus_uninit/uninit_90_neg_full_memset
+#   tests/htb-targets/.../challenge/glibc/libc.so.6
+#
+# All of them are menu-driven heap programs with an unwiped free and a
+# length-bearing bulk sink, which is exactly what the gate asks for; libc.so.6 is
+# a shared object full of both. The gate is deliberately static and loose -- on
+# this project solve rate is the goal and a cheap decline is preferred to a
+# narrow one -- but LOOSE IS NOT FREE, and the cost is stated in ORDERING below
+# rather than left as an open question.
+#
+# A DEVIATION FROM THE LITERAL COMMAND, recorded: the sweep tool wants an
+# importable module path. Invoked with the bare module name
+# (`heapuafread_techniques`) the `/tmp` copy of it raised
+# `ModuleNotFoundError`; the committed `scripts/gate_sweep.py` resolves bare names
+# inside the executors package as well, so both forms work with the committed
+# tool. The numbers above were taken with the dotted path.
+#
+# ---------------------------------------------------------------------------
+# ORDERING -- NOT THIS FAMILY'S DECISION, and its cost is measured
+# ---------------------------------------------------------------------------
+#
+# `heap_uaf_read` sits at position 22 of 28 in `FIRST_TECHNIQUES` (index 21,
+# 0-based -- MEASURED off the list, not counted by eye) in
+# `supwngo/exploit/pipeline/orchestrator.py`, AHEAD of `tcache_poison_got` (23)
+# and `heap_record_hijack` (24). That file was not touched by this work -- the
+# ordering is owned by the orchestrating session -- but the gate sweep shows this
+# gate opens on all six `corpus_heap_variants` images, i.e. on the targets those
+# two later executors own, so the position has a measurable cost and this manifest
+# is where it belongs.
+#
+# ATTRIBUTION IS NOT STOLEN. MEASURED, `benchmark/measure_family.py
+# benchmark/corpus_heap_variants --timeout 400` with this executor registered and
+# ordered: **5/5 positives still SOLVED and still credited to
+# `heap_record_hijack`, `verified=SHELL_ACCESS`; control still not solved; exit 0
+# ALL OK.** Not one target changed hands.
+#
+# THE COST IS ~25 s PER IMAGE, and it is measured in isolation rather than
+# inferred from the family delta. Driving `HeapUafReadExecutor.attempt()` directly
+# against each of the six images (real `Binary.load` -> `ExploitContext` ->
+# `run_static_analysis` -> `run_dynamic_profile` -> `attempt`):
+#
+#   gate cost 0.1-1.1 s, attempt 24.9-25.0 s, outcome **SKIPPED** at stage
+#   ANALYSIS on all six -- i.e. it runs its whole recipe ladder (28 shapes),
+#   discloses nothing, and declines with a measured reason. It never produces a
+#   PARTIAL or FAILED record on these targets, so it cannot appear on the board
+#   beside them.
+#
+# That 25.0 s matches the family-level delta exactly: 100.7-100.8 s per positive
+# before (recorded by the session that built corpus_heap_variants, `--timeout 300
+# --jobs 3`) against 125.9-126.7 s after (mine, `--timeout 400`), and 146.9 s
+# against 170.7 s on the control. So the ordering position costs those five
+# targets ~25 % more wall time and buys them nothing, while the anchor
+# `11_heap_uaf_leak` -- which no other executor solves -- needs it. That trade is
+# the orchestrating session's to make; this manifest only records both sides of it.
+#
+# ---------------------------------------------------------------------------
+# DELIBERATELY NOT COVERED -- stated rather than rounded off
+# ---------------------------------------------------------------------------
+#
+#   * **No write primitive, anywhere.** Not one target here reclaims a chunk to
+#     overwrite a function pointer, a GOT slot or a record field. That is
+#     `uaf`/`double_free`/`tcache_poison_got`/`heap_record_hijack` territory and
+#     is already covered by corpus_heap_variants/. The consequence is that no
+#     target in this family can reach SHELL_ACCESS and none is expected to.
+#   * **No libc leak and no ASLR defeat.** The disclosed bytes are the secret
+#     itself, never an address. A variant whose freed body held a live heap or
+#     libc pointer would be measuring the repo's leak->resolve machinery, which
+#     is a different capability.
+#   * **No safe-linking interaction.** glibc 2.35 mangles freelist `next`
+#     pointers, and nothing here reads or forges one -- the geometry is chosen
+#     (0x420, above the tcache ceiling) specifically so the family does not
+#     depend on tcache metadata at all. A tcache-sized variant would be a
+#     legitimate sixth positive and is not here.
+#   * **The five repairs in the control are not each proven individually
+#     necessary.** See the ABL-A/B/C reading above. Two ablations were enough to
+#     prove the oracle can go red; a full five-way ablation was not run.
+#   * **The control is not proof of narrowness in general.** It proves this
+#     family cannot be solved by a menu-reading or disclosure-shaped oracle
+#     alone. What the gate does on unrelated images is measured separately and
+#     named in full in GATE NARROWNESS above -- 18 out-of-family opens, not zero.
+#   * **The anchor's own benign path was NOT fixed.** `11_heap_uaf_leak` still
+#     prints its flag from `show(0)` with no free. It is a pre-existing corpus
+#     target owned by another effort; this family exists partly to provide the
+#     sealed-secret shape that target lacks.

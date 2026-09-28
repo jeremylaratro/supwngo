@@ -239,3 +239,31 @@ corpus_offbyone/*/*
 corpus_typeconf/*/*
 !corpus_typeconf/*/*.c
 !corpus_typeconf/*/cflags
+
+# corpus_uafread/ -- HEAP USE-AFTER-FREE USED TO **READ** (CWE-416 -> CWE-200): a
+# record is released and then read again, and the program writes bytes it has
+# already handed back to the allocator straight to stdout. Same artifact rule as
+# every other variation family, and it needs its OWN three lines: a family name is
+# not a prefix match and the corpus-wide flag.txt rule does NOT cover compiled
+# binaries, so without these a path-scoped `git add benchmark/corpus_uafread`
+# would commit six ELF images. Verified with `git check-ignore` after the family
+# was built.
+#
+# flag.txt matters here as much as in corpus_traversal/ and corpus_toctou/, and
+# for the same reason: in this category the flag file is not a fallback for a
+# shell-obtaining target, it IS the object of the exploit. The success signal for
+# the whole family is FLAG_CAPTURED -- the target is made to read freed memory and
+# print the secret out of it -- so committing flag.txt would publish the answer
+# AND leak a per-run secret.
+#
+# The `cflags` files must stay TRACKED for a reason specific to this family: `-O0`
+# is load-bearing three times over, not stylistic. At higher -O the record layout
+# (the fd/bk window at +0/+8 and the secret at +32) may move, the control's
+# `memset(...); free(...)` pair may stop being two adjacent CALLS -- which is the
+# executor's static discriminator against the control -- and uafr_12's `malloc`
+# may be rewritten into the `calloc` the control uses. A target rebuilt without
+# its cflags would be a different challenge wearing this name.
+corpus_uafread/*/*
+!corpus_uafread/*/*.c
+!corpus_uafread/*/cflags
+!corpus_uafread/corpus_uafread.yaml

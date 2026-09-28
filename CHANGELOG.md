@@ -66,6 +66,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no mis-tagged state reachable — every operation that sets the tag also rewrites the
   arm it names.
 
+- **New category: heap use-after-free used to READ (CWE-416 → CWE-200) —
+  `heap_uaf_read`.** This closes the LAST orphan in `orchestrator.py`'s
+  `FIRST_TECHNIQUES`: the name was listed there with no executor behind it. A record
+  is released and then read again, and the program writes bytes it has already handed
+  back to the allocator straight to stdout. Nothing is overflowed, no pointer is
+  corrupted into a code address and no control flow is redirected, so the success
+  signal for the whole category is **FLAG_CAPTURED, not SHELL_ACCESS** — the same
+  level `path_traversal_read`, `library_path_hijack` and `toctou_path_race` already
+  verify at. Adds `benchmark/corpus_uafread/` (5 positives + 1 negative control, PIE
+  + canary + Full RELRO + NX, `cflags` byte-identical across all six, whole-file md5
+  `dcb7beb8`), `benchmark/corpus_uafread/corpus_uafread.yaml`,
+  `benchmark/reference_exploits/uafread_variants_reference.py`,
+  `supwngo/exploit/pipeline/executors/heapuafread_techniques.py`, and
+  `tests/test_heapuafread_executor.py` (41 tests). Measured through the real CLI
+  (`benchmark/measure_family.py benchmark/corpus_uafread --timeout 400`): **5/5
+  positives solved, all credited to `heap_uaf_read` with `verified=FLAG_CAPTURED` and
+  `flag=True`, control not solved, exit 0**, 95.0–102.7 s per positive and a CLEAN
+  not-solved verdict on the control at 74.1 s rather than a harness timeout.
+
+  **A previously-FAILING corpus target now passes.**
+  `benchmark/corpus/11_heap_uaf_leak` is recorded FAILING (88.0 s) in
+  `docs/reports/PHASE1-BASELINE-24SEP2026.md` line 93. Measured after this executor
+  landed (`python -m supwngo.cli autopwn ./heap_uaf_leak --json --no-legacy --timeout
+  400` from inside the target directory — `measure_family.py` takes a family, not a
+  single target): **success=true, technique=`heap_uaf_read`,
+  verified=FLAG_CAPTURED, legacy_fallback=`not_reached`**, 22 attempts, 30 s on a
+  timed re-run. The executor's own notes on that run ALSO record that target's
+  pre-existing corpus defect — its plain `show(0)` discloses a flag with no free
+  anywhere — while still crediting the release-based recipe, which is why the sweep
+  runs its no-release baseline FIRST and labels a baseline-only solve as "a disclosure
+  but not evidence of this category's defect".
+
+  **The corpus was proven solvable by hand BEFORE the executor existed, and the
+  oracle was proven able to go RED.** The reference exploit hard-codes the menu and
+  the geometry and demands three things per positive — the recipe leaks, the same
+  recipe minus the freeing step leaks nothing, and the disclosed flag equals
+  `flag.txt` byte for byte: **5/5 PASS**. Three ablations compiled from the control's
+  own source with the control's own `cflags` (each substitution asserted to have
+  matched, so an ablation that silently did nothing is void): dropping `delete()`'s
+  memset-before-free alone → not solved; `report()` calloc→malloc plus dropping its
+  wipe alone → not solved; **both together → SOLVED**. Recorded honestly: on that
+  route the control's repairs are redundant by design, so this proves the oracle
+  distinguishes a wiped release from an unwiped one, NOT that each repair is
+  individually necessary. Separately measured, because it is the defect the anchor
+  has: no free-free read path on any of the six targets discloses anything (the
+  secret sits in a `SLOT_SYSTEM` slot every safe reader refuses).
+
+  **The static discriminator is a fact about the binary, and the gate is loose on
+  purpose.** The gate declines an image when EVERY `call free` in it is immediately
+  preceded by a wipe of the object being released. Measured off the images: the
+  control is 3 of 3 wipe-preceded (declined), the positives 2 of 3 (14 is 1 of 3),
+  the anchor 0 of 1. It reads no filename, slug or path — copying all six images to
+  anonymous names in a temp directory leaves all six verdicts unchanged, which is a
+  test. Gate sweep over the whole tree (`scripts/gate_sweep.py`): **23 of 171 ELFs
+  open, 5 of our own 6 (the control is closed), 18 outside the family, 0 raised**,
+  mean 557 ms per image. The out-of-family opens are named in
+  `corpus_uafread.yaml` rather than counted: the anchor, all six `corpus_allocsize`,
+  all six `corpus_heap_variants`, four `corpus_uninit`, and `libc.so.6` — every one a
+  menu-driven heap program with an unwiped free and a length-bearing bulk sink, which
+  is exactly what the gate asks for.
+
+  **What the ordered position costs the neighbours, measured rather than assumed.**
+  `heap_uaf_read` sits at position 22 of 28 in `FIRST_TECHNIQUES` (index 21,
+  0-based), ahead of `tcache_poison_got` (23) and `heap_record_hijack` (24) — read
+  off the list rather than counted by eye — and its gate opens on all six
+  `corpus_heap_variants` images. Re-measured that family with it registered and
+  ordered: **5/5 still solved, all still credited to `heap_record_hijack`,
+  `verified=SHELL_ACCESS`, control still declined, exit 0** — no target changed hands.
+  Driving this executor directly against those six images isolates the cost:
+  24.9–25.0 s each, outcome SKIPPED at stage ANALYSIS on all six, which matches the
+  family delta exactly (100.7–100.8 s → 125.9–126.7 s per positive; 146.9 s → 170.7 s
+  on the control). So the position costs those five ~25 % more wall time and buys them
+  nothing, while the anchor needs it. `orchestrator.py` was NOT modified by this work.
+
 ### Fixed
 
 - **`I-14` was a test budget the technique ladder outgrew, not a defect in `solve`.**

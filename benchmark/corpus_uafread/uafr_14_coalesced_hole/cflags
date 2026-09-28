@@ -1,0 +1,67 @@
+# Protection flags for benchmark/corpus_uafread/ -- the HEAP USE-AFTER-FREE
+# READ family (CWE-416 -> CWE-200).
+#
+# HELD IDENTICAL ACROSS EVERY TARGET IN THIS FAMILY ON PURPOSE. The only thing
+# that varies between targets is WHICH READ PATH reaches memory the program has
+# already freed; the menu, the record layout, the flag's offset inside the
+# record, the allocation size class and every safe command are byte-identical.
+# A protection difference would confound that measurement, so this file is
+# copied unchanged into all six target directories.
+#
+# NOTHING IN THIS CATEGORY IS STOPPED OR HELPED BY ANY OF THESE FLAGS, and that
+# is the point of turning them all on: the exploit never overflows a buffer,
+# never writes a pointer, never needs a code or data address and never corrupts
+# a single byte of the target's memory. It types menu commands. Leaving the
+# protections off would leave "hardened" available as a lazy explanation for a
+# future failure; having them all on removes it.
+#
+# -fstack-protector-all  canary=ON. No return address is touched anywhere in
+#                        this family, so there is nothing for the canary to
+#                        check. On by default in a modern distro build.
+# -pie -fPIE             PIE=ON. No address is ever needed: the payload is a
+#                        sequence of menu selections and an index, so there is
+#                        nothing for ASLR to randomise that matters.
+# -Wl,-z,relro,-z,now    RELRO=FULL. There is no write primitive at all in this
+#                        category, so a read-only GOT protects nothing that was
+#                        under threat.
+# -O0                    REQUIRED, and it is the geometry that requires it, not
+#                        the exploit. Three facts must survive the compiler:
+#                          * `struct note`'s field order and size, because the
+#                            flag's offset inside the body (32) and the 0x420
+#                            chunk class are the measurement;
+#                          * the memset()-before-free() pairs in the negative
+#                            control must stay CALLS to memset. At -O1 and
+#                            above gcc is free to turn a 1040-byte zeroing into
+#                            inline stores, which would make the control's
+#                            repair invisible to a static reader and turn a real
+#                            discriminator into an apparent one;
+#                          * the malloc()/calloc() distinction in retype() and
+#                            report() must stay as written.
+#
+# NX is ON (default, no -z execstack).
+#
+# BUILT AND TESTED AGAINST
+# ------------------------
+#   glibc   2.35   (Ubuntu GLIBC 2.35-0ubuntu3.15)   <-- `ldd --version`
+#   gcc     11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3)  <-- `gcc --version`
+#   kernel  6.8.0 x86-64, Ubuntu 22.04
+#
+# Allocator facts this family depends on, all glibc-specific and all checked on
+# the built binaries rather than assumed:
+#   * the largest tcache bin on x86-64 is a 0x410 chunk (MINSIZE + 63*16).
+#     sizeof(struct note) == 1040 asks for a 0x420 chunk, which is ABOVE that
+#     ceiling, so every free() in this family bypasses tcache. That is what
+#     makes the reuse in uafr_12 and the consolidation in uafr_14 deterministic
+#     instead of dependent on tcache fill order.
+#   * inserting a chunk into the unsorted bin writes `fd` and `bk` over the
+#     first 16 bytes of the user data and nothing else -- which is why the
+#     record's first 16 bytes are the sacrificial id/created pair.
+#   * free()ing a chunk that borders the top chunk consolidates it into top and
+#     writes NOTHING into the user data, and the next allocation of any size is
+#     carved from there. That is uafr_14's whole mechanism.
+# A later reader comparing results MUST check their own `ldd --version` first.
+-fstack-protector-all
+-pie
+-fPIE
+-Wl,-z,relro,-z,now
+-O0
