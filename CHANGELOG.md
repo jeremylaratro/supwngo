@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **New category: heap-record function-pointer hijack** (`heap_record_hijack`).
+  The same family as `tcache_poison_got`, split by RELRO: where Full RELRO removes
+  the GOT as a destination, what remains is a function pointer the program itself
+  publishes into a heap record. Four shapes — reclaiming a freed record, running
+  off the end of the previous chunk into the next record's pointer, poisoning a
+  tcache `fd` to hand back a chosen address, and a double free through the fastbin
+  — over six targets that hold the *record layout* constant and vary only the
+  primitive that reaches the pointer. Closes a sprint that was killed mid-flight:
+  the executor existed on disk but was **registered nowhere**, so nothing had ever
+  exercised it through the real pipeline.
+
+  Measured in-tree by the orchestrator (`measure_family.py
+  benchmark/corpus_heap_variants --timeout 300 --jobs 3`): **5/5 positives solved
+  by `heap_record_hijack`, `verified=SHELL_ACCESS`, 100.7–100.8 s**, control not
+  solved after 146.9 s.
+
+  **The ordered position is load-bearing for *attribution*, not for the solve**,
+  which is an unusual reason and worth stating. `UAFExecutor` and
+  `DoubleFreeExecutor` now escalate into this executor's shapes, so unordered they
+  reach the primitive first and take the credit for 4 of the 5 positives — the
+  board would then show two techniques solving targets whose primitive they do not
+  implement. With `heap_record_hijack` in `FIRST_TECHNIQUES` beside
+  `tcache_poison_got`, all five are credited to it. What the position does *not*
+  buy is speed: at that depth the run still pays ~80 s of earlier attempts, against
+  20.5–20.9 s when the technique is reached directly.
+
+  The gate was narrowed during this work rather than reported: as first written it
+  opened on 12 of 133 images — the 6 family targets plus `benchmark/corpus/11_heap_uaf_leak`,
+  `12_heap_tcache_poison` and four `corpus_uninit` targets. The discriminating fact
+  is the one the plan builder already refuses without: a `lea <fn>; mov [obj+N],<fn>`
+  pair that publishes the pointer. Adding it is a pure narrowing — nothing that
+  could ever have produced a plan is excluded — and takes the gate to exactly the 6
+  family targets. The control still opens the gate *statically*, which is correct
+  by design: it is the anchor minus one **dynamic** line, so closing it statically
+  would make the corpus discriminate on an artifact instead of on the primitive.
+
+  Blast radius checked rather than assumed, because this sprint modified code three
+  already-registered executors share (`MENU_VERBS`/`discover_menu`, and the
+  `uaf`/`double_free` executors themselves): **HTB re-scored over the whole tree at
+  `--reps 3 --timeout 300` — `SCORE 7/7`, 21 of 21 reps `SHELL_ACCESS`, seven
+  distinct techniques, 9.3–41.4 s per rep.**
+
+  Everything here is glibc-2.35-specific and pinned in `cflags`: safe-linking,
+  `tcache_count == 7`, the 0x410 ceiling and the fastbin stash path. Untested on
+  any other glibc.
+
 - **New category: untrusted library search path — dlopen / RUNPATH hijack
   (CWE-426 / CWE-427).** New executor `library_path_hijack`
   (`supwngo/exploit/pipeline/executors/library_hijack_techniques.py`), registered

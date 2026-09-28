@@ -1,0 +1,253 @@
+/*
+ * heap_12_tcache_fd_poison_hooks
+ *
+ * FAMILY
+ * ------
+ * benchmark/corpus_heap_variants/ -- glibc heap corruption (the tcache/fastbin
+ * family) on a PIE + canary + Full-RELRO + NX binary. Every target in the family
+ * is the SAME menu-driven record manager with the SAME protections; what varies
+ * from target to target is WHICH HEAP PRIMITIVE the source exposes, and each
+ * target exposes exactly one (see "THE ONE PARTICULAR" below).
+ *
+ * Shared skeleton (identical in all six targets):
+ *   - two record kinds in the SAME size class, so one can be allocated over the
+ *     other: a `job` (16 bytes of label, then a HANDLER POINTER at offset 16,
+ *     then a body) and a `note` (a plain, fully attacker-controlled buffer).
+ *   - menu: 1) new job  2) new note  3) delete  4) show  5) edit  6) run
+ *           7) hooks  8) exit
+ *   - the family's MANDATORY LEAK: show() dumps a record raw, so a job record
+ *     discloses its handler -- a PIE code address. Without it win() cannot be
+ *     addressed at all. It is identical in every target, including the negative
+ *     control, so it is never what distinguishes them.
+ *   - hooks[]: a 16-byte-aligned table of function pointers in .bss, called by
+ *     option 7. Full RELRO makes the GOT read-only, so the writable code
+ *     pointers a heap primitive can aim at are the program's own: a job's
+ *     handler (on the heap) and this table.
+ *   - win() spawns a shell and deliberately does NOT print the flag, so the only
+ *     success signal is a real shell reading flag.txt.
+ *
+ * THE ONE PARTICULAR THIS TARGET VARIES
+ * -------------------------------------
+ * PRIMITIVE PRESENT: TCACHE FD POISONING, aimed at hooks[] in .bss.
+ * edit() rewrites the whole record from offset 0 and has no liveness check, so
+ * it is a use-after-free WRITE onto a freed chunk's tcache `next` field; run()
+ * on the other hand DOES check liveness, so the anchor's reclaim is closed and
+ * a poisoned freelist is the only way to a controlled call.
+ *
+ * Full RELRO is what makes the target interesting: the GOT is read-only, so the
+ * poison cannot aim at free@got the way benchmark/corpus/12_heap_tcache_poison
+ * does. It aims at the program's own hooks[] table instead (16-byte aligned so
+ * the pop passes glibc's aligned_OK() check), and option 7 calls hooks[0].
+ *
+ * The safe-linking key is read out of the heap itself, which is the second half
+ * of this variant's particular: with an empty 0x60 bin, free(A) stores
+ * A->next = PROTECT_PTR(A, NULL) = A >> 12, so ONE UAF read of A yields the
+ * mangling key directly -- no printed heap address anywhere in this family.
+ * A second chunk must be freed as well (tcache hands out from a bin only while
+ * counts[] > 0, so a one-entry bin cannot serve the second, poisoned pop), and
+ * the head chunk B's own key B >> 12 follows from A's: show(B) leaks
+ * (B >> 12) ^ A, and B = A + 0x60.
+ *
+ * Solve shape: new job 0 ; show 0 (PIE leak) ; new note 1 (A) ; new note 2 (B) ;
+ * delete 1 ; show 1 -> A>>12 ; delete 2 ; show 2 -> (B>>12)^A ;
+ * edit 2 (offset 0) with p64((B>>12) ^ &hooks) ; new note 3 (pops B) ;
+ * new note 4 (pops &hooks) sending just p64(&win) ; option 7.
+ *
+ * SOURCE DELTA vs the anchor (heap_10_uaf_reclaim_fnptr)
+ * ------------------------------------------------------
+ * vs heap_14 (which already closes run() on dead records), two lines:
+ *   - edit() writes from offset 0, not 24
+ *   - edit() no longer checks liveness      (-> the UAF write this needs)
+ * vs the anchor: those two plus run()'s liveness check.
+ *
+ * Protections: PIE=ON canary=ON RELRO=FULL NX=ON dynamic (see ./cflags, which
+ * also records the glibc version this was built and tested against: 2.35).
+ *
+ * FLAG{supwngo_bench_heap_12_tcache_fd_poison_hooks}
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#ifndef FLAG
+#define FLAG "FLAG{supwngo_bench_heap_12_tcache_fd_poison_hooks}"
+#endif
+
+#define MAX_OBJS 20
+#define OBJ_SZ   0x58            /* both kinds -> the same size class */
+#define EDIT_OFF 0
+
+/* A record with a HANDLER POINTER at offset 16. Offset 16 is load-bearing: both
+ * a tcache free (next at +0, key at +8) and an unsorted-bin free (fd at +0, bk
+ * at +8) clobber only the first 16 bytes of user data, so a handler at +16
+ * SURVIVES the free and is still there to be leaked and to be overwritten. */
+struct job {
+    char label[16];
+    void (*run)(void);
+    char body[OBJ_SZ - 24];
+};
+
+/* Same size class, no structure: whatever the attacker sends lands verbatim. */
+struct note {
+    char data[OBJ_SZ];
+};
+
+static void *objs[MAX_OBJS];
+static char  kinds[MAX_OBJS];
+static int   live[MAX_OBJS];
+
+/* Writable function-pointer table in .bss, forced 16-byte aligned so that a
+ * tcache pop landing on it passes glibc's aligned_OK() check. Option 7 calls
+ * hooks[0]. Under Full RELRO this and a heap-resident handler are the only
+ * writable code pointers in the process image. */
+static void (*hooks[4])(void) __attribute__((aligned(16)));
+
+static void banner(void) { puts("[hook] nothing to see here"); }
+
+/* Every job is created pointing here. show() dumps the record raw, so this
+ * address is the family's PIE leak. */
+static void default_run(void) { puts("[job] ran (default handler)"); }
+
+/* The target. Deliberately prints NO flag: the only success signal this family
+ * admits is a real shell (which can then read flag.txt beside the binary). */
+void win(void) {
+    puts("[win] shell");
+    fflush(stdout);
+    system("/bin/sh");
+}
+
+static int read_int(void) {
+    int v = -1;
+    if (scanf("%d", &v) != 1) exit(0);
+    return v;
+}
+
+static int ask_index(void) {
+    printf("index: ");
+    fflush(stdout);
+    int idx = read_int();
+    if (idx < 0 || idx >= MAX_OBJS) return -1;
+    return idx;
+}
+
+static void new_job(void) {
+    int idx = ask_index();
+    if (idx < 0) { puts("bad"); return; }
+    struct job *j = malloc(sizeof(struct job));
+    if (!j) { puts("bad"); return; }
+    memset(j, 0, sizeof(*j));
+    j->run = default_run;
+    objs[idx] = j;
+    kinds[idx] = 'j';
+    live[idx] = 1;
+    printf("label: ");
+    fflush(stdout);
+    ssize_t n = read(0, j->label, sizeof(j->label));
+    (void)n;
+    puts("ok");
+}
+
+static void new_note(void) {
+    int idx = ask_index();
+    if (idx < 0) { puts("bad"); return; }
+    struct note *n = malloc(sizeof(struct note));
+    if (!n) { puts("bad"); return; }
+    objs[idx] = n;
+    kinds[idx] = 'n';
+    live[idx] = 1;
+    printf("data: ");
+    fflush(stdout);
+    /* Exactly as many bytes as arrive: read() returns short, so a caller can
+     * write only the first few bytes of the record and leave the rest. */
+    ssize_t r = read(0, n->data, sizeof(n->data));
+    (void)r;
+    puts("ok");
+}
+
+static void delete_obj(void) {
+    int idx = ask_index();
+    if (idx < 0 || !objs[idx]) { puts("bad"); return; }
+    free(objs[idx]);
+    live[idx] = 0;
+    /* BUG: objs[idx] is NOT cleared -> dangling pointer. */
+    puts("ok");
+}
+
+static void show_obj(void) {
+    int idx = ask_index();
+    if (idx < 0 || !objs[idx]) { puts("bad"); return; }
+    /* Raw record dump. For a job this discloses run() -- a PIE code address --
+     * which is the family's mandatory leak channel, identical in every target
+     * including the negative control. */
+    ssize_t w = write(1, objs[idx], OBJ_SZ);
+    (void)w;
+    putchar('\n');
+    fflush(stdout);
+}
+
+static void edit_obj(void) {
+    int idx = ask_index();
+    if (idx < 0 || !objs[idx]) { puts("bad"); return; }
+    /* BUG: no liveness check -> this is a USE-AFTER-FREE WRITE. With
+     * EDIT_OFF == 0 it lands on a freed chunk's tcache `next` field. */
+    printf("len: ");
+    fflush(stdout);
+    long len = read_int();
+    if (len <= 0) { puts("bad"); return; }
+    /* Clamped to the record size -- no overflow here; the defect is
+     * WHERE this writes (offset 0) and WHEN (no liveness check). */
+    if (len > OBJ_SZ) len = OBJ_SZ;
+    printf("data: ");
+    fflush(stdout);
+    ssize_t r = read(0, (char *)objs[idx] + EDIT_OFF, (size_t)len);
+    (void)r;
+    puts("ok");
+}
+
+static void run_obj(void) {
+    int idx = ask_index();
+    if (idx < 0 || !objs[idx] || kinds[idx] != 'j') { puts("bad"); return; }
+    if (!live[idx]) {           /* run refuses a dead record: the
+                                 * reclaim primitive is closed here */
+        puts("bad");
+        return;
+    }
+    struct job *j = objs[idx];
+    j->run();
+}
+
+static void call_hook(void) {
+    hooks[0]();
+}
+
+static void menu(void) {
+    puts("1) new job    2) new note   3) delete   4) show");
+    puts("5) edit       6) run        7) hooks    8) exit");
+    printf("> ");
+    fflush(stdout);
+}
+
+int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    hooks[0] = banner;
+    hooks[1] = banner;
+    hooks[2] = banner;
+    hooks[3] = banner;
+    puts("=== heap variant: tcache fd poison into .bss hooks ===");
+
+    while (1) {
+        menu();
+        switch (read_int()) {
+            case 1: new_job(); break;
+            case 2: new_note(); break;
+            case 3: delete_obj(); break;
+            case 4: show_obj(); break;
+            case 5: edit_obj(); break;
+            case 6: run_obj(); break;
+            case 7: call_hook(); break;
+            case 8: puts("bye"); return 0;
+            default: puts("bad"); break;
+        }
+    }
+}

@@ -1,0 +1,50 @@
+# Protection flags for benchmark/corpus_heap_variants/ -- the glibc heap
+# corruption (tcache/fastbin) variant family.
+#
+# HELD IDENTICAL ACROSS EVERY TARGET IN THIS FAMILY ON PURPOSE. The only thing
+# that varies between targets is WHICH HEAP PRIMITIVE the source exposes; a
+# protection difference would confound that measurement.
+#
+# -fstack-protector-all  canary=ON. Irrelevant to a heap primitive by itself,
+#                        which is the point: it must not be what stops the
+#                        exploit, and a family that left it off would not model
+#                        the modern case.
+# -pie -fPIE             PIE=ON. Makes a code-address leak MANDATORY: every
+#                        target's win() address is only known after the family's
+#                        leak channel (show(), which dumps a job record raw,
+#                        including its handler pointer) has been read.
+# -Wl,-z,relro,-z,now    RELRO=FULL. The GOT is read-only, so the answer the
+#                        R1 corpus uses for this category
+#                        (benchmark/corpus/12_heap_tcache_poison: poison a
+#                        tcache fd to hand out free@got) is STRUCTURALLY
+#                        unavailable here. The writable code pointers are the
+#                        program's own: a job record's handler on the heap, and
+#                        the hooks[] table in .bss.
+# -O0                    the family's geometry IS the measurement: the handler
+#                        field must stay at a fixed offset inside the record and
+#                        the indirect call must stay an indirect call. At higher
+#                        -O gcc is free to inline default_run() through the
+#                        pointer store and the target silently stops being in
+#                        this category.
+#
+# NX is ON (default, no -z execstack).
+#
+# BUILT AND TESTED AGAINST
+# ------------------------
+#   glibc   2.35   (Ubuntu GLIBC 2.35-0ubuntu3.15)   <-- `ldd --version`
+#   gcc     11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3)
+#   kernel  6.8.0 x86-64, Ubuntu 22.04
+#
+# This matters more here than for any other category in the benchmark: every
+# number in this family depends on glibc-version-specific allocator behaviour --
+# safe-linking pointer mangling and the aligned_OK() check on a tcache pop (both
+# glibc >= 2.32), the tcache `key` double-free scan (>= 2.29), the 7-entry
+# tcache bin (mp_.tcache_count == 7), the 0x410-chunk tcache ceiling, and the
+# fastbin "stash the rest into tcache" path. On a glibc < 2.32 the mangling step
+# must be dropped; on a glibc with tcache disabled the bins change entirely. A
+# later reader comparing results MUST check their own `ldd --version` first.
+-fstack-protector-all
+-pie
+-fPIE
+-Wl,-z,relro,-z,now
+-O0
