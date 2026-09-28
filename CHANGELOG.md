@@ -41,19 +41,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Nothing yet for `verify_script`'s shell oracle, but it is now **documented as
-  unsound** rather than trusted. `PipelineVerifier.verify_script` writes
-  `echo <token>` to a generated script's stdin and credits `SHELL_ACCESS` when the
-  token appears on stdout. Measured against a target with no shell anywhere in its
-  path (`benchmark/corpus_inject/inject_90_neg_execv_argv`): because the target's
-  job is to echo its input, its own main loop prints `checking echo <token>` and
-  the oracle reports a shell. An echo is being credited as shell access.
+- `PipelineVerifier.verify_script` could credit an **echo** as shell access.
+  It wrote `echo <token>` to a generated script's stdin and set `SHELL_ACCESS`
+  when the token appeared on stdout. Measured against a target with no shell
+  anywhere in its path (`benchmark/corpus_inject/inject_90_neg_execv_argv`):
+  because that target's job is to echo its input, its main loop printed
+  `checking echo <token>` and the oracle reported a shell — on the metric the
+  whole effort is judged by.
 
-  `subprocess_injection`'s generated scripts work around it by proving a shell with
-  a marker `/bin/echo` cannot produce (`id` → `uid=`) *before* forwarding any
-  stdin, so a failed attempt closes its process and cannot be credited. That is a
-  per-executor workaround; the pipeline-wide oracle is still unsound and is
-  tracked as `I-16` (P1) in `docs/process/2026-09-26-standard-work-queue.md`.
+  Receipts now carry `shell_proven` and `echo_ambiguous`. Two probes were added
+  after the original two, which are sent unchanged so existing generated scripts
+  behave exactly as before: `id` (a target cannot echo `uid=` into existence) and
+  `echo <token>""_STRICT`, where only a shell's quote removal produces
+  `<token>_STRICT` — the bytes sent never contain that form.
+
+  `SHELL_ACCESS` is still credited when only the plain token returns, on purpose:
+  tightening it would silently reclassify every previously recorded solve, and a
+  score that moves because the ruler changed is worse than one that is labelled.
+  The receipt now says which it is, and the note spells it out. A receipt with
+  `echo_ambiguous` set is a **candidate** solve, not a proven one, and any score
+  that counts it should say so.
+
+  Both directions are pinned by tests: a deliberately naive stdin bridge against
+  the no-shell control comes back `shell_confirmed=True, shell_proven=False,
+  echo_ambiguous=True`, and a genuinely obtained shell comes back
+  `shell_proven=True`. Tracked as `I-16` in
+  `docs/process/2026-09-26-standard-work-queue.md`.
 
 ### Changed
 

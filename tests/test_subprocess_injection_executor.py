@@ -226,6 +226,59 @@ def test_generated_script_bridges_stdin_only_after_the_ladder_confirms():
     assert ladder_call < bridge_call
 
 
+def test_oracle_flags_a_naive_stdin_bridge_as_ambiguous():
+    """RED-proof for `echo_ambiguous` (I-16).
+
+    This is the exact script shape the old oracle rewarded: bridge stdin into a
+    target without first proving a shell. The target here has no shell anywhere in
+    its path, so `shell_confirmed` coming back True is the BUG being measured --
+    the assertion that matters is that the receipt now says so.
+    """
+    binary = CORPUS / CONTROL / CONTROL
+    if not binary.is_file():
+        pytest.skip(f"{binary} not built")
+    from supwngo.exploit.pipeline.verifier import PipelineVerifier
+
+    naive = f'''
+import sys, time
+from pwn import *
+context.log_level = "error"
+io = process("{binary}", cwd="/tmp")
+io.recvuntil(b"netcheck> ", timeout=5)
+io.sendline(b"x; sh")
+for line in sys.stdin:
+    io.sendline(line.rstrip("\\n").encode())
+    time.sleep(0.15)
+    d = io.recvrepeat(0.5)
+    if d:
+        sys.stdout.write(d.decode("latin-1")); sys.stdout.flush()
+'''
+    receipt = PipelineVerifier(str(binary)).verify_script("naive_bridge", naive)
+    assert receipt.shell_confirmed is True, (
+        "precondition of this test: the plain-token check must still fire here, "
+        "otherwise it is not exercising the false positive it exists to catch"
+    )
+    assert receipt.shell_proven is False
+    assert receipt.echo_ambiguous is True
+
+
+def test_oracle_marks_a_genuinely_obtained_shell_as_proven():
+    """Positive control for the test above: the discriminator must not simply
+    report `ambiguous` for everything."""
+    binary = CORPUS / "inject_10_system_baseline" / "inject_10_system_baseline"
+    if not binary.is_file():
+        pytest.skip(f"{binary} not built")
+    from supwngo.exploit.pipeline.verifier import PipelineVerifier
+
+    context = _context("inject_10_system_baseline")
+    record = SubprocessInjectionExecutor().attempt(
+        context, PipelineVerifier(str(binary))
+    )
+    assert record.receipt is not None
+    assert record.receipt.shell_proven is True
+    assert record.receipt.echo_ambiguous is False
+
+
 def test_generated_script_records_the_derivations_it_used():
     """The script is the artifact a user is handed; it has to say why it chose
     these payloads, not just carry them."""

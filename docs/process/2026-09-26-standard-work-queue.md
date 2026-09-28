@@ -98,7 +98,7 @@ recorded beneath it (queue rule 2). The chronological record is §6.
 | 7 | `G-7a` | heap off-by-one via `strlen` on an unterminated chunk — `bon-nie-appetit` | **unblocked**, awaiting a free slot (runtime found, see below) |
 | 8 | `G-9` | **new P0** — no executor can express "leak first, then finish in libc" | open — shared machinery for `G-7a`/`G-7c` |
 | 9 | `G-8c` | **new category** — injection into a subprocess sink (`system`/`popen`/`exec*`) | **done** — 5/5, control fails two ways |
-| 10 | `I-16` | `verify_script`'s shell oracle credits an echo as a shell | open — P1, inflates the headline metric |
+| 10 | `I-16` | `verify_script`'s shell oracle credits an echo as a shell | **mitigated** — receipts now carry `shell_proven`/`echo_ambiguous` |
 | 11 | `M-2` | full pytest + every HTB challenge + every variation corpus, re-run | open |
 | — | `T-3` | the breadth target the whole run serves | open |
 
@@ -1215,8 +1215,8 @@ claim stays the size of the evidence.
 | relevance | **5** — it inflates the one number this whole run is judged by |
 | complexity | 3 — the fix is a marker change, but every executor's generated script relies on the current contract |
 | priority | P1 |
-| lane | now (next free slot) |
-| status | open |
+| lane | now |
+| status | **mitigated** 2026-09-27 — labelled, not yet made strict |
 | evidence | `verifier.py:~420` `stdin_data = (f"echo {token}\n" * 2)` and `shell_confirmed = token in output`. **Measured** against `benchmark/corpus_inject/inject_90_neg_execv_argv`, a target with no shell in its path at all: send `x; sh`, then `echo TOK_12345`; the target's own main loop prints `checking echo TOK_12345`; `token in output` → `True`, i.e. **SHELL reported where no shell exists** |
 | provenance | measured |
 | exit | the oracle distinguishes a shell from an echo — e.g. requires a marker the target cannot reproduce (`id` → `uid=`), or a token transformed by shell quote-removal (`PW"N"ED_x` → `PWNED_x`) |
@@ -1228,9 +1228,29 @@ any other target that reflects input.
 
 `G-8c` works around it locally: the script it generates proves a shell with `id`/`uid=`
 before it forwards any stdin, so a failed rung closes its process and can never be
-credited. That is a per-executor workaround, not a fix — the pipeline-wide oracle is
-still unsound, and any future executor that bridges stdin naively will inherit the bug.
-Fix it centrally in `verify_script` rather than re-deriving the workaround.
+credited. That is a per-executor workaround, not a fix — the pipeline-wide oracle was
+still unsound, and any future executor that bridges stdin naively would inherit the bug.
+
+**Mitigated centrally, 2026-09-27.** `verify_script` now sends two additional probes
+after the original two (which are sent unchanged, so existing generated scripts behave
+identically): `id`, and `echo <token>""_STRICT` whose quote-stripped form only a shell
+produces. Receipts carry `shell_proven` and `echo_ambiguous`.
+
+`SHELL_ACCESS` is still credited when only the plain token returns. That is a deliberate
+choice, not an oversight: making the oracle strict would silently reclassify every
+previously recorded solve, and a score that moves because the ruler changed is worse than
+one that is labelled. So the number is preserved and annotated instead — a receipt with
+`echo_ambiguous` set is a **candidate** solve and any score counting it should say so.
+
+Both directions are pinned by tests in `tests/test_subprocess_injection_executor.py`: a
+deliberately naive stdin bridge against the no-shell control returns
+`shell_confirmed=True, shell_proven=False, echo_ambiguous=True` (the RED proof — the flag
+demonstrably fires on the real false positive), and a genuinely obtained shell returns
+`shell_proven=True` (the positive control, so the flag is not simply always-on).
+
+**Still owed:** nothing re-audits the existing 4/7 for `echo_ambiguous`. Until a rescore
+runs with this build, whether any recorded solve is an echo is *unmeasured* — an open
+question, not a clean bill of health. That audit belongs to `M-2`.
 
 #### I-17 — four HTB challenge dirs ship a 0-byte dynamic loader
 
