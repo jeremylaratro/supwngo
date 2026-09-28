@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New technique `scanf_scalar_overwrite`: an unbounded `scanf("%s")`/`strtoull`
+  read whose value is then used as an unchecked array subscript or as a
+  length/bound, giving a controlled write that reaches a function pointer or a
+  saved return address on a PIE + `-fstack-protector-all` + Full RELRO + NX
+  target.
+
+  Measured on `benchmark/corpus_scanf/` (7 targets): **6/6** positives reach a
+  shell, the negative control does not, and the control's refusal is
+  *distinguished* rather than merely observed — handed the PIE base for free it
+  still fails, so the bounds check is what stops it, not a missing leak. Three
+  RED-checks confirm the oracle can fail: a wrong-but-present target address, a
+  correct address with the pad off by 8, and a correct address with one byte of
+  the leaked canary flipped. Verified by the orchestrator by deleting every
+  binary and rebuilding the family from committed source alone.
+
+  Two structural facts about the platform shaped the corpus and are recorded in
+  `benchmark/corpus_scanf/corpus_scanf.yaml`: `-fstack-protector` hoists arrays
+  above scalars, so a `%s` overflow of a sibling array cannot reach a sibling
+  scalar at all — only **struct members**, whose order C guarantees, are
+  reachable. Variants that overflow into a scalar therefore overflow a struct's
+  char array into that struct's own trailing member.
+
+  Baseline: the unmodified pipeline solved **0** of these (3 of 7 targets
+  measured `NOT_SOLVED` at ~170 s/rep before the run was superseded; the
+  remaining 4 were not measured, so the baseline is "0 of the 3 measured", not
+  "0 of 7").
+
 - New technique `subprocess_injection`: command injection into a sink that parses
   shell grammar (`system`, `popen`, a hand-rolled `execl("/bin/sh","-c",…)`). This
   is the framework's **first non-memory-safety category** — there is no overflow,
@@ -67,6 +94,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   echo_ambiguous=True`, and a genuinely obtained shell comes back
   `shell_proven=True`. Tracked as `I-16` in
   `docs/process/2026-09-26-standard-work-queue.md`.
+
+- A real shell could be recorded as merely *ambiguous* when it had no usable
+  `PATH`. `id` is a separate binary, so the `uid=` probe above fails in the shell
+  an SROP or syscall chain actually produces — `execve("/bin/sh", NULL, NULL)`,
+  null argv **and** null envp. A third probe, `echo SH$((6*7))OK` → `SH42OK`, now
+  runs alongside it: POSIX arithmetic expansion is performed by the shell itself,
+  so it needs no `PATH` and no external program.
+
+  Measured: fed all four probes, `env -i PATH= /bin/sh` answers the `id` probe
+  with `id: not found` and answers the quote-stripping and arithmetic probes
+  correctly. The new probe's value over the existing `_STRICT` one is a different
+  axis rather than more robustness — `_STRICT` depends on quote removal, so a
+  reader that strips `"` from input defeats it while leaving this one intact.
+
+  `tests/test_shell_proof_markers.py` red-proofs it in both directions and in the
+  environment it was adopted for, including a guard against the proof going
+  vacuous: the negative control asserts the probe text *is* present in the
+  reflected output before asserting the answer is not.
 
 - A verification timeout now says **which kind** of timeout it was. A target wedged
   on a blocking read and a target redrawing its menu forever are indistinguishable
