@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `container_file_rop` now **derives** what it previously guessed from a single
+  target, and generalises across a vulnerability category rather than matching one
+  challenge. Measured on `benchmark/corpus_variants/` (`--reps 2`): **0/5 → 5/5**
+  positives, with the negative control still not solved and `snow_scan` — the HTB
+  target the technique came from — still solved (2/2, 28.6s / 26.2s), so the gain
+  is not bought with a regression.
+
+  Read out of the parse function's disassembly: the header buffer and its `fread`
+  length; the literal bytes the validator demands; each parsed field's header
+  offset and the immediates it is compared against; which field sizes the buffer
+  (traced into the VLA allocation); which field feeds `fseek`; and the frame's
+  relative distances (base slot → index, → `FILE *`, → saved return address),
+  which are rbp-relative and so exact. Probed against the target itself: which
+  field values the validator accepts (exit status is the oracle — every rejection
+  path returns non-zero) and the absolute payload index of the base-pointer slot.
+  Only the shift byte is still searched, over 32 values with a `ret` sled sized to
+  exactly the deltas the derived geometry allows; that one is irreducible, being
+  stack ASLR.
+
+  Three specific fixes behind the number. The generated chain required a bare
+  `pop rdx; ret`, which a statically linked glibc frequently lacks (it has
+  `pop rdx; pop rbx; ret`), so the script aborted before trying anything — this
+  alone was why the executor failed even on an anchor whose shape already solved,
+  and it was invisible with only one target in the corpus. Unconstrained header
+  fields are now filled with zero rather than arbitrary filler, which satisfies
+  equality-between-fields and multiplicative-consistency checks for free and is
+  what lets one synthesised-header path cover BMP, RIFF/WAVE and a private 16-byte
+  format. And the base slot is located by measuring against a value the target
+  prints, not by lengthening the payload until it crashes — the latter is a coin
+  flip on ASLR, because a negative shift walks harmlessly below the buffer and
+  exits cleanly (it reported index 7824 where the answer was 752).
+
+  A split parser — header validated in one function, fill loop in another, which
+  is `snow_scan`'s own shape — is declined by the analysis rather than mixed
+  across two frames, and falls back to the previous blind sweep. See
+  `docs/process/2026-09-27-deferred-deficiencies.md` §6.
+
 ### Added
 
 - `benchmark/corpus_variants/` — the first **challenge-variation** corpus: six

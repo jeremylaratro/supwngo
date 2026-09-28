@@ -33,26 +33,52 @@ variation corpus does not exist. See §3.1.
 
 ### 2.1 `container_file_rop`
 
+**Mostly CLOSED on 2026-09-27 (evening) by the generalisation pass — see §6.**
+The four bullets marked ✅ below were the target-shaped assumptions; they are
+replaced by facts derived from the binary or probed from the target. What remains:
+
 - **Probabilistic, by design.** Success depends on the unknown low byte of the
-  buffer base; the `ret` sled absorbs it for roughly 1 in 4 guesses. Handled by
-  retrying across the search space, not by determinism. Measured: shell after 107
-  candidate spawns, ~19s.
-- **The `size_image` values tried (400, 900, 512) are snow_scan's accept rule**,
-  not a general BMP fact. A container whose validator accepts a different range
-  will not be hit. Deliberate cheat-sheet data, but undocumented as such outside
-  this note.
-- **Only BMP has a real envelope.** Every other extension falls back to raw
-  bytes, so a target gating on a PNG/WAV *header* will be refused by its own
-  validator before the overflow is reached.
+  buffer base. Unchanged and irreducible — it is stack ASLR. Handled by a `ret`
+  sled sized to exactly the deltas the derived geometry allows, plus a sweep of
+  the 32 possible 8-aligned bytes. Now stated as a constraint rather than hidden
+  in a search: only the low byte is writable, so the shift is
+  `(base_low + chosen) mod 256`, and if that sum exceeds `0xff` the pointer moves
+  *backward* by ~256 instead of forward.
+- **A split parser still routes to the blind sweep.** If the header is validated
+  in one function and the fill loop runs in another — which is exactly what the
+  measured HTB target (`snow_scan`) does, validating in `loadBitmap` and looping
+  in `main` — the parsed fields live in a frame that is already gone by the time
+  the loop runs. The analysis declines rather than mixing two frames, and the
+  blind sweep handles it (measured: `snow_scan` still solves). This is the largest
+  remaining gap and the obvious next increment.
+- **The size-field oracle needs the target to echo the field back.** Locating the
+  base slot is measured against the printed size value. A target that parses a
+  size and never prints it has no anchor, and falls back to the blind sweep.
 - **It ignores the resolved delivery sink.** A file path in argv *is* the
   technique, so it writes its own file and spawns the target itself. It is
   allowlisted in `FILE_DELIVERY_ALLOWLIST` on that ground — but that means under
   `--input-vector argv` it will still use file-argv rather than the declared bare
   -argv sink. Honest-but-surprising; worth either a sink-specific gate or a
-  louder note in the report.
-- **`base_off` search band is `size_image + 8 .. size_image + 140`.** Inferred
-  from one target's frame. A larger frame (more locals below the array) falls
-  outside it.
+  louder note in the report. **Still open.**
+- ✅ ~~The `size_image` values tried (400, 900, 512) are snow_scan's accept
+  rule.~~ The accept window's immediates are now read out of the validator's
+  compares and confirmed by probing the target, whose exit status distinguishes
+  accepted from refused.
+- ✅ ~~Only BMP has a real envelope.~~ The header is synthesised from the
+  literals the validator actually demands (`memcmp` magics and inlined byte
+  compares) with zero everywhere else — and zero is load-bearing, not filler: it
+  satisfies equality-between-fields (a square-dimensions test) and multiplicative
+  consistency (`byte_rate == sample_rate * block_align`) without having to
+  recognise either. Measured working on BMP, RIFF/WAVE, and a private 16-byte
+  header.
+- ✅ ~~`base_off` search band is `size_image + 8 .. size_image + 140`.~~ The
+  base slot's index is now measured, not swept.
+- ✅ ~~Gadget requirements were too strict.~~ The chain demanded a bare
+  `pop rdx; ret`, which a statically linked glibc frequently does not contain
+  (only `pop rdx; pop rbx; ret`). This aborted the generated script before it
+  tried anything — it was the reason the executor scored **0/5** on the variation
+  corpus including the anchor, and it would have been invisible without that
+  corpus. Register setters now accept the longer forms and pad the chain.
 
 ### 2.2 `eintr_accumulator_rop`
 
@@ -102,13 +128,23 @@ variation corpus does not exist. See §3.1.
 
 ## 3. Measurement gaps
 
-### 3.1 The challenge-alike variation corpus (T-2) does not exist
+### 3.1 The challenge-alike variation corpus (T-2) — **CLOSED for one category**
 
-`benchmark/corpus_vectors/` varies the **transport** (how the payload arrives),
+~~`benchmark/corpus_vectors/` varies the **transport** (how the payload arrives),
 not the challenge. There is no corpus that holds a challenge's shape and varies
 its particulars, so "≥5/7 on challenge variations" cannot be measured at all —
-neither passed nor failed. Any claim about generalisation from the four solved
-targets is currently **inferred**.
+neither passed nor failed.~~
+
+`benchmark/corpus_variants/` now exists for the container-file
+metadata-sized-overflow category: an anchor reproducing the measured HTB target,
+four variants each changing exactly one particular, and a negative control whose
+fill loop is bounded. Manifest at `benchmark/corpus_variants.yaml`; validated as
+an oracle before use by `benchmark/reference_exploits/container_variants_reference.py`
+(all five positives RED, control not, under a byte-identical attack).
+
+So generalisation is now **measured** for this one category rather than inferred —
+see §6. The other two categories (`eintr_accumulator_rop`,
+`srop_symtab_pivot`) still have no variation corpus and remain **inferred**.
 
 ### 3.2 M-1b's second negative control was never built
 
@@ -200,3 +236,105 @@ non-terminating read loop.
 4. **The variation corpus (§3.1)** — until it exists, T-2 has no number.
 5. `eintr_accumulator_rop`'s signal-coalescing fallback (§2.2) — the most likely
    future flake.
+
+---
+
+## 6. Generalisation pass: container-file overflow (2026-09-27 evening)
+
+Worked one category end to end — build a variation corpus, validate it as an
+oracle, measure, generalise until the variants pass — rather than chasing target
+count.
+
+### 6.1 The numbers
+
+| | Before | After | Provenance |
+|---|---|---|---|
+| Positives in `benchmark/corpus_variants/` | **0 / 5** | **5 / 5** | measured (`variants-baseline-20260927.json`, `variants-derived-20260927.json`, `--reps 2`) |
+| Negative control `container_90_neg_bounded` | not solved | **not solved** | measured (both runs) |
+| `snow_scan` (the HTB target this category came from) | SOLVED | **SOLVED** | measured (`snowscan-regress-20260927.json`, 2/2, 28.6s / 26.2s) |
+
+Per-target after: all five positives at `SHELL_ACCESS` via `container_file_rop`
+in 13–16s (previously the whole pipeline gave up on each in 14–18s).
+
+### 6.2 What the corpus caught that the single target could not
+
+**The executor scored 0/5 — including on the anchor, a target whose shape already
+solved.** The cause was a bare `pop rdx; ret` requirement in the generated chain.
+A statically linked glibc frequently has only `pop rdx; pop rbx; ret`, so the
+script aborted before trying a single candidate. `snow_scan` happens to contain
+the bare form, so with one target in the corpus this was invisible; the failure
+mode was "technique attempted, no shell", which reads as a capability limit rather
+than a bug. This is the concrete argument for variation corpora over target count.
+
+### 6.3 Derived vs. probed vs. searched, after the pass
+
+*Derived statically* (from the parse function's disassembly): header buffer and
+`fread` length; the literal bytes the validator demands; each parsed field's
+header offset and the immediates it is compared against; which field sizes the
+buffer (traced into the VLA allocation); which field feeds `fseek`; and the
+frame's relative distances (base slot → index, → `FILE *`, → saved RIP), which
+are rbp-relative and therefore exact.
+
+*Probed against the target*: which field values the validator accepts (exit
+status is the oracle — every rejection path returns non-zero); and the absolute
+payload index of the base slot.
+
+*Searched*: the shift byte only — 32 values, with a `ret` sled sized to exactly
+the deltas the derived geometry allows.
+
+### 6.4 Two findings worth keeping
+
+**A crash-based oracle for the base slot does not work, and fails silently.** The
+obvious probe — "lengthen the payload until the process dies" — is unusable,
+because corrupting the base pointer's low byte shifts the write cursor by
+`(chosen - base_low) mod 256`, and when that lands negative the cursor walks
+harmlessly *below* the buffer and the process exits perfectly cleanly. Whether a
+long payload faults is a coin flip on stack ASLR. Measured: it reported the slot
+at index 7824 when the real answer was 752, and the run still "passed" because the
+blind fallback then won — i.e. a wrong measurement hidden by a working exploit.
+The replacement measures against a value the target *prints* (the parsed size
+field, which lives in a slot below the base pointer and so is reached while the
+loop is still linear); that is deterministic and ASLR-independent.
+
+**Zero is the right default for unconstrained header fields, not filler.** It
+satisfies every equality-between-fields check (a square-dimensions test) and every
+multiplicative consistency check (`byte_rate == sample_rate * block_align`)
+without the analysis having to recognise either of them. This is what made a
+single synthesised-header path work across BMP, RIFF/WAVE and a private 16-byte
+format.
+
+### 6.5 Fixture lessons (recorded because they are invisible in the sources)
+
+- **Geometry, not just source shape, decides whether the primitive applies.** The
+  anchor first took the `FILE *` as a parameter; gcc spills parameters to the
+  *lowest* stack slots, which put the handle **below** the base-pointer slot, so a
+  linear overflow destroyed the loop's own file handle before reaching the shift
+  point — making the "faithful anchor" strictly harder than the target it was
+  meant to reproduce. The measured target does its `fopen` inside the function
+  holding the VLA, giving the handle a high slot at `rbp-0x8`. All six fixtures
+  were changed to match.
+- **The negative control cannot even be measured, which is the correct
+  behaviour.** Its bounded loop never reaches the size-field slot, so the
+  size-field oracle finds no boundary, the derived path declines, and the blind
+  sweep exhausts (measured: 9486 candidates, no shell). It fails for the reason it
+  is supposed to.
+
+### 6.6 Still open in this category
+
+- A **split parser** — header validated in one function, fill loop in another —
+  routes to the blind sweep. This is exactly `snow_scan`'s shape (`loadBitmap`
+  validates, `main` loops), so the real target is still solved by the fallback
+  rather than by the derived path. Largest remaining gap; the analysis declines
+  rather than mixing two frames, which is honest but not capable.
+- The size-field oracle needs the target to **echo the parsed size back**.
+- No unit tests for the analysis itself (§2.4 still applies). Its outputs were
+  checked against the measured ground truth from the reference exploit on all six
+  fixtures, which is a stronger check than a unit test would be, but it is a
+  one-off rather than a gate.
+
+### 6.7 Next category
+
+Same cycle for `eintr_accumulator_rop` (signal-interrupted accumulator underflow)
+and then `srop_symtab_pivot` (no-writable-segment SROP): build the variation
+corpus, prove it can go RED both ways with a deterministic reference exploit,
+measure, then generalise until the variants pass.
