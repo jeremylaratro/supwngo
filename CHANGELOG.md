@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New technique `subprocess_injection`: command injection into a sink that parses
+  shell grammar (`system`, `popen`, a hand-rolled `execl("/bin/sh","-c",…)`). This
+  is the framework's **first non-memory-safety category** — there is no overflow,
+  no corrupted pointer and no return address involved, and the executor gates on
+  no protection field at all.
+
+  Measured on `benchmark/corpus_inject/` (6 targets): **5/5** positives reach
+  `SHELL_ACCESS` in ~4.6 s each. The negative control — the anchor's exact job
+  done safely via `execv("/bin/echo", argv)` — is rejected by the gate *and*
+  still fails when forced through the full 14-rung ladder with the gate removed.
+
+  Every target in the family is built `-fstack-protector-strong -pie -fPIE
+  -Wl,-z,relro,-z,now`, so canary, PIE, NX and Full RELRO are all on while every
+  positive is still a shell in under five seconds. That is the point of the
+  family, not an oversight.
+
+  Three facts are read off the image, and on all five positives the derived
+  ordering put the winning payload in the **first** rung — so the ladder's
+  retries are a fallback, not the mechanism: the command template and whether
+  anything follows its `%s` (a trailing `| /bin/cat -` steals an injected
+  command's stdout unless the payload comments it out); the target's own reject
+  set, recovered from `.rodata` as a string made only of shell metacharacters;
+  and whether the target transforms input after validating it (`isxdigit`,
+  `strtol`), which is what defeats a *complete* blocklist by smuggling the
+  separator as `%3b`.
+
+  The gate's one discriminator is that an `exec*` call counts as a shell sink only
+  when a shell path string accompanies it — precisely what separates this
+  category from a program doing the same job with an argv vector.
+
+### Fixed
+
+- Nothing yet for `verify_script`'s shell oracle, but it is now **documented as
+  unsound** rather than trusted. `PipelineVerifier.verify_script` writes
+  `echo <token>` to a generated script's stdin and credits `SHELL_ACCESS` when the
+  token appears on stdout. Measured against a target with no shell anywhere in its
+  path (`benchmark/corpus_inject/inject_90_neg_execv_argv`): because the target's
+  job is to echo its input, its own main loop prints `checking echo <token>` and
+  the oracle reports a shell. An echo is being credited as shell access.
+
+  `subprocess_injection`'s generated scripts work around it by proving a shell with
+  a marker `/bin/echo` cannot produce (`id` → `uid=`) *before* forwarding any
+  stdin, so a failed attempt closes its process and cannot be credited. That is a
+  per-executor workaround; the pipeline-wide oracle is still unsound and is
+  tracked as `I-16` (P1) in `docs/process/2026-09-26-standard-work-queue.md`.
+
 ### Changed
 
 - `eintr_accumulator_rop` now generalises across the signal-interrupted

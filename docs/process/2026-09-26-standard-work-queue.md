@@ -97,7 +97,7 @@ recorded beneath it (queue rule 2). The chronological record is §6.
 | 6 | `G-8a` | **new category** — predictable pseudo-random secrets | **in-sprint** |
 | 7 | `G-7b` | `sabotage`'s class (env/path/file handling) | open — awaiting `A-2` classification |
 | 8 | `G-8b` | **new category** — function-pointer / indirect-call hijack | open |
-| 9 | `G-8c` | **new category** — injection into a subprocess sink (`system`/`popen`/`exec*`) | open |
+| 9 | `G-8c` | **new category** — injection into a subprocess sink (`system`/`popen`/`exec*`) | **done** — 5/5, control fails two ways |
 | 10 | `M-2` | full pytest + every HTB challenge + every variation corpus, re-run | open |
 | — | `T-3` | the breadth target the whole run serves | open |
 
@@ -332,15 +332,45 @@ calls, so it tests whether the pipeline can recognise an indirect-call sink at a
 | complexity | 2 |
 | priority | P2 |
 | lane | now |
-| status | open |
-| evidence | `A-2` coverage table above |
-| provenance | inferred |
-| exit | corpus red-proved both ways + an executor solving positives and not the control |
+| status | **done** 2026-09-27 |
+| evidence | corpus `benchmark/corpus_inject/` (6 targets); oracle proof `benchmark/reference_exploits/inject_variants_reference.py`; executor measurement `benchmark/results_htb/inject-final-20260927.json`; `tests/test_subprocess_injection_executor.py` (19 passed) |
+| provenance | measured |
+| exit | **met.** Reference exploit: 5/5 positives shell, control does not. Executor `subprocess_injection`: **5/5** positives at `SHELL_ACCESS` (4.6 s each), control rejected by the gate **and** failed when forced through all 14 rungs (20 s) |
 
-Axes worth varying: `system` vs `popen` vs `execl("/bin/sh","-c",…)`; metacharacter
-filtering that misses one character; `$PATH`-relative invocation of a helper (which is
-also the likely shape of `G-7b`/`sabotage`, given its `getenv`/`putenv`/`setenv` imports);
-and argument-position injection where only a suffix is attacker-controlled.
+Axes actually built: `system` vs `popen` vs a hand-rolled `execl("/bin/sh","-c",…)`
+(no `system@plt` in the image at all); a complete metacharacter blocklist defeated by
+the program's own percent-**decode after validate**; and an injection position mid-way
+through a pipeline, where the trailing `| /bin/cat -` steals an injected command's
+stdout unless the payload comments it out. Control: the anchor's exact job done safely
+via `execv("/bin/echo", argv)`.
+
+`$PATH`-relative helper invocation was **not** built here and stays with `G-7b`, where
+`sabotage`'s `getenv`/`putenv`/`setenv` imports suggest it belongs.
+
+Three things were derived off the image rather than guessed, and each one picked the
+winning payload as the **first** rung tried — so the ladder's retries were not what
+produced the result:
+
+* the command template (`/bin/echo checking %s`), and whether anything follows the
+  `%s` — non-empty suffix promotes the `… #` spelling, which is what solves `inject_14`;
+* the target's own reject set, read out of `.rodata` as a string made only of shell
+  metacharacters (`;&|$\``) — a rejected separator is demoted instead of leading;
+* whether the target transforms input after reading it (`isxdigit`/`strtol`), which
+  promotes the percent-encoded spellings and is what solves `inject_13`.
+
+**Protections were deliberately maximised, not minimised.** Every target is
+`-fstack-protector-strong -pie -fPIE -Wl,-z,relro,-z,now`, so all four of canary/PIE/NX/
+Full RELRO are on and every positive is still a shell in under 5 s. The executor gates
+on no protection field at all. This is the first category in the set where the
+protection table is irrelevant, and the corpus is built to stop that being re-learned
+as "hardened".
+
+The gate's single discriminator is a real static property, not a target-shaped
+heuristic: an `exec*` call only counts as a shell sink when a shell **path string**
+accompanies it. That is exactly what separates the positives from a program doing the
+same job with an argv vector, and it is why the control is skipped rather than
+attempted. Because a skipped control measures nothing, it was **also** forced through
+the gate and the full ladder, and still failed (`I-16` is why that mattered).
 
 #### T-3 — breadth: types **and** variations, identified, walked through, and solved
 
@@ -1121,6 +1151,31 @@ exploit no longer uses the target's own timer command to generate the interrupts
 would not work against the same binary behind a socket. Recorded so the capability
 claim stays the size of the evidence.
 
+#### I-16 — `verify_script`'s shell oracle FALSE-POSITIVES on any target that echoes its input
+
+| field | value |
+|---|---|
+| type | bug (success-oracle soundness) |
+| relevance | **5** — it inflates the one number this whole run is judged by |
+| complexity | 3 — the fix is a marker change, but every executor's generated script relies on the current contract |
+| priority | P1 |
+| lane | now (next free slot) |
+| status | open |
+| evidence | `verifier.py:~420` `stdin_data = (f"echo {token}\n" * 2)` and `shell_confirmed = token in output`. **Measured** against `benchmark/corpus_inject/inject_90_neg_execv_argv`, a target with no shell in its path at all: send `x; sh`, then `echo TOK_12345`; the target's own main loop prints `checking echo TOK_12345`; `token in output` → `True`, i.e. **SHELL reported where no shell exists** |
+| provenance | measured |
+| exit | the oracle distinguishes a shell from an echo — e.g. requires a marker the target cannot reproduce (`id` → `uid=`), or a token transformed by shell quote-removal (`PW"N"ED_x` → `PWNED_x`) |
+
+This is the project's signature defect class (validation that cannot fail) in the
+success oracle rather than in a test: an echo is credited as a shell. It is category-wide
+for `G-8c`, where echoing the input **is** the target's job, and it is a latent hazard for
+any other target that reflects input.
+
+`G-8c` works around it locally: the script it generates proves a shell with `id`/`uid=`
+before it forwards any stdin, so a failed rung closes its process and can never be
+credited. That is a per-executor workaround, not a fix — the pipeline-wide oracle is
+still unsound, and any future executor that bridges stdin naively will inherit the bug.
+Fix it centrally in `verify_script` rather than re-deriving the workaround.
+
 ---
 
 ## 6. Autonomous run log — 2026-09-27 onward
@@ -1138,3 +1193,4 @@ moved an item; measured numbers only, no projections.
 | 6 | 2026-09-27 | support session | the external support session `638c7654-…` is **not reachable** — absent from `ListAgents` (201 peers) and the raw id does not resolve, so its work item (the `scanf` corpus) was re-routed to an in-session agent instead of guessing at an unrelated session. |
 | 7 | 2026-09-27 | `G-5` | **closed.** `0/6 → 6/6` positives at `SHELL_ACCESS` on `benchmark/corpus_eintr`, control gate-applicable but FAILED, `ancient_interface` unregressed (13.5 s). The baseline includes the anchor at **0**, so the executor had stopped working on a rebuild of the very target it was written for — one gcc's sign-extension order was load-bearing. Cost logged as `I-15` (out-of-band signal delivery ⇒ local-only). |
 | 8 | 2026-09-27 | `G-8c` | orchestrator took the subprocess-injection category directly (6 targets built: anchor `system()`, `popen()`, hand-rolled `execl /bin/sh -c`, a blocklist with a command-substitution gap, a mid-pipeline injection position, and an `execv`-argv control). First **non-memory-safety** category in the set; its `cflags` deliberately enable the full modern protection set to make the point that none of them apply. |
+| 9 | 2026-09-27 | `G-8c`, `I-16` | **closed, and it surfaced a tool bug worth more than the category.** Executor `subprocess_injection`: 5/5 positives at `SHELL_ACCESS` in 4.6 s each; control rejected by the gate AND failed when forced through all 14 rungs. On all five, the *first* rung tried was the winning one, so the derivations (command template + suffix, the reject set read from `.rodata`, decoder presence) did the work rather than the retries. Along the way, **measured** that `verify_script`'s `echo <token>` oracle reports SHELL_ACCESS on a target with no shell at all whenever the target echoes its input → filed as `I-16`, priority P1, because it inflates the run's headline metric. |

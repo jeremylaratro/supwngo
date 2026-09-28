@@ -62,3 +62,10 @@ corpus_heap_variants/*/*
 corpus_prng/*/*
 !corpus_prng/*/*.c
 !corpus_prng/*/cflags
+
+# Subprocess-injection variant family: same rule again. This one is the first
+# non-memory-safety category in the set, but the artifact rule is unchanged --
+# sources + cflags tracked, binaries and flag.txt not.
+corpus_inject/*/*
+!corpus_inject/*/*.c
+!corpus_inject/*/cflags

@@ -1,0 +1,19 @@
+# Protections for the subprocess-injection variant corpus. Held IDENTICAL across
+# every target in this family, and deliberately set to the FULL modern set:
+#
+# -fstack-protector-strong -pie -fPIE -Wl,-z,relro,-z,now
+#
+# The point of choosing maximum hardening is that it changes nothing here. This
+# category is orthogonal to memory-safety mitigations: there is no overflow, no
+# corrupted pointer and no return address involved, so a canary, PIE, NX and Full
+# RELRO are all satisfied and the target is still trivially exploitable. A reader
+# who sees "all protections on" in the corpus table must not read that as
+# "hardened against this".
+#
+# -O0 keeps the sink call and the filter (where a target has one) visible as
+# separate, recognisable instructions so the analysis has something to derive.
+-fstack-protector-strong
+-pie
+-fPIE
+-O0
+-Wl,-z,relro,-z,now
