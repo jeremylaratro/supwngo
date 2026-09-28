@@ -1,0 +1,68 @@
+# Protection flags for benchmark/corpus_typeconf/ -- TYPE CONFUSION THROUGH AN
+# ATTACKER-CONTROLLED UNION TAG (CWE-843).
+#
+# HELD IDENTICAL ACROSS EVERY TARGET IN THIS FAMILY ON PURPOSE. The only thing
+# that varies between targets is HOW THE TAG COMES TO DISAGREE WITH THE DATA
+# (inside set_tag() or reset_cell()); everything else -- the menu, the record
+# layout, the union's three arms, the leak channel, the tag-guarded indirect
+# call, win() -- is the same program. A protection difference between two
+# targets would confound that measurement, so a target that lost this file and
+# was rebuilt at gcc's defaults would be measuring a different challenge.
+#
+# -fstack-protector-all  canary=ON. The hijack lands on a `call *<reg>` in the
+#                        MIDDLE of invoke_cell(), not on a saved return address,
+#                        so the epilogue check is never reached and the canary
+#                        is structurally irrelevant here. It is ON anyway, so
+#                        that "hardened" cannot be quietly re-learned as "not
+#                        exploitable" -- and so that a failure can never be
+#                        blamed on a protection this category does not touch.
+# -pie -fPIE             PIE=ON. Makes a code-address leak MANDATORY: win()'s
+#                        address is unknown until show() has dumped a freshly
+#                        created cell and disclosed the default_cell pointer the
+#                        program itself installed in the union's pointer arm.
+#                        This is what forces the exploit to use the program's
+#                        own honest use of the pointer arm before abusing it.
+# -Wl,-z,relro,-z,now    RELRO=FULL. The GOT is read-only, so "write win() over
+#                        a GOT slot" is STRUCTURALLY unavailable and the only
+#                        writable code pointer in the process is the one this
+#                        category is about: the union's pointer arm inside a
+#                        heap-allocated cell.
+# -O0                    REQUIRED, and the one flag here that is not a choice.
+#                        Two things must survive the compiler or the target
+#                        silently stops being in this category at all:
+#                          * the UNION must stay a union at one address -- at
+#                            higher -O gcc is free to keep `u.num` in a register
+#                            across the store/reload, or to collapse arms it can
+#                            prove are never both live, and then the integer the
+#                            operator wrote is no longer the bytes the pointer
+#                            read sees;
+#                          * `c->u.fn()` must stay an INDIRECT call reloaded from
+#                            the record. gcc can devirtualise it to a direct
+#                            `call default_cell` when it can see the only store,
+#                            which removes the destination this family aims at.
+#                        Also keeps `int tag` a real memory field at +0 instead
+#                        of a value tracked in a register, which is what the
+#                        mis-tag is measured on.
+#
+# NX is ON (default, no -z execstack).
+#
+# BUILT AND TESTED AGAINST -- MEASURED ON THIS HOST 2026-09-28, not copied
+# ------------------------------------------------------------------------
+#   glibc   2.35   (Ubuntu GLIBC 2.35-0ubuntu3.15)   <-- `ldd --version`
+#   gcc     11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3)  <-- `gcc --version`
+#   kernel  6.8.0-138-generic x86-64, Ubuntu 22.04   <-- `uname -r`
+#
+# Version-sensitive facts this family depends on:
+#   * `realloc(p, sizeof *p)` on a live chunk of exactly that size returns the
+#     SAME pointer on glibc (no copy, no move), which is what makes tc_13's
+#     stale tag land on the same record it was saved from. A reader on another
+#     allocator MUST re-check this before comparing results.
+#   * nothing else. There is no chunk-layout arithmetic, no freelist, and no
+#     allocator metadata anywhere in this family -- deliberately, because those
+#     are benchmark/corpus_heap_variants/'s and corpus_allocsize/'s primitives
+#     and their absence is what makes a solve here attributable to the tag.
+-fstack-protector-all
+-pie
+-fPIE
+-Wl,-z,relro,-z,now
+-O0

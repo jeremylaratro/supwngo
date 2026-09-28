@@ -1,0 +1,298 @@
+# Challenge-variation corpus manifest: TYPE CONFUSION THROUGH AN
+# ATTACKER-CONTROLLED UNION TAG (CWE-843).
+#
+# WHAT THIS CORPUS MEASURES, AND WHAT IT DOES NOT
+#
+# Measures: whether one solve capability generalises across the ways a union's
+# discriminant can come to disagree with the data the union holds. The category
+# is held constant -- a record holds a union plus a separate `tag` naming which
+# arm is live, the program writes the union through one arm and later READS it
+# through another because the tag said so -- and each positive changes exactly
+# one thing: HOW the tag comes to disagree. Every target's own source header
+# names, under `THE ONE PARTICULAR THIS TARGET VARIES`, the mechanism and the
+# gate assumption it breaks. Read those rather than inferring from the slug.
+#
+# Does NOT measure: overflow, allocator metadata, use-after-free, index bounds,
+# or format strings. Their ABSENCE is structural and is what makes a solve here
+# attributable to the tag: `label` is read with its exact size, indices are
+# bounds-checked on both sides, every allocation is `malloc(sizeof(struct cell))`
+# (a compile-time immediate), and nothing is freed while a handle survives.
+#
+# THE DEFECT IS IN THE GATE, NOT IN THE PAYLOAD
+#
+# In every target here each write is in bounds, correctly sized, and lands
+# exactly where the program intended. What is wrong is which TYPE the program
+# then believes those in-bounds bytes have. The whole exploit is: get win()'s
+# address into the union AS AN INTEGER through the program's own numeric writer,
+# then make the tag say "this arm is a function pointer", then let the program's
+# own `if (c->tag == TAG_FN) c->u.fn();` do the rest.
+#
+# WHAT THIS IS NOT -- THE LINE AGAINST benchmark/corpus_objptr/
+#
+# corpus_objptr shares this family's DESTINATION (an indirect call through a
+# pointer reloaded from a record) and that reuse is deliberate: on a PIE +
+# Full-RELRO image the program's own stored code pointer is the cheapest
+# reliable place to land. It does not share the CAUSE. Every `objptr_*` target
+# reaches its pointer by an out-of-bounds WRITE (a size computation wraps, a bump
+# allocator hands out a region smaller than the copy that fills it) and every
+# `fnptr_*` target by an unbounded read or an unchecked table index.
+#
+# MEASURED, 2026-09-28, and this is the sharpest evidence the two are distinct:
+# `ObjPtrHijackExecutor.is_applicable` returns True on ALL SIX targets here
+# (it asks only "a reader is imported AND an indirect call traces to a memory
+# load AND there is somewhere to point it" -- all true), and its `attempt()` then
+# returns FAILED at stage ANALYSIS in 0.0 s on all six with the reason
+#
+#   "the indirect call at 0x19c8 in invoke_cell was recovered, but its pointer
+#    and its argument do not share a base"
+#
+# `c->u.fn()` takes no argument, so the overflow-from-a-sibling-member model
+# objptr_hijack implements has nothing to work with. Same destination, different
+# cause, and the difference is measurable at the instruction level.
+#
+# THE DISCRIMINATING FACT THE EXECUTOR'S GATE REQUIRES
+#
+# `typeconfusion_techniques.analyse()` requires a THIRD fact about the same
+# object that objptr_hijack's gate never computes:
+#
+#   the qword offset the indirect call loads its target from is ALSO the
+#   destination of a qword store whose value came from a text-to-number
+#   conversion, and that call is guarded by a comparison of a DIFFERENT,
+#   NARROWER field of the same object against a small immediate.
+#
+# DERIVED on tc_10_direct_tag_write (objdump -M intel, `-O0`):
+#
+#   mov  eax,DWORD PTR [rax]      ; the TAG, a dword at +0x0
+#   cmp  eax,0x2                  ; against a small immediate
+#   jne  ...                      ; guarding
+#   mov  rax,QWORD PTR [rax+0x8]  ; the UNION, a qword at +0x8
+#   call rax
+#   ...and in set_num/reset_cell/new_cell, which reach __isoc99_scanf:
+#   mov  QWORD PTR [rax+0x8],rdx  ; the SAME +0x8, written as an INTEGER
+#
+# A program that merely calls a callback it was handed opens objptr_hijack's gate
+# and is refused here, because nothing writes a NUMBER to the offset the call
+# reads.
+#
+# THE STATIC SHAPE IS NOT THE ORACLE -- THE MISMATCH IS MEASURED
+#
+# The static triple is present in the negative control too (measured: `analyse()`
+# opens on all six, including tc_90). It has to be: the control is the same
+# program with the same layout and the same guarded call. What separates them is
+# a two-sided runtime measurement the plan builder performs on the target before
+# it will emit anything:
+#
+#   POSITIVE SIDE  write a distinctive integer through the program's own numeric
+#                  writer, apply a candidate tag operation, DUMP THE RECORD, and
+#                  require the tag field to read the call site's expected value
+#                  WHILE those same eight bytes still hold the integer.
+#   CONTROL SIDE   the same sequence with the tag operation REMOVED and the
+#                  honest write KEPT must show the payload at the union offset
+#                  under a DIFFERENT tag -- i.e. the program itself calls those
+#                  bytes not-a-pointer, and the candidate operation is what
+#                  re-types them.
+#
+# Without the control side, "the tag reads FN over the payload" would also be
+# satisfied by a program that simply stores pointers as integers and always tags
+# them FN, which is objptr_hijack's stored-callback shape and not a confusion.
+#
+# PROTECTIONS -- MEASURED 2026-09-28 via Binary.load(...).protections, not copied
+# from the cflags files
+#
+# `cflags` is byte-identical across all six targets (md5
+# e58b9d8cf97d2eb6d7f7c64852ad16dc, measured), so hardening is held constant and
+# only the tag mechanism varies. A protection difference between two targets
+# would confound the measurement, and it is what makes the control's refusal
+# attributable to the bug's absence rather than to different flags.
+#
+#   pie=True  canary=True  nx=True  relro=Full RELRO   -- all six, measured
+#
+# Why each matters here:
+#   PIE         makes a code-address leak MANDATORY. win() has no address until
+#               `show` has dumped a freshly created cell and disclosed the
+#               `default_cell` pointer the program itself installed in the
+#               pointer arm -- so the exploit must use the program's own HONEST
+#               use of that arm before abusing it.
+#   Full RELRO  the GOT is read-only, so "write win() over a GOT slot" is
+#               structurally unavailable and the union's pointer arm is the only
+#               writable code pointer in the process.
+#   canary      structurally irrelevant and ON anyway. The hijack lands on a
+#               `call *<reg>` in the MIDDLE of invoke_cell(), never on a saved
+#               return address, so the epilogue check is not reached. It is on so
+#               that "hardened" cannot be quietly re-learned as "not
+#               exploitable", and so a failure can never be blamed on a
+#               protection this category does not touch.
+#   -O0         REQUIRED, not a choice -- see ./*/cflags. At higher -O gcc may
+#               keep `u.num` in a register across the store/reload (so the
+#               integer written is no longer the bytes the pointer read sees) or
+#               devirtualise `c->u.fn()` to a direct call (removing the
+#               destination entirely). Either silently takes the target out of
+#               this category.
+#
+targets:
+  - slug: tc_10_direct_tag_write
+    role: positive
+    mechanism: >-
+      `set tag` is a first-class operation. It range-validates the tag against
+      the enum (0 <= t < NTAGS, which is CORRECT as a range check -- every value
+      it accepts really is a declared arm) and stores it. The data was written by
+      a separate, earlier operation and nothing reconciles the two.
+    assumption_broken: >-
+      "the tag is validated, so it cannot name an arm that does not exist --
+      therefore the read through it is type-safe." Range validity and arm/data
+      AGREEMENT are different properties; only the first is checked anywhere in
+      this program.
+    measured_recipe: >-
+      option 3 with tag value 2, after option 2 wrote the payload through the
+      numeric arm; control side leaves tag=0 over the same payload. 13 probes.
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+
+  - slug: tc_11_struct_blob_tag
+    role: positive
+    mechanism: >-
+      There is NO store to the tag field anywhere outside `new cell`. `reset`
+      reads 16 raw bytes straight over `{tag, seq, union}`, so the discriminant
+      and the bytes it mis-describes arrive in ONE read and the tag is never
+      assigned as a value at all.
+    assumption_broken: >-
+      "find every write to the tag field and check it." A struct-shaped read
+      writes the tag without any instruction that names it, so an audit (or a
+      gate) that keys on assignments to the discriminant sees nothing to check.
+    measured_recipe: >-
+      option 6 with a 16-byte record image carrying tag=2 and the payload
+      together, no prior write; control side (honest write via option 2) leaves
+      tag=0 over the same payload. 13 probes.
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+
+  - slug: tc_12_offbyone_tag_bound
+    role: positive
+    mechanism: >-
+      `set tag` bounds the tag against the number of arms the OPERATOR may select
+      (NUSER == 2) but writes `t > NUSER` where `t >= NUSER` was meant. NUSER is
+      deliberately equal to TAG_FN, so the off-by-one admits exactly the pointer
+      arm and nothing else.
+    assumption_broken: >-
+      "there is a bound, so the pointer arm is out of reach." A `<=` where `<`
+      was meant leaks exactly one value past the intended domain, and this
+      program's domain is arranged so that the one value is the dangerous one --
+      which is the normal case, not a contrivance: the program-only arm is
+      naturally the last enumerator.
+    measured_recipe: >-
+      option 3 with tag value 2, after option 2 wrote the payload through the
+      numeric arm; control side leaves tag=0 over the same payload. 13 probes.
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+
+  - slug: tc_13_stale_tag_realloc
+    role: positive
+    mechanism: >-
+      `reset` saves the record's CURRENT tag, reallocs the record, writes the new
+      payload into the union, and then RESTORES the saved tag. The tag is
+      preserved across an operation that replaces the data it describes. On glibc
+      `realloc(p, sizeof *p)` on a live chunk of exactly that size returns the
+      same pointer, so the stale tag lands on the record it was saved from.
+    assumption_broken: >-
+      "the tag is only ever written from a validated value, so it is always
+      right." Here it is written from a value that WAS right -- for data that no
+      longer exists. Preserving a discriminant across a reallocation is a
+      plausible thing to do and is exactly what makes it stale.
+    measured_recipe: >-
+      option 6 carrying the payload itself, no prior write (the saved tag is
+      TAG_FN from `new cell`); control side (honest write via option 2) leaves
+      tag=0 over the same payload. 7 probes.
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+
+  - slug: tc_14_computed_tag_truncation
+    role: positive
+    mechanism: >-
+      `set tag` explicitly REFUSES the pointer arm -- `if (t == TAG_FN) reject`
+      -- and then narrows the accepted value to `unsigned char` before storing
+      it. The check reads the wide value; the store keeps the low byte. 258
+      passes the check and lands as 2.
+    assumption_broken: >-
+      "the dangerous arm is denied by name, so it cannot be selected." The value
+      CHECKED and the value STORED are not the same value. A denylist on the wide
+      value says nothing about what survives the narrowing, and this is the one
+      target where the tag the operator supplies is not the tag the program ends
+      up holding.
+    measured_recipe: >-
+      option 3 with tag value 258 (2 was measured REJECTED first, then 258
+      accepted and truncated to 2), after option 2 wrote the payload through the
+      numeric arm; control side leaves tag=0 over the same payload. 14 probes.
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+
+  - slug: tc_90_neg_tag_bound_to_write
+    role: negative_control
+    mechanism: >-
+      The tag is BOUND TO THE WRITE. `set tag` accepts only the two data arms,
+      and it ZEROES the arm it selects, so after it returns the tag and the data
+      agree by construction. `reset` writes the payload and the tag together.
+      There is no operation anywhere that changes the tag without rewriting the
+      arm it names.
+    assumption_broken: >-
+      nothing -- this is the correctly written discriminated union. It is what
+      the positives would look like if their one defect were repaired, and it is
+      here to show the executor's decline is caused by the BUG'S ABSENCE.
+    discriminator_is_real: >-
+      The static triple (tag-guarded indirect call, narrower guarded field,
+      integer store at the called offset) is PRESENT here and `analyse()` opens
+      on it -- measured. The decline comes only from the runtime measurement: 55
+      probes over 3 candidate operations, and the record was never readable with
+      tag=2 while the union still held the distinctive integer. Every operation
+      that can set the tag also rewrites the arm it names. Nothing about the
+      filename, the slug, the path, the protections or the record layout
+      distinguishes this target -- only its behaviour does.
+    pie: true
+    canary: true
+    nx: true
+    relro: Full RELRO
+
+# VALIDATED BEFORE ANY EXECUTOR CODE WAS WRITTEN
+#
+#   benchmark/reference_exploits/typeconf_variants_reference.py
+#
+# 5/5 positives obtain a real shell, verified by a fresh `secrets.token_hex(8)`
+# token echoed by the shell plus `cat flag.txt`. The control does not solve and
+# all four of its assertions hold. The oracle was shown able to go RED with a
+# WRONG-BUT-PRESENT mutation -- same exploit, payload fully delivered, the
+# destination swapped for `default_cell`, a real non-shell function -- which went
+# red on all five. Exit 0.
+#
+# win() deliberately prints NO flag, so the only success signal this family
+# admits is a real shell that can then read flag.txt beside the binary. The
+# design therefore targets SHELL_ACCESS, and a run that reports FLAG_CAPTURED got
+# there through a shell.
+#
+# MEASURED discriminators (the two the executor's gate is built on):
+#
+#   A  `set tag 2` -> control answers b'bad tag'; tc_10 answers b'ok'.
+#   B  record dump on tc_10 reads tag=2 union=0x4142434445464748 AFTER the
+#      mis-tag and tag=0 union=0x4142434445464748 without it. The control leaves
+#      tag=0 union=0x4142434445464748 -- the mis-tagged state is unreachable
+#      there.
+#
+# THE GENERATED SCRIPT'S OWN ORACLE
+#
+# The emitted exploit proves the shell with `echo SH$((6*7))OK` -> `SH42OK`
+# before it bridges stdin, and exits 1 WITHOUT bridging if that marker is absent.
+# Arithmetic expansion is a shell builtin: the answer is not in the bytes sent,
+# so a target that echoes its input cannot satisfy it, and it needs no PATH. This
+# is why a failed attempt on this family cannot be credited with the verifier's
+# receipt. MEASURED: with WIN_SYM swapped for HANDLER_SYM (wrong-but-present) all
+# five scripts print "[-] no shell: the indirect call did not reach win (saw
+# b'[cell] default handler...')" and exit 1 -- the indirect call still FIRES, so
+# the mutation tests the destination and not the delivery.

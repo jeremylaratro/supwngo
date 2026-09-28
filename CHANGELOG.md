@@ -26,6 +26,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   narrows the scope for quick checks, and every run prints the scope it swept, so a
   narrowed run labels itself and its counts cannot be quoted as a whole-tree result.
 
+- **New category: type confusion through an attacker-controlled union tag
+  (CWE-843) — `type_confusion_tag`.** A record holds a union plus a separate `tag`
+  naming which arm is live; the program writes the union as an integer and later
+  READS it as a code pointer, because the tag said so. Every write is in bounds,
+  correctly sized, and lands where intended — the defect is in the gate, not the
+  payload. Adds `benchmark/corpus_typeconf/` (5 positives + 1 negative control, PIE
+  + canary + Full RELRO + NX, `cflags` byte-identical across all six, md5
+  `e58b9d8c`), `benchmark/reference_exploits/typeconf_variants_reference.py`,
+  `supwngo/exploit/pipeline/executors/typeconfusion_techniques.py`, and
+  `tests/test_typeconfusion_executor.py` (45 tests). Measured through the real CLI
+  (`benchmark/measure_family.py benchmark/corpus_typeconf --timeout 400`): **5/5
+  positives solved, all credited to `type_confusion_tag` with
+  `verified=SHELL_ACCESS`, control not solved, exit 0**; `legacy_fallback` was
+  `not_reached`, so no solve is attributable to the legacy engine. `win()`
+  deliberately prints no flag, so a real shell is the only success signal the family
+  admits.
+
+  **The line against `objptr_hijack` is measured in both directions, because the two
+  share a destination and not a cause.** `ObjPtrHijackExecutor.is_applicable` opens
+  on all six `corpus_typeconf` targets — it asks only for a reader, an indirect call
+  through a memory load, and somewhere to point it — and then returns FAILED at
+  ANALYSIS in **0.0 s** on all six ("its pointer and its argument do not share a
+  base"), because `c->u.fn()` takes no argument. Reciprocally, this gate closes on
+  **all 12** `corpus_objptr` targets, at the fact `objptr_hijack` never computes:
+  that the indirect call be guarded by a comparison of a *narrower field of the same
+  object* against a small immediate, and that the called offset *also* be the
+  destination of a qword store from a text-to-number conversion. Gate sweep over the
+  whole benchmark tree: **6 of 171 ELFs open, 0 outside the family, 0 raised**, mean
+  535 ms per image.
+
+  The static shape is present in the negative control too and the gate opens on it
+  **on purpose** — `tc_90` is the same program with the same layout and the same
+  guarded call, so a static gate that declined there would be keying on a corpus
+  artifact. The control is refused by a two-sided runtime measurement instead: the
+  record must be readable with the tag reading the call site's expected value *while*
+  the union still holds the integer that was typed, AND the same sequence minus the
+  tag operation must show that payload under a different tag. 55 probes on `tc_90`,
+  no mis-tagged state reachable — every operation that sets the tag also rewrites the
+  arm it names.
+
 ### Fixed
 
 - **`I-14` was a test budget the technique ladder outgrew, not a defect in `solve`.**

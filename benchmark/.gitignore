@@ -217,3 +217,25 @@ corpus_finiarray/*/*
 corpus_offbyone/*/*
 !corpus_offbyone/*/*.c
 !corpus_offbyone/*/cflags
+
+# corpus_typeconf/ -- TYPE CONFUSION THROUGH AN ATTACKER-CONTROLLED UNION TAG
+# (CWE-843): a record holds a union plus a separate `tag` field naming which arm
+# is live, and the tag can be made to say "code pointer" over eight bytes that
+# were written as an integer. Same artifact rule as every other variation
+# family, and it needs its OWN three lines: a family name is not a prefix match
+# and the corpus-wide flag.txt rule does NOT cover compiled binaries, so without
+# these a path-scoped `git add benchmark/corpus_typeconf` would commit six ELF
+# images. Verified with `git check-ignore` after the family was built.
+#
+# The `cflags` files must stay TRACKED for a reason specific to this family:
+# `-O0` is load-bearing, not stylistic. At higher -O gcc may keep the union in a
+# register across the store/reload or devirtualise `c->u.fn()` into a direct
+# call, and either one MEASURABLY removes the target from the category. A target
+# rebuilt without its cflags would be a different challenge wearing this name.
+#
+# The proof of a win here is a SHELL (win() -> system("/bin/sh")), from which the
+# harness then reads flag.txt, so flag.txt is a per-run secret and stays ignored
+# like every other family's.
+corpus_typeconf/*/*
+!corpus_typeconf/*/*.c
+!corpus_typeconf/*/cflags
