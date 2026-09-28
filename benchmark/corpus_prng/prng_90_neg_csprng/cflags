@@ -1,0 +1,37 @@
+# Protections for the predictable-PRNG-secret variant corpus. Held IDENTICAL
+# across every target in this family on purpose: the *source of the secret* is
+# the only variable, so a protection difference would confound the measurement.
+#
+# This category is not a memory-corruption category -- nothing in the solve path
+# writes out of bounds -- so no protection here gates the technique. That makes
+# the reason for each flag different from the usual one: these are pinned so
+# that the executor's DERIVATION reads the same kind of image on every target.
+#
+# -fno-stack-protector  Irrelevant to the solve path (there is no overflow), but
+#                       pinned so the family is uniform and a later reader is not
+#                       left wondering whether a canary mattered. It also keeps
+#                       the disassembly of main free of the __stack_chk_fail
+#                       epilogue that would otherwise sit between the srand()
+#                       call and the comparison the analysis walks.
+# -no-pie               Fixed addresses, so the `call <srand@plt>` /
+#                       `call <time@plt>` edges the seed-source derivation
+#                       matches on are plain absolute call targets objdump can
+#                       name, rather than PIE-relative thunks.
+# -O0                   The seed source is derived from the instruction stream:
+#                       `call time@plt` (or getpid@plt) whose result feeds
+#                       `call srand@plt`, and the literal base of strtoul().
+#                       At -O1 and above gcc constant-folds the fixed-seed case,
+#                       hoists the time() call, and can turn the modulus into a
+#                       reciprocal multiply with no recoverable divisor -- at
+#                       which point the target has silently stopped being the
+#                       program this corpus documents.
+#
+# DELIBERATELY NOT -static. The gate derives applicability from rand/random/
+# rand_r/srand appearing as DYNAMIC IMPORTS (a PLT entry with a name), and the
+# seed source from named `call <fn@plt>` edges. A statically linked image has no
+# PLT and no dynamic symbols, so the same derivation would have to fall back to
+# matching local symbol names -- i.e. it would be measuring a different
+# inference than the one this executor claims to make.
+-fno-stack-protector
+-no-pie
+-O0

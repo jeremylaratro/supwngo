@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New technique `weak_prng_replay`: a secret (token, PIN, password, session nonce)
+  produced by `rand`/`random`/`rand_r` from a predictable seed, reproduced rather
+  than guessed. This is the **second non-memory-safety category** after
+  `subprocess_injection` — nothing is overflowed and no pointer is corrupted, so
+  it is orthogonal to every memory-safety mitigation.
+
+  Measured on `benchmark/corpus_prng/` (7 targets): **6/6** positives reproduce
+  the per-run secret flag, across five distinct seed sources — `time(NULL)` (seed
+  bracketed over a 7-value clock window), `getpid()`, *unseeded* (glibc's implicit
+  seed 1), a hard-coded `0xc0ffee`, and a seed **recovered** from three published
+  draws. `rand_r` with a hex encoding is covered too, so the encoding of the
+  secret is a derived fact rather than an assumption.
+
+  The negative control uses a CSPRNG and declines **64/64 comparisons on a live
+  process, in each of 3 reps**, over a full 64-second clock window — so its
+  refusal is a measured exhaustion of the same search the positives win, not an
+  early exit. Beyond that the family proves the *distinguishing property*: the
+  anchor's secret is a reproducible function of the clock (the same token was
+  accepted by two independent processes in the same second), and the control's is
+  not a function of anything observable.
+
+  Gate specificity, measured across **68** binaries (every `benchmark/corpus*/`
+  target plus all 7 HTB targets): claims exactly its own 6 positives, declines the
+  other 62 including its own control. The gate reads the generator out of the
+  dynamic symbol table, so a fully static image is refused with that reason rather
+  than silently attempted.
+
 - New technique `scanf_scalar_overwrite`: an unbounded `scanf("%s")`/`strtoull`
   read whose value is then used as an unchecked array subscript or as a
   length/bound, giving a controlled write that reaches a function pointer or a
