@@ -486,3 +486,111 @@ Two process points worth keeping:
   the wrong helper and it raises on all 159 images and prints `gate OPEN on: 0` —
   §7.10's trap with a different cause. `/tmp/gate_sweep_executor.py` builds the
   real context and asserts its own positives open, exiting 2 when they do not.
+
+---
+
+## 8. Three categories added 2026-09-28 (round 2) — what is deferred
+
+`off_by_one_guard`, `fini_array_write`, `alloc_size_overflow`. Merged as
+`576651c` and `2d6331a`. Same rule as §7: everything below is a real deficiency
+chosen rather than discovered.
+
+### 8.1 `I-33` — the bare `Binary(path)` constructor is the footgun, not the code it makes look broken
+
+**Reported to me as "supwngo's own protection reporting is wrong", which it is
+not.** Re-measured on `obo_10_loop_le_saved_rbp`:
+
+```
+Binary.load(path).protections  ->  NX Enabled   RELRO Full RELRO   (correct; agrees with readelf and pwntools)
+Binary(path).protections       ->  NX Disabled  RELRO No RELRO     (every field its default)
+```
+
+The constructor returns a fully-formed object whose ELF was never parsed, so every
+derived property reads as its default and **nothing indicates that**. This has now
+produced a confident wrong measurement **twice in one day** by two independent
+agents: once as a false framework-defect report, and once as a gate sweep that
+printed `opened=0` for all 133 images *including its own positives* and read as a
+flawlessly narrow gate (§7.10).
+
+Not fixed here because the fix is a judgement call with reach: make `__init__`
+parse, or make it refuse and force `.load()`. Either changes behaviour for every
+caller. Logged, and corrected as an erratum beside the original claim in
+`benchmark/corpus_offbyone/corpus_offbyone.yaml`.
+
+### 8.2 `I-34` — `probe_prompt_sequence` primes with `creators[0]` and reads sequences short
+
+In `heap_techniques.py` (~line 1591) the prompt probe uses `creators[0]` as its
+prologue. On a target whose fill option refuses a record of the wrong kind, the
+fill path rejects *before* printing its `data:` prompt, so the probe concludes the
+option asks for an index alone. Consequence: `heap_record_hijack` reports
+`edit() writes at offset None` and **under-reports its own capability**.
+
+This matters beyond tidiness. `alloc_size_overflow`'s attribution is currently
+correct partly *because* of this: `heap_record_hijack`'s gate opens on all six
+`corpus_allocsize` targets and its deeper analysis declines them, and part of that
+decline's stated reason is this bug. Fix it and that family may see further into
+those images. The ordering entry was placed ahead of it precisely so attribution
+does not rest on a defect continuing to exist — but the defect is still there.
+
+The generalisable fix is known and was already written once, in
+`allocsize_techniques.py`: probe each operating option **once per creator** and
+keep the longest sequence observed. Not applied to `heap_techniques.py` because it
+would change `heap_record_hijack`'s verdicts on two corpora at once, and that is a
+measurement change to make deliberately rather than as a drive-by.
+
+### 8.3 Four of five finaliser positives need a non-default link
+
+`fini_array_write`'s loader-table route requires `-z norelro`. Measured on this
+host (gcc 11.4.0, ld 2.38): at gcc's default Partial RELRO, `.fini_array` sits
+inside `PT_GNU_RELRO` while its section header still advertises `WA`, and a store
+there takes SIGSEGV. So the four loader-table targets are linked `-z norelro`,
+pinned per target in `cflags`.
+
+The honest consequence: on ordinary distro binaries the loader-table route is
+largely dead, and only the fifth shape — Full RELRO, through a program-owned
+shadow-validated table — still applies. **The category's real-world reach is
+narrower than CWE-787 suggests**, and the corpus's 5/5 should be read with that in
+mind. The `WA`-versus-`PT_GNU_RELRO` distinction is also a trap for any future
+gate: a section-flag check would open on every Partial-RELRO image in the tree.
+
+### 8.4 One category is probabilistic and two controls still decline on budget
+
+`off_by_one_guard`'s saved-RBP route cannot be made deterministic:
+`arch_align_stack` re-randomises the frame pointer's low byte per exec, and an
+already-256-aligned one makes the one-byte write a no-op, capping any single
+attempt at **15/16**. Measured per-target rates are recorded in
+`corpus_offbyone/corpus_offbyone.yaml`. All three pivot targets land ~6 points
+under their derived ceilings by almost the same margin across three different
+geometries, which is labelled INFERRED rather than diagnosed — a geometry error
+would move one target by a multiple of 1/16, not all three by the same amount.
+
+On controls, the picture improved but is not uniform. `off_by_one_guard`'s control
+is the **best in the tree**: it declines statically in 0.00 s naming the
+discriminator, which I verified directly through `is_applicable`/`skip_reason`.
+`fini_array_write`'s declines at 131.8 s and `alloc_size_overflow`'s at 189.2 s —
+both still the ladder exhausting rather than a statement about the family. And
+`alloc_size_overflow`'s control is **statically indistinguishable by design**, so
+its gate opens on it; that one is deliberate (§7.8's reasoning) and should not be
+"fixed".
+
+### 8.5 An ordering seat was credited with a speed-up it could not deliver
+
+Recorded because the mistake is easy to repeat. `alloc_size_overflow` was
+recommended for the head of the heap block on the strength of a `--strategy` run
+at 17.8 s versus 142.1 s in the tail. Measured, that seat gave 101.4–112.5 s — the
+family was still paying `subprocess_injection`'s 72.9 s. Only the seat *ahead* of
+`subprocess_injection` delivered 21.0–32.5 s. **`--strategy` bypasses the ladder;
+an ordering entry does not.** A projected speed-up from a forced run is an upper
+bound on what a seat can buy, not a measurement of it.
+
+### 8.6 Still owed
+
+- `subprocess_injection` burns ~72.9 s on every menu-driven target before
+  declining (14 candidate payloads against a `system` import). It now dominates
+  the cost of three families. Out of scope for these sprints, but it is the single
+  largest latency item in the ladder.
+- `benchmark/corpus_r2/08_int_mul_overflow` is solved by nothing in default
+  ordering. Pre-existing; `alloc_size_overflow` correctly declines it (no
+  allocator in the image) rather than papering over it.
+- `heap_uaf_read` remains the last `FIRST_TECHNIQUES` orphan.
+- The solo `I-14` re-run on a quiet host, still owed from §7.11.
