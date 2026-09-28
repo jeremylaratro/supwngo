@@ -61,6 +61,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   98.6 s — and the control (`obn_90_neg_slack_byte`) **not solved**,
   `verified=NONE`, after 137.3 s of live measurement, exit 0.
 
+  The executor is **ordered** in the technique ladder (immediately behind
+  `heap_strlen_ofb1`, the narrower of the two heap off-by-one gates), which
+  is what turns those ~98 s into **17.2 s** per target. That seat was
+  granted on a measurement rather than by default: forced via `--strategy`
+  the technique costs **15.8 s**, so nearly all of the unordered 98 s was
+  time spent failing through earlier gates. Attribution needed no help —
+  unordered, all five positives were already credited correctly with 0
+  misattributed — so speed is the sole justification, and it is the same
+  order as the savings that justified `type_confusion_tag` (108.8 → 25.9 s)
+  and `heap_record_hijack` (105.6 → 20.5 s).
+
   Gate sweep over the whole benchmark tree (`python3 scripts/gate_sweep.py
   heap_offbynul_techniques HeapOffByNulOverlapExecutor corpus_offbynul`):
   **opened on 8 — all 6 of its own family (including the control, on
