@@ -1,0 +1,41 @@
+# uninit_12_short_memset: the same freed chunk, surviving a memset given the WRONG length
+#
+# Protections for the uninitialised-memory-disclosure (CWE-457/CWE-908) variant
+# corpus. Held IDENTICAL across all six targets on purpose: WHICH PRIOR USE OF
+# THE RECORD'S BYTES SURVIVES INTO THE DISCLOSED TAIL is the only variable, so a
+# protection difference would confound the measurement.
+#
+# -fstack-protector-all  ON, and load-bearing twice over. (a) The category is
+#                        orthogonal to the canary -- nothing here overflows --
+#                        so the strongest stack hardening being on is the point
+#                        rather than an oversight. (b) uninit_13's axis point IS
+#                        the canary: its disclosure window covers a returned
+#                        deeper frame's canary slot, so the canary has to exist
+#                        for that point on the axis to exist at all. `-all`
+#                        rather than `-strong` so every function in the family
+#                        stores it, which is what makes the slot's position a
+#                        property of the frame layout instead of a gcc heuristic.
+# -no-pie                uninit_13 finishes with ret2win, and this family
+#                        forbids the code-pointer resolve chain that a PIE image
+#                        would need (see corpus_uninit.yaml, "DELIBERATELY NOT
+#                        COVERED"). -no-pie is the one deliberate weakening and
+#                        it is held across all six so it cannot confound.
+# -Wl,-z,relro,-z,now    FULL RELRO. Nothing in this family writes a GOT entry,
+#                        so the strictest setting costs nothing and removes any
+#                        question of a solve having gone through the GOT.
+# -O0                    the whole category depends on the compiler NOT
+#                        initialising what the source leaves alone. At higher -O
+#                        gcc is free to fold the partially-written record into
+#                        registers, to sink the `write` before the `read`, or to
+#                        drop the unused 256-byte `arg` that this family's stack
+#                        geometry depends on -- any of which silently stops the
+#                        target being in this category.
+#
+# NOT SET, and stated rather than left to inference: no -fno-stack-protector
+# anywhere (contrast benchmark/corpus_bon), and no -z execstack. NX is on by
+# gcc's default here and is MEASURED off the binaries in corpus_uninit.yaml
+# rather than assumed from these flags.
+-fstack-protector-all
+-no-pie
+-Wl,-z,relro,-z,now
+-O0

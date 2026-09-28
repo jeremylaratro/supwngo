@@ -49,6 +49,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   true, so nothing flags it, and it silently invites the reader back to the
   cyclic-pattern framing this route does not use.
 
+- **New category: uninitialised-memory disclosure** (`uninit_disclosure`,
+  CWE-457/CWE-908). The first route here that is a **read** primitive rather than a
+  write: a record is only partially filled and then written back whole, so the
+  tail of the reply is whatever those bytes held *before*. Five variants, varying
+  exactly one thing — which prior use of those bytes survives into the disclosed
+  window: a freed tcache chunk, a returned stack frame at the same depth, a
+  correctly-present but **mis-sized** `memset`, a struct padding hole every named
+  field does assign, and a deeper frame's **stack canary** (which then buys an
+  in-target bounded overflow and a `ret2win`, so the leak is a step rather than
+  the answer).
+
+  The negative control is the hard shape rather than the easy one: it keeps the
+  allocation, the partial fill, the full 64-byte write-back, the token build and
+  free, and the overflow, and fixes only the `memset` size — one argument. It
+  still returns 48 bytes the client never sent, all NUL. Any oracle crediting
+  "reply longer than input", "tail holds bytes I never sent", or "reached admin"
+  solves it, which is the point.
+
+  Measured in-tree after wiring (`benchmark/measure_family.py
+  benchmark/corpus_uninit --timeout 300 --jobs 3`): **5/5 positives solved by
+  `uninit_disclosure`, `verified=SHELL_ACCESS`, 11.5–22.2 s**; control not solved.
+  Two things are recorded rather than smoothed: this family proves a **shell**,
+  not a captured flag, so its rows read `flag=False`; and the control's decline is
+  a 420 s wall timeout with no result written rather than an exhausted ladder —
+  re-measured at an 8× budget it still does not exhaust the registry, and the
+  budget goes to *later* techniques against a blocking-read menu.
+
+  Gate swept rather than argued, over every ELF executable under `benchmark/` and
+  `tests/`: **140 swept, open on 6, nothing outside the family, none raised, mean
+  72 ms per image.** The 6 include the family's own control, which is correct: the
+  control discloses the same window and the window is simply empty, so the cheap
+  static half cannot separate them and is not asked to. The live half refuses it
+  in 6.5 s with a specific sentence instead.
+
+  One build defect worth keeping, because the symptom pointed away from the cause:
+  the generated canary chain was emitted as one joined expression with inline `#`
+  comments, which put the `p64(win)` term **inside a comment**. The artifact sent
+  a chain with no return target — and since the probe had already obtained a real
+  shell, the only symptom was `verified=NONE` on a technique that demonstrably
+  worked. Now emitted one term per line.
+
 - **New category: TOCTOU path races** (`toctou_path_race`, CWE-367). The first
   route in the pipeline that corrupts no memory and hijacks no control flow — it
   wins a *window*. A constructed path is handed to a path-based CHECK and then,

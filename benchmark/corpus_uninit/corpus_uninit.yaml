@@ -1,0 +1,409 @@
+# Challenge-variation corpus manifest: UNINITIALISED MEMORY DISCLOSURE
+# (CWE-457 read-of-uninitialised-variable / CWE-908 use-of-uninitialised-
+# resource). A fixed-size record is allocated (heap or stack), only its first
+# NAME_SZ bytes are written from user input, and then the WHOLE record is handed
+# back with one `write(1, <rec>, REC_SZ)`. The bytes nobody wrote are whatever
+# the previous user of that memory left behind.
+#
+# This family is not derived from an HTB target. It was opened as a NEW category
+# on the ground that it is orthogonal to every memory-safety mitigation in the
+# corpus: nothing is overflowed and no pointer is corrupted, so NX, the canary,
+# RELRO and PIE have nothing to check. MEASURED consequence, not asserted --
+# every one of the six targets is built NX + canary + Full RELRO (see
+# PROTECTIONS below) and five of the six are still solved to a shell.
+#
+# WHAT THIS CORPUS MEASURES, AND WHAT IT DOES NOT
+#
+# Measures: whether one solve capability GENERALISES across the particulars of a
+# single vulnerability category. Everything about the BUG is held identical
+# across all six targets and exactly one thing varies -- **which prior use of
+# the record's bytes survives into the disclosed window**. A per-target
+# difference is therefore attributable to the residue, not to a different bug.
+#
+# Held identical in every target (each source header says it at length; verified
+# by diffing the code bodies against the anchor with the header comment stripped
+# -- the only hunks that come back are the axis knob and the storage class it
+# forces):
+#
+#   the defect      `do_record()` does `read(0, <rec>, NAME_SZ)` then
+#                   `write(1, <rec>, REC_SZ)` -- 16 in, 64 out. This statement
+#                   pair is byte-identical in all six.
+#   the geometry    REC_SZ 64, NAME_SZ 16, TOKEN_SZ 16, TOKEN_OFF 16.
+#   the privileged  command '3' reads TOKEN_SZ bytes and calls `win()` on an
+#   path            exact `memcmp` against the runtime token.
+#   the shell site  `win()` -> `system("/bin/sh")`. Exactly one, in all six.
+#   the bounded     command '4', `char note[40]` with `read(0, note, 200)`.
+#   overflow        Canary-protected, so it is a win ONLY for whoever already
+#                   knows the canary -- true of exactly one target here.
+#   the secret      8 bytes of /dev/urandom, hex-encoded to 16 characters,
+#                   generated per process and NEVER printed. It is not in the
+#                   image, so `strings` cannot substitute for the leak and a
+#                   hard-coded answer cannot pass.
+#   frame geometry  every command handler runs at depth 2 under `handle()`'s
+#                   256-byte `arg`. Load-bearing and MEASURED, not decoration:
+#                   glibc's `write` stub alone reaches ~0x50 past `main`'s rsp,
+#                   which would shred a depth-1 stack record between two menu
+#                   commands. Present in all six so the geometry cannot differ.
+#   I/O primitives  `read`/`write` only -- no printf/scanf anywhere -- for the
+#                   same reason.
+#   menu, prompts, command letters, and cflags.
+#
+# NOT held identical, stated so it cannot be mistaken for a hidden second bug:
+# the record's STORAGE CLASS follows from the axis point. A freed heap chunk
+# cannot be recycled into a stack local, so the heap points (10, 12, 14)
+# `malloc` the record and the stack points (11, 13) declare it. The
+# read-then-write pair either side of it is unchanged.
+#
+# Does NOT measure: any leak -> resolve -> libc finisher. See DELIBERATELY NOT
+# COVERED at the end, which states that gap rather than rounding it off.
+#
+# PROTECTIONS -- MEASURED OFF THE BINARIES 2026-09-28, NOT COPIED FROM cflags
+#
+# All six: **NX on, canary ON, Full RELRO, no PIE** -- identical, so no
+# protection difference can confound the residue axis. Two of those are
+# deliberate and load-bearing:
+#
+#   canary ON (`-fstack-protector-all`) is load-bearing TWICE. It is what makes
+#   the orthogonality claim above a measurement rather than a slogan, and it is
+#   what uninit_13's axis point leaks in the first place -- remove it and that
+#   variant has no residue to disclose.
+#   `-no-pie` is the ONE deliberate weakening in the family. uninit_13's win is
+#   a ret2win at a fixed `win()` address, and the family holds cflags identical,
+#   so `-no-pie` is held across all six rather than granted to one target.
+#
+# MEASUREMENT TRAP, re-verified here rather than taken on trust from
+# corpus_bon.yaml: `Binary(path).protections` returns the **all-False dataclass
+# default** -- `nx=False`, `pie=False`, `canary=False`, `relro="No RELRO"` --
+# because the dataclass constructor never runs `_detect_protections()`. Only
+# `Binary.load(path)` measures. Read the wrong way, all six of these targets
+# "have no protections at all", which is the most plausible-looking wrong answer
+# available and would destroy the orthogonality claim this family exists to
+# make. Every field below was read with `Binary.load()`, with
+# `assert binary.protections_measured` before the read, and cross-checked
+# against pwntools' own `ELF` checksec fields: **6 of 6 agree, zero mismatches.**
+#
+# THE ONE VARIABLE: WHICH PRIOR USE OF THE RECORD'S BYTES SURVIVES
+#
+# Window offsets below are offsets into the 64 bytes `write()` hands back, which
+# is what a client counts from. 0..15 are always the bytes the client itself
+# just sent; 16..63 is the 48-byte window nobody wrote.
+targets:
+  - slug: uninit_10_stale_heap_chunk
+    role: positive
+    residue: >
+      A FREED HEAP CHUNK, straight back out of the tcache. `do_prepare()` builds
+      a session record holding the runtime token and frees it; nothing clears it,
+      and `do_record()`'s `malloc(64)` gets that chunk back. This is the anchor:
+      every other source was generated from it, so the held-constant parts are
+      byte-identical rather than merely similar. MEASURED: window 16..31 is the
+      live token, byte for byte. TOKEN_OFF is 16 and not 0 because a freed tcache
+      chunk's first two words hold `next` and `key`, so a token at offset 0 would
+      be destroyed by the free itself -- and those two words are exactly what the
+      client's own 16-byte name write lands on.
+    win: credential replay -- the leaked token is replayed into command '3',
+      which runs the target's own `win()`.
+    pie: false
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: uninit_11_stale_stack_frame
+    role: positive
+    residue: >
+      A RETURNED STACK FRAME at the SAME call depth. `do_prepare()` holds the
+      session record as a local and returns; `do_record()` declares its record in
+      the same depth-2 slot one command later. Same disclosure, same token, same
+      offset -- and no allocator involved at all, which is the point: an executor
+      that recovered the token by reasoning about tcache metadata rather than
+      about the disclosure would solve uninit_10 and fail here. MEASURED: window
+      16..31 is the live token.
+    win: credential replay (same as the anchor).
+    pie: false
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: uninit_12_short_memset
+    role: positive
+    residue: >
+      THE SAME FREED CHUNK, SURVIVING A CLEAR THAT IS PRESENT BUT MIS-SIZED. One
+      line is added to the anchor: `memset(r, 0, sizeof r->name)` -- sized to the
+      FIELD instead of to the RECORD. This variant exists to defeat the cheap
+      wrong gate: "does this function call memset before printing?" is true here
+      and the bug is still live. It is also the deliberate near-neighbour of the
+      control, which differs from it by exactly one argument. MEASURED: window
+      0..15 zeroed by the memset and then overwritten by the client's own name;
+      16..31 still the live token.
+    win: credential replay (same as the anchor).
+    pie: false
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: uninit_13_stale_frame_canary
+    role: positive
+    residue: >
+      A RETURNED DEEPER FRAME'S STACK CANARY. `do_prepare()` puts no token
+      anywhere -- it calls a diagnostic helper `inner()` and returns -- so the
+      credential-replay win is UNREACHABLE on this target and the family's OTHER
+      in-target win path is the one that pays. MEASURED window content (predicted
+      at 32 by frame arithmetic, measured at 40 off the binary): 16..31 is
+      `inner()`'s 0x77 filler (non-zero low byte on purpose, so the filler can
+      never be mistaken for a canary by the usual low-byte-is-NUL test), 32..39
+      zero, **40..47 the canary**, 48..55 a live stack address, 56..63 a saved
+      return address into .text (0x401479). The last two are disclosed and are
+      deliberately NOT used -- `-no-pie` already fixes `win()` -- and are named
+      here so the window's full content is on the record rather than
+      half-described.
+    win: >
+      canary leak -> in-target bounded overflow -> ret2win. The recovered canary
+      is replaced verbatim at filler 40 (buffer `lea -0x30(%rbp)`, canary at
+      `-0x8(%rbp)`, both read off the image), then ONE bare `ret` gadget
+      (0x40101a) before `win()` (0x4013b2). That extra word is not decoration:
+      MEASURED, without it `win()` runs and prints "[+] admin granted" and then
+      `system()` faults with SIGSEGV on a 16-byte-misaligned rsp. It is RED proof
+      9 for exactly that reason.
+    pie: false
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: uninit_14_struct_padding
+    role: positive
+    residue: >
+      A COMPILER PADDING HOLE, with EVERY NAMED FIELD ASSIGNED.
+      `struct prec { char name[16]; unsigned long id __attribute__((aligned(32)));
+      char note[24]; }` is 64 bytes with a 16-byte hole at 16..31, and
+      `do_record()` assigns `name`, `id` and `note`. There is no missing
+      assignment to find: the leak is in a region the source cannot name. The
+      hole is placed on TOKEN_OFF so the same stale token lands in it. MEASURED:
+      window 16..31 is the live token, 32..39 is `id` (= 1), 40..63 is `note`.
+    win: credential replay (same as the anchor).
+    pie: false
+    canary: true
+    nx: true
+    relro: Full RELRO
+  - slug: uninit_90_neg_full_memset
+    role: control
+    residue: >
+      NEGATIVE CONTROL, and deliberately the HARD shape: uninit_12 with the
+      memset length CORRECTED -- `sizeof *r` instead of `sizeof r->name`. That
+      one argument is the entire difference from a solvable positive (verified by
+      diff: one hunk, one expression). Everything that makes a naive oracle say
+      "solved" is KEPT: the allocation, the partial 16-byte fill, the full 64-byte
+      `write()`, the session record still being built with the live token and
+      freed, the admin prompt, and the bounded overflow. So the control still
+      hands back 48 bytes the client never sent; they are simply all NUL
+      (MEASURED: window 16..63 == 48 zero bytes, on every command tried). An
+      oracle that credits "reply longer than input", "the tail holds bytes I
+      never sent", "reached the admin prompt", or "the target did not crash"
+      wrongly solves this target. Only extracting and replaying a USABLE secret
+      fails.
+    win: none. Expected NOT to solve.
+    pie: false
+    canary: true
+    nx: true
+    relro: Full RELRO
+
+# BUILD
+#
+#   SUPWNGO_BENCH_CORPUS=benchmark/corpus_uninit benchmark/build_all.sh
+#
+# reached through build_all.sh's per-target `cflags` fail-closed path. The flags
+# are `-fstack-protector-all -no-pie -Wl,-z,relro,-z,now -O0`, byte-identical
+# across all six targets -- stated precisely because the md5 of the `cflags`
+# FILES differs (each carries a leading one-line comment naming its own variant),
+# so a whole-file md5 comparison would report a difference that does not exist in
+# the build. MEASURED: `grep -v '^#' cflags | md5sum` is 650d30aea50b... for all
+# six; the whole-file md5s are all different.
+#
+# `-O0` is load-bearing for this category specifically: the whole family depends
+# on the compiler NOT initialising what the source leaves alone, and on the frame
+# and struct layouts staying where the source puts them.
+#
+# The build emits one EXPECTED gcc warning per target -- `read` writing 200 bytes
+# into a region of size 40 -- which is the family's bounded-overflow path being
+# correctly diagnosed. It is deliberate and is not to be "fixed".
+#
+# GATED BEFORE USE (2026-09-28)
+#
+#   * slug set and directory set are IDENTICAL -- six of each, no manifest entry
+#     without a binary and no binary without an entry.
+#   * every `pie`/`canary`/`nx`/`relro` field above was re-measured off the
+#     binaries with `Binary.load()` after asserting `protections_measured`, and
+#     cross-checked against pwntools checksec: 6/6 agree, zero mismatches.
+#   * `benchmark/.gitignore` carries this family's OWN three lines
+#     (`corpus_uninit/*/*`, `!corpus_uninit/*/*.c`, `!corpus_uninit/*/cflags`).
+#     VERIFIED with git, not assumed: all six ELF images and all six `flag.txt`
+#     files are ignored by `.gitignore:114`; `git check-ignore` on the six `.c`
+#     and six `cflags` exits 1 (not ignored); and `git add -n
+#     benchmark/corpus_uninit` stages exactly 12 files -- six sources and six
+#     cflags, no binary and no flag. The corpus-wide `flag.txt` rule does NOT
+#     cover compiled binaries, so without these three lines a path-scoped
+#     `git add` would have committed six ELF images.
+#   * the ORACLE was proven able to go RED before any result that trusts it was
+#     believed: `benchmark/reference_exploits/uninit_variants_reference.py`
+#     carries 9 WRONG-BUT-PRESENT red proofs (not absent ones) and all 9 come
+#     back `red`. See that file's RED_PROOFS table for the list.
+#
+# END-TO-END THROUGH THE REAL CLI
+#
+#   python benchmark/measure_family.py benchmark/corpus_uninit --timeout 300 --jobs 3
+#
+# HOW THE ARMS WERE WIRED -- read this before comparing to corpus_bon.yaml.
+# corpus_bon's paired numbers were taken by editing `executors/__init__.py` and
+# `orchestrator.py` and restoring both byte-identical. That was NOT available
+# here: both files were being edited concurrently by other agents during this
+# session (MEASURED: `ToctouPathRaceExecutor` appeared in
+# `build_default_registry()` while this family was being built), so a
+# write-then-restore would have raced their edits. The arms below were therefore
+# taken with a `sitecustomize` shim on PYTHONPATH that wraps
+# `build_default_registry` and, for the ordered arm, inserts the technique into
+# `FIRST_TECHNIQUES` in place. Same harness, same corpus, same 300 s budget, same
+# `--jobs`, real `python -m supwngo.cli autopwn --json --no-legacy`; the ONLY
+# difference between arms is one environment variable. The shim was itself gated
+# before use: with it unset the registry holds 27 executors and the technique is
+# absent, `=registered` gives 28 and absent from FIRST_TECHNIQUES, `=first` gives
+# 28 and position 3 of 23. What remains UNMEASURED and must not be read as
+# measured: the in-tree wiring itself. Nobody has run these targets with the two
+# real files edited.
+#
+# Harmless noise in the arm logs, named so nobody reads it as a failed arm: the
+# PARENT `measure_family.py` process also loads the shim and prints
+# `[uninit_shim] FAILED to apply ... No module named 'supwngo'`. That is correct
+# and expected -- the parent runs with `sys.path[0] = benchmark/` and does not
+# need the wiring; only the CHILDREN do, and measure_family.py puts the repo root
+# on their PYTHONPATH itself. The children's stderr is captured by
+# `subprocess.run(capture_output=True)` so their "applied" lines never reach the
+# log. Positive proof the children DID get it: every solved row is attributed
+# `technique=uninit_disclosure`, which does not exist in the unshimmed registry.
+#
+# FOUR ARMS, MEASURED 2026-09-28 05:16-05:59 EDT. Same harness, same corpus,
+# 300 s per-target budget (harness wall kill at budget + 120 = 420 s).
+#
+#   slug            A: unregistered      C: registered, unordered  B: registered + first
+#   uninit_10       TIMED OUT 420 s      TIMED OUT 420 s           SOLVED 13.4 s
+#   uninit_11       EXHAUSTED 153.5 s    SOLVED  92.1 s            SOLVED 12.9 s
+#   uninit_12       TIMED OUT 420 s      TIMED OUT 420 s           SOLVED 13.1 s
+#   uninit_13       EXHAUSTED 327.7 s    SOLVED 102.9 s            SOLVED 12.6 s
+#   uninit_14       TIMED OUT 420 s      TIMED OUT 420 s           SOLVED 13.0 s
+#   uninit_90 (ctl) TIMED OUT 420 s      TIMED OUT 420 s           TIMED OUT 420 s
+#   -------------------------------------------------------------------------
+#   positives       0/5                  2/5                       5/5
+#   harness exit    3 INCOMPLETE         3 INCOMPLETE              0 ALL OK
+#
+# Every solved row above is `technique=uninit_disclosure verified=SHELL_ACCESS
+# flag=False legacy_fallback=not_reached`. `flag=False` is correct and not a
+# shortfall: these targets deliberately print no flag at all, so SHELL_ACCESS is
+# the only success level available and the receipt is the `SH42OK` shell proof.
+#
+# EXHAUSTED vs TIMED OUT -- these mean different things and the baseline arm
+# shows BOTH, split cleanly by the record's storage class:
+#
+#   EXHAUSTED  uninit_11 at 153.5 s and uninit_13 at 327.7 s returned real JSON
+#              with `technique=""` (empty) and `verified=NONE`, well inside the
+#              420 s wall. The pipeline ran every registered technique, found
+#              none applicable-and-successful, and said so. This is the honest
+#              "no capability" answer.
+#   TIMED OUT  uninit_10, uninit_12, uninit_14 and the control produced NO JSON
+#              at all and were killed by the harness at 420.1 s. Some earlier
+#              technique does not terminate on these images, so the run never
+#              reaches a verdict. A reader who scores this as "not solved"
+#              alongside the two above is averaging two different facts.
+#              UNMEASURED: which technique hangs, and why the three heap-record
+#              targets hang while the two stack-record ones do not. It is not
+#              this executor -- arm A does not have it registered at all.
+#
+# ORDER IS LOAD-BEARING, MEASURED, and this family shows it more sharply than
+# `env_path_hijack` did. Arm C has the identical capability registered but absent
+# from `FIRST_TECHNIQUES`, so it is reached only through the orchestrator's
+# step-3 fallback:
+#
+#   * 3 of the 5 positives are LOST OUTRIGHT -- they never reach the technique
+#     inside 420 s, and would not reach it inside any budget short of whatever
+#     the hanging technique needs.
+#   * the 2 that survive cost 7.1x and 8.2x more wall time (92.1 s vs 12.9 s;
+#     102.9 s vs 12.6 s).
+#
+# So "registered" and "registered first" are not a small ordering nit here: they
+# are 2/5 and 5/5.
+#
+# THE CONTROL'S PASS IS A TIMEOUT-PASS IN EVERY ARM -- stated because it is
+# weaker than it looks. `uninit_90` is not solved in any arm, which is what a
+# control must do, but in all four arms the row is `HARNESS_TIMEOUT` at 420.1 s
+# rather than a clean NOT_SOLVED verdict. Compare `corpus_bon`, whose control
+# returned a clean NOT_SOLVED at 52.2 s.
+#
+# So the control was re-measured OUTSIDE the harness with an 8x budget, to find
+# out whether the registry ever exhausts on it (MEASURED 2026-09-28, wired-first
+# shim, `--timeout 2400`, no harness wall kill):
+#
+#   * it still does NOT solve: `success=false`, `technique=""`, `verified=NONE`.
+#   * 22 of the 28 registered techniques were attempted before the 2400 s budget
+#     ran out. The registry does NOT exhaust on this target at ANY budget tried.
+#     The techniques never reached are `off_by_one_guard`, `heap_uaf_read`,
+#     `double_free`, `leaked_stack_shellcode`, `container_file_rop`, and both
+#     LAST_TECHNIQUES sweeps.
+#   * the process then had to be killed (`timeout` rc=124): it emitted its JSON
+#     and did not exit on its own.
+#   * THIS executor's refusal is clean, fast and specific, and is on the record
+#     inside that attempt list: `uninit_disclosure FAILED stage=DELIVERY`, reason
+#     "the 48-byte window IS disclosed on every command tried, but it carries
+#     nothing usable: no non-constant printable run of a length this image reads
+#     ([8, 16, 200]) and no canary-shaped word. Disclosure without stale content
+#     is not exploitable." Measured directly against the executor in isolation it
+#     costs 6.5 s. Everything after it is what spends the budget -- most visibly
+#     `subprocess_injection` (14 candidate payloads, FAILED at VERIFICATION) and
+#     `ret2win` (an offset sweep, FAILED at DELIVERY) against a menu loop that
+#     blocks in `read(0, ...)` forever.
+#
+# Read the control's PASS accordingly: it is "no technique in the registry solves
+# this, including the one that solves its five near-identical siblings", which is
+# the property the control exists to prove -- but it is NOT "the pipeline finished
+# and said no", and that budget behaviour belongs to the rest of the registry on a
+# blocking-read menu target, not to this family or this executor.
+#
+# `--jobs`: MEASURED BOTH WAYS, and this family does NOT need `--jobs 1`.
+# `--jobs 3` and `--jobs 1` give identical verdicts (5/5 positives SHELL_ACCESS,
+# control declined, exit 0) and per-target times inside noise of each other
+# (13.4/12.9/13.1/12.6/13.0 s at jobs 3 against 13.0/13.2/12.8/19.4/13.6 s at
+# jobs 1; the one outlier is uninit_13, whose canary sweep spawns a variable
+# number of probes). Unlike `corpus_envpath` these targets plant no shared file
+# and write nothing outside their own directory, and unlike `corpus_bon` that is
+# now measured rather than merely unrefuted.
+#
+# CONTENTION CAVEAT, recorded rather than hidden: another agent's
+# `measure_family.py benchmark/corpus_toctou --jobs 3` run overlapped arm B on
+# this 32-core host. At 3 jobs per family that is 6 concurrent CLI processes on
+# 32 cores and the per-target times are dominated by this family's own sequential
+# live probing rather than by CPU, so the effect is believed negligible -- but it
+# is INFERRED, not measured, and the jobs-1 arm (which ran with the same
+# neighbour) agreeing to within noise is the only cross-check offered for it.
+#
+# ---------------------------------------------------------------------------
+# DELIBERATELY NOT COVERED -- stated rather than rounded off
+# ---------------------------------------------------------------------------
+#
+#   * **No leak -> resolve -> libc finisher, anywhere in this family.** Every win
+#     here lands inside the target's own image: replay the target's own
+#     credential into the target's own comparison, or return into the target's
+#     own `win()`. This is a scope decision, not an oversight -- the shared
+#     leak/resolve/libc machinery those variants would need does not exist in
+#     the repo yet, and a family that depended on it would be measuring that
+#     machinery's absence rather than this category.
+#   * **No stale CODE/PIE-pointer axis point.** The obvious sixth positive is
+#     "the window holds a returned frame's saved return address, so leak it and
+#     defeat PIE". It is not here, and the reason is a real constraint rather
+#     than a preference: the family holds cflags byte-identical, and uninit_13's
+#     ret2win needs a fixed `win()`, so `-no-pie` is held across all six. A
+#     PIE-pointer variant would need its own flags and would stop being one axis.
+#     Note the residue IS disclosed anyway -- uninit_13's window 56..63 is a
+#     saved return address into .text, MEASURED -- it simply buys nothing on a
+#     `-no-pie` image, so nothing uses it.
+#   * **One axis, not two.** Every positive that leaks the token wins the same
+#     way, and the only variant with a different win shape (uninit_13) has it as
+#     a CONSEQUENCE of its axis point rather than as a second variable: that
+#     target's `do_prepare()` leaves no token anywhere, so the replay path is
+#     genuinely unreachable and the canary path is the only one left.
+#   * **The control is not proof of narrowness in general.** It proves this
+#     family cannot be solved by a disclosure-shaped oracle alone. It does not
+#     prove the executor declines unrelated images -- that is measured
+#     separately, off the images, and recorded in the executor's own module
+#     docstring (static gate fires on 6 of 133 ELF executables under
+#     `benchmark/` + `tests/`).
