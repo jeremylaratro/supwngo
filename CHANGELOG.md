@@ -621,6 +621,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`objptr_hijack` raised a `TypeError` while explaining why it did NOT apply**
+  (`I-32`). The reach gate has two arms — a recovered read-length immediate, and a
+  `scanf` field width where there is no immediate at all — and `decline_reason`
+  handled both while its sibling `_becomes_viable_if` formatted `plan.read_len`
+  unconditionally. On every target declined by the field-width arm, asking the
+  family what *would* reopen the route crashed instead of answering.
+
+  The family's own suite could not catch it: it proves the gate closes by asserting
+  `_Analysis.complete is False` and never calls `propose()`, so it verified the
+  closure without ever building the `Route` that explains it. `test_walkthrough_render_all`
+  caught it, which is the `I-23` class again — selection and scoring never touch
+  the thing that breaks. A new test now exercises `propose()` on every control and
+  asserts the rationale carries the gate's own sentence *and* that the remedy string
+  is non-empty; the defect restored makes both it and `render_all` go red.
+
 - **The walkthrough model made "an address that is not in this image" impossible
   to state** (`I-31`). A `Fact` of kind `addr` was required to carry an `int`, and
   the only exemption was `runtime=True` — which `Walkthrough` separately forbids

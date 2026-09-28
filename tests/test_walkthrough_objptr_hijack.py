@@ -315,6 +315,52 @@ def test_the_decline_reasons_are_distinct_per_gate() -> None:
     assert "libc" in reasons["reclibc_91_neg_no_libc_slot"]
 
 
+def a_decline(path: str) -> str:
+    """The gate's own sentence, so a test can assert the Route carries it."""
+    return objptr_hijack._Analysis(path).decline_reason
+
+
+def test_declining_also_EXPLAINS_itself_without_raising() -> None:
+    """The gap that shipped a `TypeError` into the not-applicable path.
+
+    This suite proved the gate CLOSES on every control by asserting
+    `_Analysis.complete is False`, and never once called `propose()` -- so it
+    never built the `Route` that carries the explanation. `_becomes_viable_if`
+    formatted `plan.read_len` unconditionally, and that value is None on the whole
+    scanf-width arm of the reach gate, so `propose()` raised `TypeError` on
+    `scanf_90_neg_bounded`. `decline_reason` had always handled both arms; the
+    sibling function had not, and nothing here compared them.
+
+    Found by `test_walkthrough_render_all.py`, which selects for real. That is the
+    `I-23` class again: selection and scoring never touch the thing that breaks.
+    """
+    from supwngo.exploit.walkthrough.facts import collect_facts as _collect
+
+    targets = [_target(slug) for slug in CONTROLS]
+    scanf_ctl = os.path.join(REPO, "benchmark", "corpus_scanf",
+                             "scanf_90_neg_bounded", "scanf_90_neg_bounded")
+    if os.path.isfile(scanf_ctl):
+        targets.append(scanf_ctl)
+
+    for path in targets:
+        name = os.path.basename(path)
+        facts = _collect(path, probe=False)
+        route = objptr_hijack.propose(facts)          # must not raise
+        assert route is not None, f"{name}: no route object at all"
+        assert route.applicable is False, (
+            f"{name} is a NEGATIVE CONTROL and this family claims it"
+        )
+        # The reason and the remedy are separate strings built by separate
+        # functions, and the bug was in the second one. Assert BOTH are real.
+        assert route.rejection is not None, f"{name}: declined with no rejection kind"
+        assert a_decline(path) in route.rationale, (
+            f"{name}: the rationale does not carry this gate's own reason"
+        )
+        assert route.becomes_viable_if and route.becomes_viable_if.strip(), (
+            f"{name}: declined with no statement of what would reopen it"
+        )
+
+
 def test_the_gate_stays_narrow() -> None:
     """Swept in-test over every built ELF, so the denominator cannot drift.
 
