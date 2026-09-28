@@ -82,6 +82,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   @300s` was read as missing search-budget discipline, and the process was alive and
   printing the whole time.
 
+  Such a run is now also **abandoned early** rather than waited out: `verify_script`
+  captures incrementally through a 4 MB-capped reader and re-tests the ratio as bytes
+  arrive. Measured on `auth-or-out` with a 90 s budget — abandoned in **0.6 s** with
+  the diagnosis attached. Abandonment needs output to be both large and
+  overwhelmingly repetitive, so a slow-but-productive exploit is never affected.
+  Known limit: a generated script that buffers the target internally (a single
+  `recvrepeat` then print) keeps that output off the pipe and still waits out its
+  budget.
+
   The detector keys on a repetition *ratio*, not on one line dominating the output.
   The first version required a single line to exceed 50%, which could never fire on
   the real case — the spin is a six-line menu block, so no line exceeds ~17%. It
