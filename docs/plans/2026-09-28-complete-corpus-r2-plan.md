@@ -185,7 +185,52 @@ Facts measured from the source:
   harvest capability Sprint F4 builds. Reuse it.
 * Safe-linking: the stored `next` is `(chunk_addr >> 12) ^ target`.
 
-Sketch, ~9 menu interactions, deterministic once the addresses are harvested:
+### The chain is VERIFIED, not a sketch — measured end to end by hand
+
+I drove this target by hand with pwntools and **recovered the flag on the first
+attempt**. So this sprint is implementing a known-good recipe, not discovering
+one. Measured constants (local glibc **2.35**, so safe-linking is active):
+
+| item | value |
+|---|---|
+| `win` | `0x401358` |
+| `dispatch_table` | `0x404090` — 16-byte aligned, as its `__attribute__` intends |
+| `noop` | `0x40133e` |
+| PIE | off |
+| chunk stride for `sz=0x50` | **`0x60`**, measured uniform across three chunks |
+
+The overflow payload from `chunks[0]`, total length **`0x68`**:
+
+```
+0x00 .. 0x4f   b"A" * 0x50          chunk0 data
+0x50 .. 0x57   p64(0)              chunk1 prev_size
+0x58 .. 0x5f   p64(0x61)           chunk1 size  <- REPAIR; the write crosses it
+0x60 .. 0x67   p64((a1 >> 12) ^ dispatch_table)   chunk1 tcache next
+```
+
+`PROTECT_PTR(pos, ptr) = (pos >> 12) ^ ptr`, where `pos` is the freed chunk's own
+data address — which `create_note()` volunteers via its `%p`.
+
+**Built-in oracle:** the second re-allocation prints `dispatch_table` as its own
+chunk address. So the implementation can confirm the poison landed by parsing the
+target's own output, before ever attempting the hijack. Use it — it separates "the
+poison failed" from "the hijack failed", which are different bugs.
+
+Controls, all measured, each necessary step proven necessary by removing it alone:
+
+| flag | poison landed | case |
+|---|---|---|
+| no | n/a | no poison at all, just `call(0)` |
+| no | **YES** | poison lands but `win` never written |
+| no | **NO** | **one free only** (tcache count == 1) |
+| **FLAG** | YES | full chain, two frees (positive control) |
+
+The third row is the one to keep: it converts the count-of-2 requirement from an
+inference into a measurement. With a single free the count reaches 0 after the
+first re-allocation, the next `malloc` never consults tcache at all, and the
+poison silently does nothing — `dispatch_table` is never returned.
+
+Sequence, ~9 menu interactions, deterministic once the addresses are harvested:
 
 1. `create` 0, 1, 2 at one size class (chunk stride `0x60` for `sz=0x50`).
 2. `delete` 2, then `delete` 1 → tcache holds `chunk1 -> chunk2`, **count = 2**.
@@ -202,10 +247,13 @@ only one chunk freed, the count drops to 0 after step 4 and the next `malloc`
 never consults tcache at all, so step 5 silently returns ordinary heap memory
 and the poison appears not to work. Free two.
 
-Cost: this is the most expensive of the three sprints — it needs the overflow
-delivery, the size-field repair, and safe-linking. Do it last. If the existing
-`tcache_poison_got` executor can be extended with an overflow-based write
-primitive rather than rewritten, prefer that; grep before building.
+Cost: still the most *machinery* of the three — overflow delivery, size-field
+repair, safe-linking — but the **uncertainty is gone**, since the chain above is
+measured working. Extend the existing `tcache_poison_got` executor with an
+overflow-based write primitive rather than rewriting it: it already implements
+safe-linking against the *locally loaded* libc rather than trusting a version
+number, and it **refuses PIE targets outright** (`heap_techniques.py:174`), which
+is no obstacle here because `r2/11` is non-PIE. Grep before building.
 
 ---
 
@@ -224,6 +272,8 @@ Re-measure with `python3 scripts/coverage_sweep.py benchmark/corpus_r2 --timeout
 that voided a previous sweep and produced believable wrong numbers in both
 directions.
 
-Order the sprints **F7, F2, F8** — cheapest and most certain first. F7 is one
-recipe plus a reseat; F8 is a genuine new primitive. A null result on any of them
-reported honestly is worth more than a forced pass.
+Order the sprints **F7, F8, F2**. F7 is one recipe plus a reseat. F8 moves ahead
+of F2 because its exploit chain is now **measured working end to end by hand**, so
+the only remaining risk is wiring; F2 is last because it is the one whose primitive
+has not been driven by hand yet. A null result on any of them reported honestly is
+worth more than a forced pass.
