@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add a late-seated `fsop_stdout_read` executor and three-variant
+  `benchmark/corpus_fsop/` family. The executor wires the existing FSOP and
+  modern House-of-X libraries into the canonical pipeline, verifies the
+  locally loaded glibc's `_IO_FILE` layout and vtable policy, then uses a
+  data-only `_flags`/`_IO_write_base` corruption that verifies at
+  `FLAG_CAPTURED`.
 - Format-string automation now derives exact global gate values from guarded
   comparisons and can redirect writable GOT entries to the selected win
   function using minimal differing-byte writes with a full-width fallback.
@@ -23,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Construct production FSOP plans with the locally resolved glibc release
+  instead of `DEFAULT_LIBC_VERSION`, so glibc 2.34+ no longer selects removed
+  malloc/free hook routes. Inconclusive libc/layout measurements are reported
+  explicitly instead of being treated as exploit failures.
 - Let `ret2plt` fall back to ranked writable `.data`/`.bss` symbols when a
   static `/bin/sh` search fails, enabling commands assembled at runtime while
   leaving the existing static-string path unchanged.
