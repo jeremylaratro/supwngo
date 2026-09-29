@@ -1,0 +1,23 @@
+# FSOP / _IO_FILE arbitrary-read corpus.  All three targets expose two qword
+# writes and load flag.txt into memory immediately before a caller-supplied
+# stdout buffer.  A solver must corrupt stdout->_flags and
+# stdout->_IO_write_base so a normal puts/printf flush discloses that memory.
+# No target transfers control flow; FLAG_CAPTURED is the intended ceiling.
+#
+# The variants hold the primitive and mitigations constant (PIE, canary, NX,
+# Full RELRO, dynamic glibc, -O0) while changing how a write is addressed and
+# encoded.  They are built through benchmark/build_all.sh with:
+#   SUPWNGO_BENCH_CORPUS=benchmark/corpus_fsop benchmark/build_all.sh
+targets:
+  - slug: fsop_10_relative_offset
+    role: positive
+    protocol: signed byte offset from stdout plus hexadecimal qword
+    expected: FLAG_CAPTURED
+  - slug: fsop_11_absolute_address
+    role: positive
+    protocol: absolute hexadecimal address plus hexadecimal qword
+    expected: FLAG_CAPTURED
+  - slug: fsop_12_qword_slot
+    role: positive
+    protocol: signed qword slot from stdout plus decimal qword
+    expected: FLAG_CAPTURED

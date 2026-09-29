@@ -315,3 +315,11 @@ corpus_g23/*/*
 corpus_offbynul/*/*
 !corpus_offbynul/*/*.c
 !corpus_offbynul/*/cflags
+
+# corpus_fsop/ -- _IO_FILE corruption used as an arbitrary-read primitive.
+# The target's stdout flush discloses flag.txt, so built ELFs and the generated
+# per-run flag stay ignored while the sources, flags and manifest are tracked.
+corpus_fsop/*/*
+!corpus_fsop/*/*.c
+!corpus_fsop/*/cflags
+!corpus_fsop/corpus_fsop.yaml

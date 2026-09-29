@@ -1,0 +1,5 @@
+-fstack-protector-all
+-pie
+-fPIE
+-Wl,-z,relro,-z,now
+-O0
