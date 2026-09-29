@@ -13,9 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   comparisons and can redirect writable GOT entries to the selected win
   function using minimal differing-byte writes with a full-width fallback.
 - Harvest text pointers, raw code pointers, stack addresses, and stack
-  canaries volunteered before payload delivery. PIE code pointers are accepted
-  only when their low 12 bits match a known symbol, and the resulting context
-  facts now feed stack-shellcode, canary-bypass, and two-round ret2libc paths.
+  canaries volunteered before payload delivery. A PIE code pointer is accepted
+  only when its low 12 bits match exactly one known symbol's page offset, that
+  symbol is not a data symbol, and the value is not page-aligned — a page-aligned
+  value matches every page-aligned symbol and so carries no information. The
+  resulting context facts now feed stack-shellcode, canary-bypass, and two-round
+  ret2libc paths.
 - Add the late-seated `oob_index_read_exfil` executor for data-only indexed
   reads. It sweeps positive and negative indices in one process, reassembles
   printed integers at 1-, 4-, and 8-byte widths, and verifies at
