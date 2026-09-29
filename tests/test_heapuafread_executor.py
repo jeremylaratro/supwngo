@@ -107,6 +107,9 @@ ALL_TARGETS = POSITIVES + (CONTROL,)
 #: The anchor this category was opened against. Recorded FAILING (88.0 s) in
 #: docs/reports/PHASE1-BASELINE-24SEP2026.md line 93.
 ANCHOR = BENCH / "corpus" / "11_heap_uaf_leak" / "heap_uaf_leak"
+R2_ALLOCATOR_REUSE = (
+    BENCH / "corpus_r2" / "09_heap_dangling_global" / "heap_dangling_global"
+)
 
 #: MEASURED free-site table (`derive_free_sites`, 2026-09-28). The control is the
 #: only target where every site is wipe-preceded, which is the whole
@@ -224,7 +227,7 @@ def test_the_wipe_fact_is_load_bearing(monkeypatch):
 
     Substituting an un-wiped site (rather than asserting the absence of one)
     keeps this a WRONG-BUT-PRESENT mutation: the image still has three free
-    sites, still has its allocators and still has its bulk sink, so if the gate
+    sites, still has its allocators and still has its output sink, so if the gate
     still declined, its reason would be something other than the wipe.
     """
     import supwngo.exploit.pipeline.executors.heapuafread_techniques as mod
@@ -283,12 +286,22 @@ def test_gate_opens_on_the_previously_failing_anchor():
     assert gate is not None, reason
 
 
+def test_gate_opens_on_allocator_reuse_with_a_string_read_path():
+    """r2/09 restores printable data before `puts(note_ptr + 16)` reads it."""
+    if not R2_ALLOCATOR_REUSE.exists():
+        pytest.skip("benchmark/corpus_r2/09 is not built")
+    gate, reason = analyse(str(R2_ALLOCATOR_REUSE))
+    assert gate is not None, reason
+    assert "puts" in gate.sinks
+    assert not set(gate.sinks).intersection(BULK_SINKS)
+
+
 def test_gate_also_opens_on_the_uninit_family():
     """MEASURED overlap with `uninit_disclosure`, asserted rather than hidden.
 
     These are the closest neighbours in the tree: both categories end in a
     disclosure of stale heap bytes. This gate asks only for an unwiped free plus a
-    length-bearing sink, which those three positives and that control all satisfy,
+    output sink, which those three positives and that control all satisfy,
     so it opens on them. Loose by design; pinned so nobody infers a narrowness
     that was never measured.
     """
@@ -409,13 +422,49 @@ def test_read_steps_sweeps_every_index_for_every_read_option():
     assert SECRET_IDX in READ_INDICES
 
 
-def test_ladder_covers_all_five_mechanisms_in_the_family():
+def test_ladder_covers_every_mechanism_in_the_family():
     ladder = build_ladder(classify(FAMILY_MENU))
     names = " ".join(r.name for r in ladder)
     for shape in ("release_then_read", "rebuild_short_then_read",
+                  "release_then_rebuild_then_read",
                   "alias_then_release", "occupy_then_release",
                   "release_twice", "own_object_release"):
         assert shape in names, f"the ladder lost the {shape} shape"
+
+
+def test_allocator_reuse_shape_precedes_the_other_using_shapes():
+    """The canonical free -> other -> read route must survive truncation."""
+    ladder = build_ladder(classify(FAMILY_MENU))
+    names = [recipe.name for recipe in ladder]
+    reuse = [i for i, name in enumerate(names)
+             if "release_then_rebuild_then_read" in name]
+    rebuild = [i for i, name in enumerate(names)
+               if name.startswith("rebuild_short_then_read")]
+    alias = [i for i, name in enumerate(names)
+             if name.startswith("alias_then_release")]
+
+    # Both the newly promoted route and the pre-existing shape must be present;
+    # a rename/deletion cannot make the ordering assertion vacuously pass.
+    assert reuse, "the allocator-reuse recipe must be present"
+    assert rebuild, "the in-place rebuild recipe must still be present"
+    assert alias, "the alias-then-release recipe must still be present"
+    assert max(reuse) < min(rebuild)
+    assert max(reuse) < min(alias)
+
+
+def test_allocator_reuse_shape_can_seed_a_no_index_object_first():
+    ladder = build_ladder({
+        "create": [1], "free": [2], "read": [3], "other": [4],
+    })
+    seeded = [recipe for recipe in ladder
+              if recipe.name.startswith("create_release_then_rebuild_then_read")]
+    direct = [recipe for recipe in ladder
+              if recipe.name.startswith("release_then_rebuild_then_read")]
+
+    assert direct, "the specified free -> other -> read shape must be present"
+    assert seeded, "the no-startup-object variant must be present"
+    assert [step.option for step in seeded[0].setup] == [1, 2, 4]
+    assert seeded[0].reads[0].option == 3
 
 
 def test_ladder_recipes_all_release_something():
