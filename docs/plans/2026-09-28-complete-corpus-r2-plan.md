@@ -154,15 +154,49 @@ a positional `%p` directive, recover the PIE base from it, then `read(0, buf,
 300)` with the saved return address at `buf+232` gives a write in the **same
 process** — no printf re-entry needed, so this is a single-shot leak-then-write.
 
-**The discriminator is load-bearing:** accept a leaked value as a code pointer
-only when its **low 12 bits** match the page offset of a known symbol. ASLR
-relocates by whole pages, so the low 12 bits are invariant. A bare range check
-accepts garbage and propagates a confident wrong base into every later stage.
-If Sprint F4 lands first, reuse its classifier rather than writing a second one.
+### VERIFIED end to end by hand — and it corrected this plan twice
 
-Prove the classifier can REJECT: feed it a plausible-range value whose low 12
-bits match no symbol offset and assert it is **not** classified as a code
-pointer.
+Driven by hand with pwntools; **flag captured**. Two corrections to what this
+plan originally said, both found by testing the rule instead of asserting it.
+
+**Correction 1 — the low-12-bits discriminator as first written is NOT
+sufficient, and picks the wrong answer on this very target.** Measured from one
+`printf` of 41 `%p`:
+
+* 37 values parsed. A **bare range check would have accepted 12 of them** — so
+  the discriminator does real work and must stay.
+* But matching low 12 bits against *any* symbol produced a **false positive
+  first**: `_end` (a **data** symbol at `+0x4020`) collided on low 12 bits `0x20`
+  with an unrelated leaked value at position 4. The resulting base was even
+  **page-aligned**, so that sanity check does not discriminate either. Using it
+  failed.
+* `low12 == 0` is a **degenerate class** — every page-aligned value matches every
+  page-aligned symbol (`data_start`, `_IO_stdin_used`, `_init`, …). It must be
+  excluded outright.
+
+The corrected rule, measured working:
+
+1. Anchor **only on function symbols** in executable sections. That alone removes
+   `_end`/`data_start`.
+2. **Drop the `low12 == 0` class.**
+3. Treat the match as a **ranking, and enumerate candidates** — try each and keep
+   the first that works. It is not a single decision.
+4. **The real validity signal is two independent anchors agreeing on one base.**
+   Here `vuln` (position 32) and `main` (position 39) both yielded
+   `0x5733c47b9000`, which **equals the kernel's true load base** from
+   `/proc/<pid>/maps`. Cross-check anchors against each other; a lone match is
+   weak, two agreeing is strong.
+
+Note the scan depth: `self` sits at **position 32**, so a 30-slot scan misses it.
+Use 41 `%p.` (123 bytes), which fits the 127-byte read.
+
+Frame layout, read from `objdump` rather than trusted from the comment
+(`sub rsp,0xe0`; `self` at `rbp-0x10`; `name` at `rbp-0xa0`; `buf` at `rbp-0xe0`):
+saved `rbp` at **`buf+224`**, return address at **`buf+232`**. The source comment's
+232 is correct — unlike its RELRO claim.
+
+**Correction 2 — the cross-cutting one. See the section below; it is why the
+first attempt failed with the base already correct.**
 
 ---
 
@@ -257,6 +291,52 @@ is no obstacle here because `r2/11` is non-PIE. Grep before building.
 
 ---
 
+---
+
+## Cross-cutting finding — lazily-bound PLT calls need a 16-byte-aligned stack
+
+**This is the highest-value item in this plan and it is not specific to `r2/05`.**
+
+Measured on `r2/05` with the PIE base already proven correct against
+`/proc/<pid>/maps`:
+
+| payload at `buf+232` | result |
+|---|---|
+| `p64(win)` | **SIGSEGV, exit -11, zero output** |
+| `p64(ret) + p64(win)` | **exit 0, FLAG_CAPTURED** |
+
+Why: `win` → `print_flag` → `fopen@plt`, and **`fopen`, `fgets` and `fputs` are
+never called anywhere earlier in the program.** Under partial RELRO with lazy
+binding, that first call goes through `_dl_runtime_resolve`, which saves XMM
+registers with `movaps` and therefore **faults unless `rsp` is 16-byte aligned**.
+Returning straight into `win` leaves `rsp` misaligned; one extra `ret` before it
+re-aligns and everything works.
+
+Three reasons this matters far beyond one target:
+
+1. **The failure is indistinguishable from a wrong address.** SIGSEGV with no
+   output whatsoever — no `flag.txt missing`, nothing. A framework lacking this
+   trick will report "leak failed" or "wrong base" and send whoever reads that
+   diagnosis hunting a leak bug that does not exist. I spent several probes on
+   exactly that mistake with a *provably correct* base in hand.
+2. **The fix is trivial and generic:** always try **both** `[win]` and
+   `[ret, win]`. Two attempts, one of which works; no analysis needed. Retry-based
+   enumeration is explicitly acceptable here.
+3. **It plausibly affects other currently-unsolved targets**, since the trigger is
+   just "the win path calls a PLT entry nothing has called yet" — a very common
+   shape in this corpus, where `win` typically calls `fopen`/`fgets` to read
+   `flag.txt` and nothing else does.
+
+So: implement the both-alignments retry as a **shared** behaviour of the
+ret2win-style payload builders, not as an `r2/05` special case, and re-run the
+full corpus sweep afterwards — it may convert targets unrelated to this plan.
+
+**Trap for whoever implements it:** get the `ret` gadget from an **executable**
+region. `ELF.search(b"\xc3")` scans the whole file including non-executable
+sections; my first alignment test used its result, jumped to a non-executable
+byte, crashed, and I wrongly concluded alignment was not the problem. Use a `ret`
+from `.text` — e.g. the one ending `win` itself.
+
 ## Benefit metric, pre-registered
 
 | metric | baseline | target |
@@ -272,8 +352,16 @@ Re-measure with `python3 scripts/coverage_sweep.py benchmark/corpus_r2 --timeout
 that voided a previous sweep and produced believable wrong numbers in both
 directions.
 
-Order the sprints **F7, F8, F2**. F7 is one recipe plus a reseat. F8 moves ahead
-of F2 because its exploit chain is now **measured working end to end by hand**, so
-the only remaining risk is wiring; F2 is last because it is the one whose primitive
-has not been driven by hand yet. A null result on any of them reported honestly is
-worth more than a forced pass.
+**All three chains are now measured working end to end by hand**, so every sprint
+here is wiring a known-good recipe rather than discovering one. Order:
+
+1. **The alignment retry** (cross-cutting section above) — first, because it is a
+   few lines, it is shared, and it may convert targets this plan never mentions.
+   Re-run the full corpus sweep straight after it, before anything else lands, so
+   its effect is attributable.
+2. **F7** — one recipe plus a reseat.
+3. **F8** — most machinery, but zero remaining uncertainty.
+4. **F2** — depends on the alignment retry and on F4's classifier, with the
+   function-only/non-degenerate/enumerate corrections applied.
+
+A null result on any of them reported honestly is worth more than a forced pass.
