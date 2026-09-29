@@ -69,6 +69,64 @@ initially recorded as during this very diagnosis, before the second executor was
 found. The coverage map's row 51 (`format_string`, `G-24`) is a row about this
 stub.
 
+### 1b. Measured target facts (added 2026-09-28 after reading the sources — these CHANGE F1's design)
+
+All of the following is **measured** (`objdump`, pwntools `ELF`), not inferred.
+It makes both F1 targets materially cheaper than §1 assumed, and it removes the
+payload-length worry in §3.
+
+**`r2/06_fmtstr_short_write`** — the gate address *and* the required value are
+both recoverable from one instruction pair:
+
+```
+401385: call   401140 <fflush@plt>
+40138a: movzwl 0x2cf1(%rip),%eax     # 404082 <auth_level>
+401391: cmp    $0x1337,%ax
+401395: jne    40139e <vuln+0xb0>
+401397: call   4012de <win>          <-- guarded call
+```
+
+`auth_level` is **in the symtab** at `0x404082`. So the general rule is: find a
+`cmp $IMM, reg` whose `jne`/`je` guards a call to the win function, walk back to
+the `mov` that loaded `reg` from a global, and you have `{addr: required_value}`
+directly. Input buffer is `buf[128]`, `read(..., 127)` — **payload must fit 127
+bytes**; a single `short` write does, easily. printf is called **once** (no
+re-entry), so this must be single-shot.
+
+**`r2/12_fmtstr_got_overwrite`** — `win = 0x401256`, and every GOT entry's
+**link-time** value is a PLT stub in the same page:
+
+| entry | GOT addr | link-time value | bytes differing from `win` |
+|---|---|---|---|
+| `putchar` | `0x404018` | `0x0000000000401030` | **[0, 1]** |
+| `puts` | `0x404020` | `0x0000000000401040` | **[0, 1]** |
+| `write` | `0x404028` | `0x0000000000401050` | **[0, 1]** |
+
+So a **2-byte partial GOT overwrite is sufficient** — `{0x404018: 0x1256}` with
+`write_size='short'`. The plan's §1 table implied a full 8-byte write; that is
+not needed and would be far slower (zeroing a byte via `%n` costs 0x10000
+printed chars per write).
+
+**The load-bearing condition:** under lazy binding a GOT entry that has *already*
+been called holds a **libc** address (high bytes `0x7f…`), so a 2-byte write to
+it yields `0x7f…1256`, not `win`. It works only for an entry **not yet resolved
+at the format-string site but called after it**. In `r2/12`, `main` calls `puts`
+before `vuln`, so `puts@got` is already resolved — but `putchar('\n')` runs
+immediately *after* the vulnerable `printf` and has never been called, so
+`putchar@got` still holds `0x401030` and the short write lands. Do **not**
+hard-code `putchar`: derive the candidate order, or simply **try every writable
+GOT entry with both a minimal-differing-byte write and a full-width write** and
+keep the first that wins. Retry-based enumeration is explicitly acceptable here.
+
+**`r2/05_fmtstr_pie_leak`** is **Full RELRO** — confirmed by `cflags`
+(`relro=full (toolchain default for PIE)`) and pwntools (`relro=Full`). Note its
+own source comment claims `RELRO=partial` and **is wrong**; trust the ELF. The
+GOT really is read-only, so §1's conclusion holds: no GOT route can exist and
+F2 must leak. Its leak primitive is a spilled `void (*self)(void) = vuln;` on the
+stack, findable by `%N$p` scanning; it then re-reads input (`read(0, buf, 300)`,
+saved return address at `buf+232`), so leak-then-write works **in one process**
+without printf re-entry.
+
 ---
 
 ## 2. Sprints
@@ -210,10 +268,24 @@ Non-negotiable in this repo, and the rule most often skipped:
 * **No secrets, ever.** `benchmark/corpus*/*/flag.txt` holds real target flags and
   is gitignored. Never commit one, never paste a captured flag into a commit
   message, a doc, or a test. Do not commit built ELFs (also gitignored).
-* **Tool security and hardening are OUT OF SCOPE.** Do not add input validation,
-  sandboxing, or compliance controls to this offensive tool. Deliberate constants
-  and cheat-sheet-style heuristics are FEATURES here, not defects. Loose gates and
-  guessing are acceptable — **the goal is to SOLVE targets.**
+* **The security AND INTEGRITY of this tooling are explicitly OUT OF SCOPE.** We
+  care **solely** about **functionality, efficiency, and capability**. Security
+  issues, bypasses, and anything involving the tool being **misused** are not a
+  concern here. Concretely, do not add or report: input validation framed as
+  security, sandboxing, privilege/auth/secrets handling, RMF/NIST/compliance or
+  audit controls, threat models, attack surface, supply chain, tamper-resistance,
+  or "someone could deliberately game/evade this gate". There is no adversary in
+  the threat model — this is a lab-only offensive tool run by its author on his
+  own hardware. No "Security considerations" or "Risks" sections.
+* **The one distinction that must not be blurred** (same code, different framing):
+  "this gate reports success when nothing was actually measured" is a
+  **functional-correctness defect — report it**, and it is the highest-value
+  finding class in this repo. "Someone could deliberately bypass this gate to
+  fake a result" is **misuse — discard it.** A finding whose remedy is a *control*
+  rather than a *fix* is out of scope; say so and move on.
+* Deliberate constants and cheat-sheet-style heuristics are **FEATURES** here, not
+  defects. Loose gates, target-shaped heuristics, and guessing are acceptable —
+  **the goal is to SOLVE targets.**
 * Do not touch `benchmark/corpus_r3`, `_r4`, `_r5` or their branches — held-out.
 
 ---
