@@ -293,50 +293,90 @@ is no obstacle here because `r2/11` is non-PIE. Grep before building.
 
 ---
 
-## Cross-cutting finding — lazily-bound PLT calls need a 16-byte-aligned stack
+## Cross-cutting finding — harden `pie_base_offset()`, don't rebuild alignment
 
-**This is the highest-value item in this plan and it is not specific to `r2/05`.**
+### First, a retraction: the alignment retry is NOT missing
 
-Measured on `r2/05` with the PIE base already proven correct against
-`/proc/<pid>/maps`:
+I hit a stack-alignment trap by hand and initially wrote this section up as a
+missing framework capability. **Grepping the tree before handing that off showed
+most of it already exists**, so the claim is withdrawn — recorded here because the
+underlying mechanism still matters.
 
-| payload at `buf+232` | result |
-|---|---|
-| `p64(win)` | **SIGSEGV, exit -11, zero output** |
-| `p64(ret) + p64(win)` | **exit 0, FLAG_CAPTURED** |
+* `rop_techniques.py:14-17` already documents the `movaps`/`do_system` fault.
+* `Ret2PltSystemExecutor` (`:253`) and `Ret2LibcLeakExecutor` (`:456`) already try
+  **both** stack parities — `for use_align in (True, False)`. Strictly better than
+  the single fix I found by hand.
+* `Ret2WinExecutor` (`stack_techniques.py:229`, `:259`) already prepends the
+  aligning `ret` whenever a `ret` gadget is known — exactly what `r2/05` needs, so
+  the framework would not have hit my trap at all.
 
-Why: `win` → `print_flag` → `fopen@plt`, and **`fopen`, `fgets` and `fputs` are
-never called anywhere earlier in the program.** Under partial RELRO with lazy
-binding, that first call goes through `_dl_runtime_resolve`, which saves XMM
-registers with `movaps` and therefore **faults unless `rsp` is 16-byte aligned**.
-Returning straight into `win` leaves `rsp` misaligned; one extra `ret` before it
-re-aligns and everything works.
+The mechanism, kept for the record — **and corrected, because my first
+explanation was wrong.** Measured on `r2/05` with the base already proven correct
+against `/proc/<pid>/maps`: `p64(win)` → **SIGSEGV, exit -11, zero output**;
+`p64(ret) + p64(win)` → **exit 0, FLAG_CAPTURED**.
 
-Three reasons this matters far beyond one target:
+I first attributed that to lazy binding — `fopen`/`fgets`/`fputs` are called
+nowhere earlier, so the first call would enter `_dl_runtime_resolve`, which saves
+XMM state with `movaps`. **That is not what happens here.** `readelf -d` shows
+`FLAGS BIND_NOW` and `FLAGS_1: NOW PIE`, and pwntools reports RELRO **Full**, so
+every `R_X86_64_JUMP_SLOT` (including `fopen`, `fgets`, `fputs`) is resolved
+**eagerly at startup** and `_dl_runtime_resolve` is never involved.
 
-1. **The failure is indistinguishable from a wrong address.** SIGSEGV with no
-   output whatsoever — no `flag.txt missing`, nothing. A framework lacking this
-   trick will report "leak failed" or "wrong base" and send whoever reads that
-   diagnosis hunting a leak bug that does not exist. I spent several probes on
-   exactly that mistake with a *provably correct* base in hand.
-2. **The fix is trivial and generic:** always try **both** `[win]` and
-   `[ret, win]`. Two attempts, one of which works; no analysis needed. Retry-based
-   enumeration is explicitly acceptable here.
-3. **It plausibly affects other currently-unsolved targets**, since the trigger is
-   just "the win path calls a PLT entry nothing has called yet" — a very common
-   shape in this corpus, where `win` typically calls `fopen`/`fgets` to read
-   `flag.txt` and nothing else does.
+The real cause is simpler and has a **broader** trigger: glibc's own SSE code
+inside `fopen` executes `movaps` against the stack and faults when `rsp` is not
+16-byte aligned — precisely the case `rop_techniques.py:14-17` already documents
+for `do_system`. So the condition is **"the win path calls into glibc"**, not
+"the target uses lazy binding". Full-RELRO targets need the alignment retry just
+as much as partial-RELRO ones; anyone implementing this must not gate it on RELRO.
 
-So: implement the both-alignments retry as a **shared** behaviour of the
-ret2win-style payload builders, not as an `r2/05` special case, and re-run the
-full corpus sweep afterwards — it may convert targets unrelated to this plan.
+The failure is indistinguishable from a wrong address — SIGSEGV, zero output, not
+even `flag.txt missing` — which is what made it costly to diagnose.
 
-**Trap for whoever implements it:** get the `ret` gadget from an **executable**
-region. `ELF.search(b"\xc3")` scans the whole file including non-executable
-sections; my first alignment test used its result, jumped to a non-executable
-byte, crashed, and I wrongly concluded alignment was not the problem. Use a `ret`
-from `.text` — e.g. the one ending `win` itself.
+**Two traps recorded from that dead end**, both of which cost me probes:
 
+* Take the `ret` from an **executable** region. `ELF.search(b"\xc3")` scans the
+  whole file including non-executable sections; using its result jumped to a
+  non-executable byte, crashed, and made me wrongly conclude alignment was not the
+  problem.
+* `win` and `print_flag` build their own frames (`push rbp; mov rbp,rsp`), so a
+  clobbered saved `rbp` is **irrelevant** to them. Supplying a "valid rbp" changes
+  nothing.
+
+The one alignment gap that **is** real, and it is narrow: `Ret2WinExecutor` adds
+the aligning `ret` **unconditionally** instead of trying both parities, so a target
+needing the unaligned form fails with no diagnostic — the mirror image of the bug I
+hit. Two-line change to match what the two ROP executors already do.
+
+### The finding that stands: `pie_base_offset()` can confidently return a wrong base
+
+`rop_techniques.py:119` already implements the low-12-bits discriminator, phrased
+equivalently as "`leaked - offset` is only a possible load base when it is
+page-aligned". Sound idea. Measured against `r2/05`, three weaknesses remain:
+
+1. **It iterates every symbol, data included** (`:130`). On `r2/05` this admits
+   `_end` (`+0x4020`) as an anchor for an unrelated leaked value whose low 12 bits
+   happen to be `0x20`. Its sort at `:139`,
+   `key=lambda item: (item[0].startswith("_"), len(item[0]))`, *accidentally*
+   defends against `_end` specifically by deprioritising underscore names.
+2. **No guard for the degenerate `low12 == 0` class** — the live hole the sort does
+   *not* cover. Any page-aligned leaked value matches every page-aligned symbol. On
+   `r2/05` that class holds `data_start`, `__data_start`, `_IO_stdin_used` and
+   `_init`, and **`data_start` does not start with `_`**, so the existing sort would
+   select it and return a confidently wrong base. Exclude `low12 == 0` outright.
+3. **It returns `matches[0]` — one decision, no enumeration.** Measured: the strong
+   validity signal is **two independent anchors agreeing on one base**. On `r2/05`,
+   `vuln` (scan position 32) and `main` (position 39) both produced
+   `0x5733c47b9000`, equal to the kernel's true load base. Return ranked candidates
+   and let the caller try each; corroborate across anchors when several pointers
+   were leaked.
+
+Scale of the risk, measured from one `printf` of 41 `%p`: 37 values parsed, of
+which **a bare range check would accept 12**. The discriminator is doing real work
+and must stay — these are refinements to a sound idea, not a replacement.
+
+**This is the change F4's classifier and F2 should both consume** rather than each
+writing its own. If codex's in-flight F4 classifier lands without these three
+refinements, log it as a deficiency and fix it here.
 ## Benefit metric, pre-registered
 
 | metric | baseline | target |
