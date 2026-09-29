@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Format-string automation now derives exact global gate values from guarded
+  comparisons and can redirect writable GOT entries to the selected win
+  function using minimal differing-byte writes with a full-width fallback.
+
+### Removed
+
+- Removed the non-executing `format_string` template stub; format-string
+  strategy recommendations now route to the working `fmtstr_write_gate`
+  executor.
+
 ## [2.1.0] - 2026-09-28
 
 ### Added
