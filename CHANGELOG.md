@@ -62,6 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   strategy recommendations now route to the working `fmtstr_write_gate`
   executor.
 
+### Fixed
+
+- `dataflow` no longer crashes with `AttributeError: 'Binary' object has no
+  attribute 'elf'` when the target has no `main` symbol (e.g. a stripped
+  binary) and no `-f/--function` is given. The entry-point fallback now reads
+  the public `Binary.entry_point` instead of the nonexistent `.elf` attribute.
+
 ## [2.1.0] - 2026-09-28
 
 ### Added

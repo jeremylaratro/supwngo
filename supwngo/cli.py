@@ -1748,7 +1748,7 @@ def dataflow(ctx, binary, function, taint, integer, json_output):
         if func_addr and hasattr(func_addr, 'address'):
             func_addr = func_addr.address
         else:
-            func_addr = bin_obj.elf.entry
+            func_addr = bin_obj.entry_point
 
     console.print(f"[cyan]Analyzing function at 0x{func_addr:x}[/cyan]")
 
