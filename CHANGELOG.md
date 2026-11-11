@@ -15,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   locally loaded glibc's `_IO_FILE` layout and vtable policy, then uses a
   data-only `_flags`/`_IO_write_base` corruption that verifies at
   `FLAG_CAPTURED`.
+- Add allocator-reuse UAF-read recipes, including the no-startup-object shape,
+  so a freed object can be repopulated by an unrelated same-size allocation and
+  disclosed through the stale handle. String-output paths now qualify alongside
+  length-bearing bulk reads when reuse restores NUL-terminated object data.
+- Extend `tcache_poison_got` with an overflow-driven poison that repairs the
+  neighbouring freed chunk's size field, preserves a two-entry tcache count,
+  and requires the target's printed allocation address to confirm a
+  `dispatch_table` landing before the table is overwritten.
+- Add a 41-slot format-string PIE scan to `ret2libc_leak`, rank candidate image
+  bases by independent function-anchor agreement, and support the same-process
+  `buf+232` direct-win overflow when two anchors corroborate the base.
 - Format-string automation now derives exact global gate values from guarded
   comparisons and can redirect writable GOT entries to the selected win
   function using minimal differing-byte writes with a full-width fallback.
@@ -36,6 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `DEFAULT_LIBC_VERSION`, so glibc 2.34+ no longer selects removed
   malloc/free hook routes. Inconclusive libc/layout measurements are reported
   explicitly instead of being treated as exploit failures.
+- Make `ret2win` try both amd64 stack parities and keep the first verified
+  payload instead of unconditionally prepending a known `ret` gadget.
 - Let `ret2plt` fall back to ranked writable `.data`/`.bss` symbols when a
   static `/bin/sh` search fails, enabling commands assembled at runtime while
   leaving the existing static-string path unchanged.
