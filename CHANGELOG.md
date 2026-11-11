@@ -68,6 +68,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attribute 'elf'` when the target has no `main` symbol (e.g. a stripped
   binary) and no `-f/--function` is given. The entry-point fallback now reads
   the public `Binary.entry_point` instead of the nonexistent `.elf` attribute.
+- `leaks` is no longer dead on arrival. The command called `finder.analyze()`,
+  `get_fingerprint_strategy()` and `build_leak_chain()` — none of which exist
+  on the static `LeakFinder` — so every invocation raised `AttributeError` and
+  printed nothing. It now calls the real `find_all_leaks()` entry point, serves
+  `--fingerprint` from `get_best_leak_for`/the GOT fingerprint anchors, and
+  serves `--chain` by serializing the finder's computed leak chains.
+- `--json` output for `heap-analysis`, `integer-analysis` and any analyzer that
+  probes addresses outside the ELF no longer emits unparseable output. pwntools'
+  console handler streams to `context.log_console` (default stdout) and
+  `ELF.read` logs `[ERROR] Address 0x… is not contained in ELF` at ERROR level
+  before raising, which `log_level="error"` does not filter. JSON mode now
+  repoints that stream to stderr and restores it afterwards, so stdout carries
+  exactly one JSON document.
 
 ## [2.1.0] - 2026-09-28
 

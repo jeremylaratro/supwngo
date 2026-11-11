@@ -33,6 +33,12 @@ def _json_mode():
     try:
         from pwnlib.context import context as pwn_context
         pwn_context.log_level = "error"
+        # pwnlib's console handler streams to context.log_console (default
+        # sys.stdout), and ELF.read() logs "[ERROR] Address 0x... is not
+        # contained in ELF" at ERROR level before raising -- which
+        # log_level="error" does NOT filter. Repoint that stream to stderr so
+        # analysis diagnostics can never corrupt the JSON object on stdout.
+        pwn_context.log_console = sys.stderr
     except Exception:
         pass
     import logging
@@ -45,6 +51,16 @@ def _reset_console():
     console.file = sys.stdout
     from supwngo.utils.logging import console as log_console
     log_console.file = sys.stdout
+    # Symmetric undo of _json_mode's pwnlib redirect: without this, a prior
+    # --json command in the same process would leave pwnlib logging pinned to
+    # stderr for a later human-mode command. Only touch it if pwnlib is already
+    # imported, so plain commands don't pay an import cost.
+    pwn_ctx_mod = sys.modules.get("pwnlib.context")
+    if pwn_ctx_mod is not None:
+        try:
+            pwn_ctx_mod.context.log_console = sys.stdout
+        except Exception:
+            pass
 
 
 def target_override_options(func):
@@ -2171,7 +2187,7 @@ def leaks(ctx, binary, fingerprint, chain, json_output):
     finder = LeakFinder(bin_obj)
 
     with console.status("Searching for leak primitives..."):
-        leaks_found = finder.analyze()
+        leaks_found = finder.find_all_leaks()
 
     console.print(f"[cyan]Found {len(leaks_found)} potential leak primitives[/cyan]")
 
@@ -2217,22 +2233,41 @@ def leaks(ctx, binary, fingerprint, chain, json_output):
                     console.print(f"    Template available: Yes")
 
     if fingerprint:
+        from supwngo.vulns.leak_finder import LIBC_FINGERPRINTS
+
         console.print("\n[bold]Libc Fingerprinting Info:[/bold]")
-        fp_info = finder.get_fingerprint_strategy()
-        if fp_info:
-            console.print(f"  Best leak targets: {', '.join(fp_info.get('targets', []))}")
-            console.print(f"  Recommended chain length: {fp_info.get('chain_length', 0)}")
+        anchors = [f for f in LIBC_FINGERPRINTS if f in getattr(bin_obj, "got", {})]
+        best = finder.get_best_leak_for("libc")
+        if best:
+            console.print(
+                f"  Best libc leak: {best.leak_type.name} via "
+                f"{best.function or '?'} (confidence {best.confidence:.0%})"
+            )
+        if anchors:
+            console.print(f"  Fingerprint anchors in GOT: {', '.join(anchors)}")
+            console.print(
+                "  Leak one anchor at runtime, then LeakFinder.fingerprint_libc"
+                "(leaked_addr, func) matches it to a glibc build"
+            )
         else:
-            console.print("  [yellow]No viable fingerprinting strategy found[/yellow]")
+            console.print(
+                "  [yellow]No known fingerprint anchors "
+                "(puts/printf/__libc_start_main) in GOT[/yellow]"
+            )
 
     if chain:
-        leak_chain = finder.build_leak_chain()
-        if leak_chain:
+        if finder.chains:
             console.print("\n[bold green]Leak Chain Strategy:[/bold green]")
-            for i, step in enumerate(leak_chain, 1):
-                console.print(f"  {i}. {step['action']}")
-                console.print(f"     Target: {step['target']}")
-                console.print(f"     Discloses: {step['discloses']}")
+            for i, leak_chain in enumerate(finder.chains, 1):
+                console.print(
+                    f"  Chain {i}: bypasses {', '.join(leak_chain.bypasses)} "
+                    f"(confidence {leak_chain.total_confidence:.2f})"
+                )
+                for leak in leak_chain.leaks:
+                    console.print(
+                        f"     - {leak.leak_type.name} via "
+                        f"{leak.function or '?'}: {leak.description}"
+                    )
         else:
             console.print("\n[yellow]Could not build multi-step leak chain[/yellow]")
 
