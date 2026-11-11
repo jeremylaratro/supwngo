@@ -24,4 +24,9 @@ def test_executor_has_late_stable_name():
 
     assert OobIndexReadExfilExecutor.name == "oob_index_read_exfil"
     assert "oob_index_read_exfil" not in FIRST_TECHNIQUES
-    assert LAST_TECHNIQUES[0] == "oob_index_read_exfil"
+    # Late-seated, but behind fsop_stdout_read (the exact block order is pinned
+    # in test_fsop_executor) and ahead of the broad variable_overwrite sweep.
+    assert "oob_index_read_exfil" in LAST_TECHNIQUES
+    assert LAST_TECHNIQUES.index("oob_index_read_exfil") < LAST_TECHNIQUES.index(
+        "variable_overwrite"
+    )
