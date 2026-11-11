@@ -1,0 +1,196 @@
+# Retest gap-closure — plan
+
+Closes the gaps from the 26 SEP 2026 comprehensive retest
+(`docs/reports/2026-09-26-comprehensive-feature-retest.md`) and the capability-gap
+items from `docs/reports/2026-09-25-capability-gap-analysis.md` that the 11 NOV audit
+(`docs/reports/2026-11-11-outstanding-work-audit.md`) carried forward, plus the handoff
+code-health leftovers. Full 8-phase cycle (multi-item, cross-module, judged by a metric).
+
+- **Base SHA:** `b03cee9` (main).
+- **Branch strategy:** each sprint branches from the previous sprint's integrated tip
+  (the sprints share the retest matrix as their metric and touch overlapping CLI/analysis
+  surfaces, so they are not provably disjoint).
+- **Repo contract:** author `jay <jlaratro24@gmail.com>`, **no** Claude/Anthropic
+  trailer, PRs opt-in (merge locally, push main), Conventional Commits, CHANGELOG under
+  `## [Unreleased]` in the same commit.
+
+## Phase 1 — Objective and gap inventory
+
+**Objective (acceptance criterion, not a single metric):** every confirmed
+analysis-command bug below is fixed and proven by a test that would have caught it; the
+retest analysis matrix improves from its **measured** baseline of **85/112 OK cells**
+(`benchmark/results_retest/baseline-b03cee9/matrix.json`, head `b03cee9`, 60 s timeout);
+and no currently-passing test regresses and the corpus solve rates hold (corpus_r2 15/15,
+corpus_fsop 3/3).
+
+Provenance: every row's state is **measured** this session unless marked otherwise.
+Evidence lives under `benchmark/results_retest/baseline-b03cee9/<binary>/<command>.{json,stderr}`.
+
+### Confirmed bugs — analysis commands
+
+| ID | Retest # | Symptom (measured) | Root cause (measured) | Rel | Cx |
+|----|----------|--------------------|-----------------------|-----|----|
+| RT-01 | 8 | `leaks` prints nothing, 7/7 | `cli.py:2174` calls `finder.analyze()`; `LeakFinder` has no such method → `AttributeError` swallowed. The class is a live-process leak helper (`leak_with_format_string`, `find_libc_base`, `get_leaks`), not a static analyzer. | 4 | 2 |
+| RT-02 | 14, 15 | `heap-analysis` + `integer-analysis` emit unparseable JSON on sick_rop, snow_scan, bon-nie-appetit | pwntools `[ERROR] Address 0x… is not contained in ELF` log lines are written to **stdout** ahead of the JSON object. | 4 | 2 |
+| RT-03 | 6 | `decompile` fails 7/7 (4 TIMEOUT, 3 `{"error":"Decompilation failed"}`) | ghidra **is** installed (`/opt/ghidra/support/analyzeHeadless`, named in stderr) but the command runs the angr path, which raises `'Function' object has no attribute 'functions_called'`. | 3 | 3 |
+| RT-04 | 5 | `explain` TIMEOUT on auth-or-out, ancient_interface (improved from 4/7 EMPTY → 5/7 OK) | PIE/canary targets drive a slow probe path that exceeds 60 s. | 3 | 3 |
+| RT-05 | 18, 19 | snow_scan (large static) TIMEOUT on analyze, cfg, dataflow, pwn, explain | angr CFG construction over a statically-linked glibc exceeds the timeout; several commands build a full CFG eagerly. sick_rop `dataflow` now OK (was EMPTY) — partial pre-existing improvement. | 3 | 4 |
+
+### Confirmed bugs — reported-fact correctness
+
+| ID | Retest # | Symptom (measured) | Root cause | Rel | Cx |
+|----|----------|--------------------|------------|-----|----|
+| RT-06 | 10 | `protections.stripped` wrong **both** directions: sick_rop (`file`: not stripped) → `True`; ancient_interface (`file`: stripped) → `False` | stripped heuristic in `analysis/protections.py` / `core/binary.py` does not read `.symtab` presence. | 3 | 2 |
+| RT-07 | 11 | `uses_tcache: true` on static sick_rop, which imports no malloc (`nm`: 0 tcache/malloc symbols) | tcache heuristic keys on glibc presence/static-link, not on actual allocator use. | 2 | 2 |
+| RT-08 | 13 | `pwn` recommends STACK_PIVOT for sick_rop; never suggests SROP, the canonical technique | strategy generator has no SROP rule for static-no-`/bin/sh` BOF targets. | 2 | 3 |
+| RT-09 | 16 | `heap-analysis` reports 0 alloc sites / 0 vulns for auth-or-out (custom `ta_alloc`/`ta_free`) | allocator detection matches only `malloc`/`calloc`/`free` names. | 2 | 3 |
+| RT-10 | 17 | `report` finds 0 findings for sick_rop, auth-or-out, bon-nie-appetit (each has a known vuln); sabotage now finds 6 | vuln detectors under-match real patterns. Partially improved since Sep. | 3 | 4 |
+
+### Capability-gap items carried into scope
+
+| ID | Source | Item | Rel | Cx |
+|----|--------|------|-----|----|
+| CG-01 | §3.2 | Retire hardcoded `DEFAULT_LIBC_VERSION="2.31"` (`utils/config.py:33`, consumed by fsop/off_by_one/tcache) and add an offset-libc-vs-loaded-libc **mismatch detector** that refuses rather than emits a confidently-wrong ret2libc. | 4 | 3 |
+| CG-02 | §3.1 | `--libc` option consistency: present on 7 commands (measured), absent on neighbours. | 2 | 2 |
+| CG-03 | §4 | RISC-V / PowerPC backends absent. **OUT OF SCOPE** — a new-architecture subsystem, not a gap fix; all test targets are x86-64. Declared, backlogged. | 1 | 5 |
+| CG-04 | §3.2 | Full `--libc-path` loader threading (patchelf / `LD_LIBRARY_PATH` so the target *runs* against the supplied libc). Assess feasibility in Phase 4; may be its own sprint or deferred. | 3 | 4 |
+
+### Handoff / code-health leftovers
+
+| ID | Item | Rel | Cx |
+|----|------|-----|----|
+| HO-01 | Delete dead `pie_base_offset()` (`rop_techniques.py`, zero callers; superseded by `classify_volunteered_output` + `_rank_pie_leaks`). | 2 | 1 |
+| HO-02 | Cut release 2.2.0 (version is 2.1.0 in `__init__.py` + `pyproject.toml`; only tag is v2.1.0). End of effort. | 3 | 1 |
+| HO-03 | N2 stack-clash / N3 double-fetch categories. **OUT OF SCOPE** — net-new held-out-corpus categories, not a September retest gap. Backlogged to a separate effort. | 2 | 4 |
+
+### Already fixed (verify-only, no work)
+
+- Retest #12 (pwn sorts by priority not confidence): `pwn` output is now confidence-descending
+  (rocket_blaster_xxx: 0.8, 0.7, 0.65, 0.6, 0.6, 0.5, 0.5, 0.3). Confirm a test pins it.
+
+### Owner decisions (resolved with best judgement — see Phase 5 for rationale)
+
+- **D-1 legacy fallback:** keep on by default (`--no-legacy` opts out). No code change.
+- **I-45 YAML flag comments:** redact in place with an ordinary commit; **no history rewrite**.
+  Small, folded into Sprint 6.
+- **Walkthrough gate shape / follower tier / R5 measurement / A-1 / M-1b / B-3:** all
+  orthogonal to gap closure; keep backlogged, no code. Recorded, not re-litigated here.
+
+## Phase 2 — Triage
+
+Lanes: **now** = a sprint; **out-of-scope** = declared; **document-and-move-on** = logged.
+
+- **now:** RT-01, RT-02, RT-03, RT-04, RT-05, RT-06, RT-07, RT-08, RT-09, RT-10, CG-01,
+  CG-02, HO-01, HO-02.
+- **assess then decide:** CG-04 (Phase 4 spike).
+- **out-of-scope (declared):** CG-03 (new arch subsystem), HO-03 (held-out categories),
+  all tool-hardening/compliance findings (standing policy).
+- **document-and-move-on:** the five deferred owner decisions above.
+
+Priority order by band: P0 broken-command bugs (RT-01, RT-02) → P1 correctness
+(RT-06, RT-07) and libc (CG-01) → P1 timeouts (RT-05, RT-03, RT-04) → P2 detector depth
+(RT-10, RT-08, RT-09) and CG-02 → P3 cleanup/release (HO-01, HO-02).
+
+## Phase 3 — Sprint map
+
+| Sprint | Items | Band | Exit criterion | Rollback |
+|--------|-------|------|----------------|----------|
+| S1 broken commands | RT-01, RT-02 | P0 | `leaks` OK on ≥1 applicable target or honest "not applicable" JSON; heap/integer-analysis parse as JSON 7/7 | revert branch |
+| S2 reported facts | RT-06, RT-07 | P1 | stripped correct 7/7 vs `.symtab`; uses_tcache false on static-no-malloc | revert branch |
+| S3 libc correctness | CG-01, CG-02 | P1 | 2.31 constant retired to a resolver; mismatch detector refuses on a crafted mismatch; `--libc` on the agreed command set | revert branch |
+| S4 timeouts | RT-05, RT-04 | P1 | snow_scan analyze/cfg/dataflow/pwn no longer TIMEOUT at 60 s (OK or fast-skip with reason); explain OK on the 2 PIE targets | revert branch |
+| S5 decompile | RT-03 | P1 | `decompile` returns real output via ghidra on ≥1 target; angr path no longer raises | revert branch |
+| S6 detector depth | RT-10, RT-08, RT-09 | P2 | report flags the known vuln on ≥2 of the 3 zero-finding targets; pwn lists SROP for sick_rop; heap-analysis sees ta_alloc | revert (per-item) |
+| S7 cleanup + release | HO-01, I-45 redaction, CG-04 decision, HO-02 | P3 | dead code gone; flags redacted; 2.2.0 cut | revert branch |
+
+CG-04 (loader threading) rides in S3 if the Phase-4 spike shows it is small; otherwise it is
+recorded as deferred in S7 with the spike evidence.
+
+## Phase 4 — Research (reproduced this session)
+
+Findings confirmed by running the real CLI and reading source:
+
+- **RT-01 root (corrected):** the CLI imports the **static** `vulns.leak_finder.LeakFinder`,
+  whose entry point is `find_all_leaks()` (not the live-process class the Phase-1
+  prose described). `--fingerprint`/`--chain` also called nonexistent methods; the
+  real surface is `get_best_leak_for`, `fingerprint_libc`, and `finder.chains`.
+- **RT-02 root (confirmed + mechanism):** pwntools' console handler streams to
+  `context.log_console` (default `sys.stdout`); `ELF.read` logs
+  `[ERROR] Address 0x… is not contained in ELF` at ERROR level **before** raising,
+  and `log_level="error"` does not filter it. Neither a logger `setLevel` nor
+  `sys.stdout` reassignment works (pwnlib binds the stream via the context knob).
+  The only robust fix is `context.log_console = sys.stderr`, restored symmetrically
+  in `_reset_console` (else JSON mode leaks into later human-mode logging — flagged
+  by review).
+- **Cross-sprint dependency (new, from review):** the obsolete angr
+  `Function.functions_called()` API breaks **both** `analysis/cfg.py:184` and
+  `analysis/static.py:396` — it is a *shared* root behind RT-03 (decompile angr
+  path) and part of the S4 timeout/err surface. The angr-API repair must land
+  before or within S4, not be siloed in S5.
+- **S3 blast radius (new, from review):** `DEFAULT_LIBC_VERSION` is imported by
+  more than the three Phase-1 consumers — also `tester.py`, `exploit/heap/techniques.py`,
+  `large_bin.py`, `house_of_spirit.py`. The resolver must define `unknown` /
+  `not-applicable` semantics for every importer. The mismatch detector must be
+  enforced at the ret2libc offset-consumption site (`rop_techniques.py:~563`,
+  `_shared.py:local_libc_path`), not in config/CLI, or it is decorative.
+- **S4 inventory correction (from review):** the TIMEOUT cell is
+  `snow_scan strings-analysis` (always builds `CFGFast()` at `analysis/strings.py:508`),
+  **not** `snow_scan explain` (which measured OK). Fix the row before S4.
+- **S5 guards (from review):** `analysis/decompile.py:172` ignores returncode/stderr,
+  checks only for an output file, and uses a 300 s internal timeout exceeding the
+  60 s matrix budget. Needs: unique project dir, `-scriptPath/-postScript`,
+  sub-budget deadline + process-group kill, explicit backend-failure classes,
+  `backend:"angr|ghidra"` provenance.
+
+## Phase 5 — Per-sprint plans, baselines, peer review
+
+**Peer review:** `benchmark/results_retest/manifests/codex-out/retest-plan-review_*.md`
+(t2-cyber, gpt-daybreak-blue, xhigh). Verdict: **BLOCKER on the overall plan** until
+Phases 4/5/8 were filled (done here) and the harder sprints re-scoped per below. S1's
+roots were confirmed correct. Dispositions:
+
+- **S1 (built + verified this session):** RT-01 + RT-02. Semantic gate met — stdout is
+  exactly one JSON document; `leaks --json total` equals a direct
+  `LeakFinder.find_all_leaks()` count; all three `leaks` modes run. New tests
+  `test_cli_json_mode_pwnlib_redirect.py` and `test_cli_leaks_command.py` proven
+  RED on base b03cee9. The `_reset_console` restore closes the flagged redirect-leak
+  regression.
+- **S2:** use `.symtab` *presence*, not symbol count; gate tcache on actual allocator
+  use (a static binary may embed a real malloc). Positive + negative fixtures each.
+- **S3:** inventory every `DEFAULT_LIBC_VERSION` importer; define the agreed `--libc`
+  command set explicitly; enforce the mismatch detector at offset consumption; prove
+  the legacy fallback cannot bypass the refusal; `NOT_APPLICABLE` on static/no-libc,
+  `UNVERIFIABLE` (never `MATCH`) when the loaded libc can't be established.
+- **S4:** prefer lazy/targeted CFG over whole-binary builds; budgets are the final
+  containment layer and must emit `complete:false` + visited/dropped coverage, never
+  count a capped result as full OK. Land the shared angr-API fix here.
+- **S5:** Ghidra guards above; a passing test requires non-placeholder pseudo-C for the
+  requested function, not merely a JSON object.
+- **S6:** split bounded fixes (SROP gate extension at `exploit/strategy.py:394`; named
+  `ta_alloc/ta_calloc/ta_free` allocator modeling with provenance) from open-ended
+  `report` depth (scope to 1–2 named detector integrations + honest
+  `execution_complete` vs `coverage_complete`). Do not gate on "2/3 targets have
+  something" alone.
+- **S7:** split housekeeping from the release commit/tag (a tag is not rolled back by
+  "revert branch"). I-45 redaction lives here (resolving the Phase-1 line-75 vs
+  line-104 inconsistency in favour of S7).
+
+## Phase 8 — Benefit
+
+- **Transport metric:** re-run `scripts/retest_matrix.py` and compare OK cells to the
+  **measured** 85/112 baseline. Label it "JSON transport OK," not capability.
+- **Semantic metric (review-mandated):** extend the matrix classifier with `COMPLETE`
+  / `PARTIAL` / `SKIPPED` and require rc=0 for success, so a `{"status":"skipped"}` or
+  an empty-finding cell is not scored as recovered capability. Each sprint additionally
+  carries its own content assertion (counts equal a direct analyzer call; expected
+  finding type + evidence address; backend identity; completeness metadata).
+- **Regression floor (every sprint):** full suite green vs the base manifest
+  (`benchmark/results_retest/manifests/baseline-*`), all previously-OK matrix cells
+  still OK, corpus_r2 15/15, corpus_fsop 3/3.
+
+### S1 benefit (measured)
+
+`leaks --json` moved from EMPTY on 7/7 targets to a parseable JSON document on 7/7;
+`heap-analysis`/`integer-analysis --json` moved from BAD_JSON to OK on the 3
+contaminating targets (sick_rop, snow_scan, bon-nie-appetit) — **+13 analysis cells**
+toward the matrix OK count, content verified equal to the direct analyzer output.
