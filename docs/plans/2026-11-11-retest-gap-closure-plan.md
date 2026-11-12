@@ -128,7 +128,30 @@ decided in **S7** with the spike evidence.
   Latent follow-up filed as **B-4** (`_find_callers` never computes callers).
   Per-sprint plans: `2026-11-12-s4-angr-analysis-robustness-plan.md` (parent) +
   `2026-11-12-s4b-i-angr-subprocess-isolation-plan.md`.
-- Next: **S5** (RT-03 decompile via ghidra), then S6 (detector depth), S7 (cleanup + 2.2.0).
+- **2026-11-12 — S5 decompile (RT-03): DONE (merged to `main`).** `decompile` now
+  returns real Ghidra pseudo-C instead of silently falling back. Three root causes
+  fixed: (1) the emitted GhidraScript was `.py`, but Ghidra 12.x without PyGhidra
+  cannot run Python scripts — replaced with a committed Java GhidraScript
+  (`supwngo/analysis/ghidra_scripts/SupwngoDecompile.java`, packaged via
+  `pyproject.toml`/`setup.py`/`MANIFEST.in`); (2) `analyzeHeadless` was invoked
+  without `-scriptPath`/`-postScript`, so the script never ran — now wired with a
+  tagged selector (`name:`/`addr:`/empty→main); (3) the subprocess ignored
+  returncode/stderr and used a 300 s timeout — now a bounded, process-group-killed
+  spawn honoring `SUPWNGO_GHIDRA_TIMEOUT` (default 180 s, hard-capped 900 s) with
+  `analysis_backend` provenance (`angr`→`ghidra`). Also diagnosed + documented the
+  **scriptPath file-scan hang** (Ghidra enumerates every file in each `-scriptPath`
+  dir; a crowded dir like `/tmp` hangs >400 s) — the `.java` lives in its own
+  near-empty package dir. GREEN proof: CLI returns `analysis_backend: ghidra` with
+  real pseudo-C on `bon-nie-appetit` (784 chars) and the gcc fixture; `sick_rop`
+  (no `main` symbol) degrades to `None` gracefully. Merge: PR #26 `c8527fa`
+  (branch `fix/s5-ghidra-decompile`, 3 commits). Full suite: 2230 passed / 18
+  skipped / 1 pre-existing load flake (passes in isolation) — no regression.
+  30 hermetic + 2 opt-in real-ghidra tests added
+  (`tests/test_decompile_ghidra_output.py`). Peer-reviewed by Daybreak Blue
+  (8 blocking items, all resolved). Plans:
+  `2026-11-12-s5-ghidra-decompile-plan.md` +
+  `2026-11-12-s5-ghidra-decompile-review-daybreak-blue.md`.
+- Next: **S6** (detector depth — RT-10/08/09), then S7 (cleanup + 2.2.0).
 
 ## Phase 4 — Research (reproduced this session)
 
