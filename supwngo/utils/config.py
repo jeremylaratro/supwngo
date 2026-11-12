@@ -30,9 +30,6 @@ class SymbolicConfig:
     exploration_technique: str = "dfs"  # dfs, bfs, or explore
 
 
-DEFAULT_LIBC_VERSION: str = "2.31"
-
-
 @dataclass
 class ExploitConfig:
     """Exploit generation configuration."""
@@ -41,7 +38,10 @@ class ExploitConfig:
     max_rop_chain_length: int = 50
     shellcode_encoder: Optional[str] = None
     target_arch: str = "auto"
-    libc_version: str = DEFAULT_LIBC_VERSION
+    # None == unknown. A libc version is never fabricated: version-dependent
+    # offsets are placed only from a known version (see supwngo.utils.libc), so
+    # an unknown libc refuses rather than silently assuming one release.
+    libc_version: Optional[str] = None
 
 
 @dataclass

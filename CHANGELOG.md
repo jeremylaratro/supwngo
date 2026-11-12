@@ -61,6 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed the non-executing `format_string` template stub; format-string
   strategy recommendations now route to the working `fmtstr_write_gate`
   executor.
+- Removed the `DEFAULT_LIBC_VERSION = "2.31"` constant from
+  `supwngo.utils.config`. It silently supplied a fabricated libc version to
+  every version-dependent technique class, so a caller who did not know the
+  target's libc got 2.31's offsets. Callers now resolve the real version via
+  `supwngo.utils.libc`, and an unknown version is an explicit `None`.
 
 ### Fixed
 
@@ -95,6 +100,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and reads a version only from a real glibc *release banner*, assuming a modern
   (tcache-bearing) glibc when the allocator is present but no banner pins the
   release.
+- The standalone heap/FSOP exploitation library no longer fabricates a glibc
+  2.31 layout when the target libc version is unknown. A new honest resolver
+  (`supwngo.utils.libc`) makes "unknown" a first-class state, and the technique
+  classes split cleanly by consequence: offset-byte-critical paths refuse rather
+  than emit wrong bytes (`TcachePerThreadStruct.build_fake_struct`,
+  `TcacheExploiter.tcache_perthread_poison` / `hook_overwrite_targets` /
+  `double_free_with_key_bypass` / `generate_exploit_code` raise
+  `LibcVersionUnknown`; `FSOPExploiter.malloc_hook_attack` / `free_hook_attack`
+  return an explicit error dict instead of the 2.31 `0x3ed8e8` offset), while
+  feature/feasibility verdicts read "unknown" instead of a fabricated answer
+  (`HeapExploiter.select_technique`, `HeapExploitConfig`, `HouseOfSpirit`,
+  `NullByteExploiter`, `HouseOfStorm`). `TcacheExploiter()` still constructs with
+  an unknown version so version-independent helpers (`size_to_idx`) keep working.
+  To keep "unknown" from leaking back in, the resolver refuses malformed input
+  instead of coercing it: a version must be `major.minor` followed by a real
+  separator or end-of-string (so `2.31-0ubuntu9.9` parses but `2.31garbage` is
+  unknown), and the ELF banner scan is anchored to the `GNU C Library` marker so
+  a stray `release version N.N` in an unrelated binary is not read as glibc.
+  `HouseOfSpirit.validate_chunk_size` likewise returns an *indeterminate* verdict
+  (rather than a fabricated pass) only when the two possible bin limits disagree,
+  and `build_fake_struct` requires a known version unconditionally before emitting
+  offset bytes. This affects only the direct library API; the pipeline already
+  resolved the real libc version and is unchanged.
 
 ## [2.1.0] - 2026-09-28
 

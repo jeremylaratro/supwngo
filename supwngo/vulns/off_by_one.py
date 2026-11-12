@@ -13,7 +13,7 @@ from enum import Enum, auto
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from supwngo.core.binary import Binary
-from supwngo.utils.config import DEFAULT_LIBC_VERSION
+from supwngo.utils.libc import parse_libc_version
 from supwngo.vulns.detector import Vulnerability, VulnerabilityDetector, VulnType, VulnSeverity
 from supwngo.utils.logging import get_logger
 
@@ -394,16 +394,19 @@ class NullByteExploiter:
     - Chunk size corruption
     """
 
-    def __init__(self, libc_version: str = DEFAULT_LIBC_VERSION):
+    def __init__(self, libc_version: Optional[str] = None):
         """
         Initialize exploiter.
 
         Args:
-            libc_version: Target glibc version
+            libc_version: Target glibc version, or ``None`` if unknown. An
+                unknown version is never fabricated: version-gated feasibility
+                verdicts read "unknown" rather than a definite true/false.
         """
         self.version = libc_version
-        parts = libc_version.split(".")
-        self.minor = int(parts[1]) if len(parts) > 1 else 31
+        parsed = parse_libc_version(libc_version)
+        # ``None`` == unknown minor; branches/verdicts surface the unknown.
+        self.minor: Optional[int] = parsed[1] if parsed is not None else None
 
     def poison_null_byte_exploit(
         self,
@@ -430,7 +433,12 @@ class NullByteExploiter:
         }
 
         # Check glibc version constraints
-        if self.minor >= 29:
+        if self.minor is None:
+            result["note"] = (
+                "glibc version unknown; 2.29+ adds checks (harder but possible) "
+                "-- verify against the target libc"
+            )
+        elif self.minor >= 29:
             result["note"] = "glibc 2.29+ has additional checks, harder but possible"
 
         # Calculate optimal chunk sizes
@@ -505,11 +513,18 @@ def exploit():
         result = {
             "technique": "house_of_einherjar",
             "glibc_version": self.version,
-            "feasible": self.minor < 29,  # Harder on newer glibc
+            # Unknown version -> unknown feasibility (None), never a fabricated
+            # true/false. Harder on newer glibc (2.29+).
+            "feasible": (None if self.minor is None else self.minor < 29),
             "steps": [],
         }
 
-        if self.minor >= 29:
+        if self.minor is None:
+            result["note"] = (
+                "glibc version unknown; feasibility undetermined "
+                "(harder on glibc 2.29+)"
+            )
+        elif self.minor >= 29:
             result["note"] = "Requires additional heap leak for unlink checks bypass"
 
         result["steps"] = [
