@@ -4,6 +4,7 @@ include requirements.txt
 include pyproject.toml
 recursive-include supwngo/payloads/templates *.py
 recursive-include supwngo/data *.json
+recursive-include supwngo/analysis/ghidra_scripts *.java
 recursive-exclude * __pycache__
 recursive-exclude * *.py[co]
 recursive-exclude tests *

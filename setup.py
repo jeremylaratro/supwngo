@@ -76,6 +76,7 @@ setup(
         "supwngo": [
             "payloads/templates/*.py",
             "data/*.json",
+            "analysis/ghidra_scripts/*.java",
         ],
     },
     zip_safe=False,

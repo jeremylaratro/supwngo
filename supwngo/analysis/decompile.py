@@ -9,8 +9,10 @@ Provides integration with decompilers including:
 """
 
 import json
+import math
 import os
 import re
+import signal
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -21,6 +23,66 @@ from supwngo.core.binary import Binary
 from supwngo.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+#: File name of the shipped Ghidra decompilation GhidraScript (see
+#: ``supwngo/analysis/ghidra_scripts/``). A ``.java`` script is used because
+#: Ghidra 12.x without PyGhidra cannot run ``.py`` scripts.
+GHIDRA_SCRIPT_NAME = "SupwngoDecompile.java"
+
+#: Hard ceiling (seconds) for the Ghidra headless budget regardless of the
+#: ``SUPWNGO_GHIDRA_TIMEOUT`` override, so "bounded" stays true.
+GHIDRA_TIMEOUT_HARD_MAX = 900.0
+
+
+def _resolve_ghidra_timeout(raw: Any, default: float = 180.0) -> float:
+    """Return a finite, positive, hard-capped Ghidra budget in seconds.
+
+    ``raw`` may be ``None`` (use ``default``), a number, or a string from the
+    ``SUPWNGO_GHIDRA_TIMEOUT`` environment variable. ``NaN``, infinity, zero,
+    negative, or unparseable values fall back to ``default``; anything above
+    :data:`GHIDRA_TIMEOUT_HARD_MAX` is clamped, so an override can never defeat
+    the bounded-and-killable guarantee.
+    """
+    if raw is None:
+        return default
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(val) or val <= 0:
+        return default
+    return min(val, GHIDRA_TIMEOUT_HARD_MAX)
+
+
+#: Default Ghidra budget, resolved once from the environment at import time.
+DEFAULT_GHIDRA_TIMEOUT = _resolve_ghidra_timeout(
+    os.environ.get("SUPWNGO_GHIDRA_TIMEOUT")
+)
+
+
+def _kill_process_group(proc: "subprocess.Popen") -> None:
+    """SIGKILL a Popen's whole process group, then reap it.
+
+    ``analyzeHeadless`` spawns a JVM (and the JVM a native decompiler), so
+    killing only the launcher leaves those descendants alive. The process is
+    started with ``start_new_session=True`` (pgid == pid), so ``killpg`` takes
+    the whole tree; fall back to a plain kill if the group is already gone, then
+    drain and reap so no zombie or dangling pipe is left.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    try:
+        proc.communicate(timeout=5)
+    except Exception:
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
 
 
 @dataclass
@@ -59,7 +121,8 @@ class Decompiler:
     - Control flow insights
     """
 
-    def __init__(self, binary: Binary, angr_timeout: Optional[float] = None):
+    def __init__(self, binary: Binary, angr_timeout: Optional[float] = None,
+                 ghidra_timeout: Optional[float] = None):
         """
         Initialize decompiler.
 
@@ -68,6 +131,10 @@ class Decompiler:
             angr_timeout: Wall-clock budget (seconds) for the angr decompilation
                 fallback before giving up. ``None`` uses the module default
                 (``SUPWNGO_ANGR_TIMEOUT`` or 30 s).
+            ghidra_timeout: Wall-clock budget (seconds) for the Ghidra headless
+                subprocess before it is force-killed. ``None`` uses the module
+                default (``SUPWNGO_GHIDRA_TIMEOUT`` or 180 s); any value is
+                validated and hard-capped by :func:`_resolve_ghidra_timeout`.
         """
         from supwngo.analysis._angr_subprocess import DEFAULT_ANGR_TIMEOUT
 
@@ -76,7 +143,13 @@ class Decompiler:
         self._ghidra_path = self._find_ghidra()
         self._retdec_path = self._find_retdec()
         self._angr_timeout = DEFAULT_ANGR_TIMEOUT if angr_timeout is None else angr_timeout
-        #: Provenance of the angr decompilation fallback.
+        self._ghidra_timeout = (
+            DEFAULT_GHIDRA_TIMEOUT if ghidra_timeout is None
+            else _resolve_ghidra_timeout(ghidra_timeout)
+        )
+        #: Provenance of the decompilation backend actually used. Starts at the
+        #: angr fallback; flips to ``"ghidra"`` only when Ghidra returns usable
+        #: pseudo-C.
         self.analysis_backend: str = "angr"
         self.angr_budget_exceeded: bool = False
 
@@ -170,104 +243,155 @@ class Decompiler:
         # Fallback to angr decompilation
         return self._decompile_angr(func_name, func_addr)
 
+    def _ghidra_scripts_dir(self) -> Path:
+        """Directory holding the shipped Ghidra GhidraScript(s).
+
+        A dedicated, near-empty directory is mandatory: Ghidra enumerates every
+        file in each ``-scriptPath`` dir to classify scripts, so pointing it at a
+        crowded directory wedges postScript resolution.
+        """
+        return Path(__file__).resolve().parent / "ghidra_scripts"
+
+    @staticmethod
+    def _ghidra_selector(func_name: Optional[str],
+                         func_addr: Optional[int]) -> str:
+        """Build the tagged selector argument for the GhidraScript.
+
+        Name takes precedence over address (``decompile_all`` passes both), so a
+        function is selected by name when one is given. An empty selector lets
+        the script fall back to ``main``/first function.
+        """
+        if func_name:
+            return f"name:{func_name}"
+        if func_addr is not None:
+            return f"addr:{hex(func_addr)}"
+        return ""
+
+    def _run_ghidra_headless(self, cmd: List[str], timeout: float) -> bool:
+        """Run ``analyzeHeadless`` in its own process group, killable on timeout.
+
+        Returns ``True`` if the process finished within ``timeout`` (the caller
+        then inspects the output file — Ghidra's returncode is unreliable), or
+        ``False`` if it could not be launched or was force-killed on timeout.
+        The whole process group is SIGKILLed and reaped on timeout so no JVM or
+        native-decompiler descendant is left behind.
+        """
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+        except (OSError, ValueError) as exc:
+            logger.warning(f"Could not launch Ghidra: {exc}")
+            return False
+
+        try:
+            _out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            logger.warning("Ghidra decompilation timed out after %ss; killing", timeout)
+            _kill_process_group(proc)
+            return False
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"Ghidra decompilation errored: {exc}")
+            _kill_process_group(proc)
+            return False
+
+        if proc.returncode not in (0, None):
+            # A non-zero rc may still have run the postScript (which writes the
+            # output file), so do not hard-fail here; just record a bounded tail.
+            logger.warning(
+                "Ghidra exited %s: %s", proc.returncode, (err or "")[-300:]
+            )
+        return True
+
+    @staticmethod
+    def _read_ghidra_output(output_file: Path) -> Optional[List[Dict]]:
+        """Read and validate the GhidraScript's JSON array.
+
+        Returns the parsed list (possibly empty) on success, or ``None`` when the
+        file is missing, empty, malformed, or not a JSON array — i.e. the script
+        never produced a usable result.
+        """
+        if not output_file.exists():
+            logger.warning("Ghidra produced no output file")
+            return None
+        raw = output_file.read_text(encoding="utf-8", errors="replace").strip()
+        if not raw:
+            logger.warning("Ghidra output file was empty")
+            return None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            logger.warning(f"Ghidra output was not valid JSON: {exc}")
+            return None
+        if not isinstance(data, list):
+            logger.warning("Ghidra output was not a JSON array")
+            return None
+        return data
+
     def _decompile_ghidra(self, func_name: Optional[str],
                           func_addr: Optional[int]) -> Optional[DecompiledFunction]:
-        """Decompile using Ghidra headless."""
+        """Decompile using Ghidra headless.
+
+        Drives the shipped ``SupwngoDecompile.java`` GhidraScript from its own
+        directory, with a bounded, killable budget. On success sets
+        ``analysis_backend = "ghidra"`` and returns the function; on any failure
+        mode (missing script, launch failure, timeout, no/empty/malformed output,
+        or output with no usable pseudo-C) returns ``None`` so the caller degrades
+        to RetDec/angr.
+        """
         if not self._ghidra_path:
             return None
 
+        script_path = self._ghidra_scripts_dir() / GHIDRA_SCRIPT_NAME
+        if not script_path.is_file():
+            logger.warning("Ghidra decompile script missing: %s", script_path)
+            return None
+
         logger.info("Decompiling with Ghidra...")
+        selector = self._ghidra_selector(func_name, func_addr)
 
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 project_dir = Path(tmpdir) / "project"
                 project_dir.mkdir()
-                output_file = Path(tmpdir) / "output.json"
+                output_file = Path(tmpdir) / "decompiled.json"
 
-                # Create Ghidra script
-                script_content = self._create_ghidra_script(func_name, func_addr, output_file)
-                script_path = Path(tmpdir) / "decompile.py"
-                script_path.write_text(script_content)
-
-                # Run Ghidra headless
                 cmd = [
                     str(self._ghidra_path),
                     str(project_dir),
-                    "TempProject",
+                    "SupwngoTmp",
                     "-import", str(self.binary.path),
-                    "-postScript", str(script_path),
+                    "-scriptPath", str(script_path.parent),
+                    "-postScript", GHIDRA_SCRIPT_NAME, selector, str(output_file),
                     "-deleteProject",
                 ]
 
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                if not self._run_ghidra_headless(cmd, self._ghidra_timeout):
+                    return None
 
-                if output_file.exists():
-                    data = json.loads(output_file.read_text())
-                    return self._parse_ghidra_output(data)
+                data = self._read_ghidra_output(output_file)
+                if data is None:
+                    return None
+                if not data:
+                    # Script ran cleanly but selected/decompiled nothing.
+                    logger.info("Ghidra ran but produced no decompiled function")
+                    return None
 
-        except subprocess.TimeoutExpired:
-            logger.warning("Ghidra decompilation timed out")
-        except Exception as e:
-            logger.warning(f"Ghidra decompilation failed: {e}")
+                result = self._parse_ghidra_output(data)
+                if result is None or not (result.code and result.code.strip()):
+                    logger.warning("Ghidra output had no usable pseudo-C")
+                    return None
+
+                self.analysis_backend = "ghidra"
+                return result
+        except Exception as exc:
+            logger.warning(f"Ghidra decompilation failed: {exc}")
 
         return None
-
-    def _create_ghidra_script(self, func_name: Optional[str],
-                               func_addr: Optional[int],
-                               output_path: Path) -> str:
-        """Create Ghidra Python script for decompilation."""
-        return f'''
-# Ghidra decompilation script
-from ghidra.app.decompiler import DecompInterface
-from ghidra.util.task import ConsoleTaskMonitor
-import json
-
-def decompile_function(func):
-    decomp = DecompInterface()
-    decomp.openProgram(currentProgram)
-
-    result = decomp.decompileFunction(func, 60, ConsoleTaskMonitor())
-
-    if result.decompileCompleted():
-        return {{
-            "name": func.getName(),
-            "address": func.getEntryPoint().getOffset(),
-            "code": result.getDecompiledFunction().getC(),
-            "return_type": str(func.getReturnType()),
-        }}
-    return None
-
-output = []
-
-func_name = {repr(func_name) if func_name else 'None'}
-func_addr = {hex(func_addr) if func_addr else 'None'}
-
-if func_name:
-    func = getGlobalFunctions(func_name)
-    if func:
-        result = decompile_function(func[0])
-        if result:
-            output.append(result)
-elif func_addr:
-    addr = currentProgram.getAddressFactory().getAddress(func_addr)
-    func = getFunctionAt(addr)
-    if func:
-        result = decompile_function(func)
-        if result:
-            output.append(result)
-else:
-    # Decompile all functions
-    fm = currentProgram.getFunctionManager()
-    for func in fm.getFunctions(True):
-        result = decompile_function(func)
-        if result:
-            output.append(result)
-            if len(output) >= 100:  # Limit
-                break
-
-with open("{output_path}", "w") as f:
-    json.dump(output, f)
-'''
 
     def _parse_ghidra_output(self, data: List[Dict]) -> Optional[DecompiledFunction]:
         """Parse Ghidra JSON output."""
