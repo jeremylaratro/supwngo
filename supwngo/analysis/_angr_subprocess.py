@@ -202,6 +202,59 @@ def _op_strings_xrefs(binary_path: str, **_kwargs):
     return records
 
 
+def _op_decompile(binary_path: str, func_name: str = None, func_addr: int = None,
+                  **_kwargs) -> Dict[str, Any]:
+    """Whole-function angr decompilation (``Decompiler._decompile_angr``).
+
+    Runs both heavy angr passes -- ``CFGFast`` *and* the ``Decompiler`` analysis
+    -- in the child, since either can run unbounded C-level work on a large
+    binary, and returns plain-data fields the parent rebuilds into a
+    ``DecompiledFunction``. ``found`` distinguishes "function not in the CFG"
+    (the parent's ``None``) from a successful decompilation. The decompile step's
+    own failures are captured as a ``// Decompilation failed`` comment in
+    ``code``, exactly as the in-process path did.
+    """
+    # Kept (unused) to preserve the in-process import semantics: if angr's
+    # decompiler backend is unavailable this import raises and the op fails,
+    # which the parent reports as a failed decompilation.
+    from angr.analyses.decompiler.structured_codegen import (  # noqa: F401
+        DummyStructuredCodeGenerator,
+    )
+    from supwngo.analysis._angr_callgraph import iter_callees
+
+    proj = _load_project(binary_path)
+    cfg = proj.analyses.CFGFast()
+
+    func = None
+    if func_addr is not None:
+        func = cfg.kb.functions.get(func_addr)
+    elif func_name:
+        for f in cfg.kb.functions.values():
+            if f.name == func_name:
+                func = f
+                break
+    if not func:
+        return {"found": False}
+
+    try:
+        dec = proj.analyses.Decompiler(func, cfg=cfg)
+        if dec.codegen and hasattr(dec.codegen, "text"):
+            code = dec.codegen.text
+        else:
+            code = f"// Decompilation failed for {func.name}"
+    except Exception as e:
+        code = f"// Decompilation failed: {e}"
+
+    return {
+        "found": True,
+        "name": func.name,
+        "address": func.addr,
+        "return_type": "void",
+        "code": code,
+        "calls": [c.name for c in iter_callees(func, cfg.kb.functions) if c.name],
+    }
+
+
 def _op_selftest(binary_path: str, mode: str = "echo", sentinel_path: str = "", **kwargs) -> Any:
     """Internal hook used only by ``tests/test_angr_subprocess.py``.
 
@@ -236,6 +289,7 @@ _OPS: Dict[str, Callable[..., Any]] = {
     "static_functions": _op_static_functions,
     "dataflow": _op_dataflow,
     "strings_xrefs": _op_strings_xrefs,
+    "decompile": _op_decompile,
     "_selftest": _op_selftest,
 }
 

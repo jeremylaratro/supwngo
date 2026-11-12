@@ -2027,9 +2027,12 @@ def diff(ctx, binary1, binary2, security_only, output, json_output):
 @click.option("-f", "--function", help="Function to decompile")
 @click.option("--ghidra/--angr", default=True, help="Decompiler to use")
 @click.option("-o", "--output", type=click.Path(), help="Save decompiled code")
+@click.option("--angr-timeout", type=float, default=None,
+              help="Wall-clock budget (s) for the angr decompilation fallback "
+                   "before giving up (default: SUPWNGO_ANGR_TIMEOUT or 30)")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def decompile(ctx, binary, function, ghidra, output, json_output):
+def decompile(ctx, binary, function, ghidra, output, angr_timeout, json_output):
     """
     Decompile binary to pseudo-C code.
 
@@ -2046,7 +2049,7 @@ def decompile(ctx, binary, function, ghidra, output, json_output):
     console.print(f"\n[bold]Decompilation:[/bold] {binary}\n")
 
     bin_obj = Binary.load(binary)
-    decomp = Decompiler(bin_obj)
+    decomp = Decompiler(bin_obj, angr_timeout=angr_timeout)
 
     available = decomp.get_available_decompilers()
     console.print(f"[cyan]Available decompilers: {', '.join(available) or 'None'}[/cyan]")
@@ -2072,6 +2075,13 @@ def decompile(ctx, binary, function, ghidra, output, json_output):
     with console.status("Decompiling..."):
         result = decomp.decompile(func_name=func_name, func_addr=func_addr, use_ghidra=ghidra)
 
+    if decomp.angr_budget_exceeded:
+        console.print(
+            f"[yellow]\\[!] angr decompilation exceeded {decomp._angr_timeout:g}s on this "
+            "binary; no pseudo-C was produced -- try Ghidra or a larger "
+            "--angr-timeout.[/yellow]"
+        )
+
     if result:
         if json_output:
             decomp.decompiled_functions[result.name] = result
@@ -2084,6 +2094,8 @@ def decompile(ctx, binary, function, ghidra, output, json_output):
                 "calls": result.calls[:20] if result.calls else [],
                 "code": result.code,
                 "vulnerabilities": vulns or [],
+                "analysis_backend": decomp.analysis_backend,
+                "angr_budget_exceeded": decomp.angr_budget_exceeded,
             })
         else:
             console.print(f"\n[bold green]Decompiled: {result.name}[/bold green]")
@@ -2115,7 +2127,11 @@ def decompile(ctx, binary, function, ghidra, output, json_output):
                 for v in vulns:
                     console.print(f"  [{v['severity']}] {v['description']}")
     elif json_output:
-        _emit_json({"error": "Decompilation failed"})
+        _emit_json({
+            "error": "Decompilation failed",
+            "analysis_backend": decomp.analysis_backend,
+            "angr_budget_exceeded": decomp.angr_budget_exceeded,
+        })
     else:
         console.print("[red]Decompilation failed[/red]")
 

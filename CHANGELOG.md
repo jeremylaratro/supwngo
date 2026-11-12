@@ -90,6 +90,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cross-reference pass no longer builds one `CFGFast` per dangerous PLT entry (a
   dead build that always returned `[]`): a full `analyze` now issues exactly one
   angr subprocess op instead of N+1.
+- `decompile --angr` no longer hangs on a large statically linked binary
+  (RT-05). Its angr fallback built an in-process `CFGFast` and ran angr's
+  `Decompiler` — either of which can run unbounded C-level work — so a target
+  like snow_scan wedged the command until the harness cut. The whole fallback
+  now runs in one budgeted subprocess (`--angr-timeout`); on a blow-out the
+  child's process group is killed and the command returns no pseudo-C (its prior
+  failure behaviour) while reporting the degradation via a human note and
+  `analysis_backend: none` / `angr_budget_exceeded` in `--json`.
 - `dataflow` no longer crashes with `AttributeError: 'Binary' object has no
   attribute 'elf'` when the target has no `main` symbol (e.g. a stripped
   binary) and no `-f/--function` is given. The entry-point fallback now reads
