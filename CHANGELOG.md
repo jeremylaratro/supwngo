@@ -132,6 +132,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the supported `get_call_sites`/`get_call_target` API against the functions
   knowledge base (de-duplicating repeated targets, matching the old unique-callee
   set), and the three sites now use it, so the real angr call graph is recovered.
+- `walkthrough explain` no longer hangs on the gdb offset probe. `gdb` runs the
+  target as its own inferior, which can fork further descendants; the probe used
+  `subprocess.run(timeout=...)`, whose POSIX timeout path kills only the direct
+  child (gdb) and leaves any descendant in gdb's process group alive holding
+  gdb's stdout pipe, so the budget never took effect and `explain` hung
+  indefinitely on some targets. `probe_offset_with_gdb` now spawns gdb with
+  `start_new_session=True` and SIGKILLs the entire process group on timeout
+  (`_kill_process_group`), so the probe returns at its budget and leaves no
+  descendant behind.
+- The generated walkthrough's own `offset` step no longer hangs or crashes when
+  gdb hangs. The emitted script measured the offset with
+  `subprocess.run(argv, timeout=60)` and no `TimeoutExpired` handling, so a
+  wedged gdb crashed the teaching script with an uncaught traceback and left its
+  inferior alive in gdb's process group — the same leak as the in-process probe,
+  on the second surface. The step now spawns gdb with `start_new_session=True`,
+  honours a `SUPWNGO_WALKTHROUGH_GDB_TIMEOUT` budget (default 60 s), SIGKILLs the
+  whole group on timeout, and reports a graceful failure instead of a stack
+  trace.
 
 ## [2.1.0] - 2026-09-28
 
