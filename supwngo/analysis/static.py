@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from supwngo.analysis._angr_callgraph import iter_callees
 from supwngo.core.binary import Binary, Symbol
 from supwngo.utils.logging import get_logger
 
@@ -392,8 +393,8 @@ class StaticAnalyzer:
                         called_by=[],
                     )
 
-                    # Get callees
-                    for callee in func.functions_called():
+                    # Get callees (angr 9.2 removed Function.functions_called())
+                    for callee in iter_callees(func, cfg.kb.functions):
                         if callee.name:
                             info.calls.append(callee.name)
 
