@@ -682,6 +682,48 @@ plan and review round.
 | provenance | measured |
 | exit | either a committed fixture with the verdict table updated, or a recorded decision that argv-parity coverage is sufficient |
 
+#### G-28 — SAST front-end: add analyzers, triage hits across tools, and route them into the pipeline
+
+| field | value |
+|---|---|
+| type | gap | relevance | 4 — a new candidate-bug input source for the whole pipeline; serves `T-3` (breadth) by reaching defects the binary-only front-ends never see |
+| complexity | 5 — multi-tool adapters + a cross-tool triage layer + routing into fuzzing/exploit; large blast radius, the triage→route step is unproven, and source availability is a precondition most current targets do not meet |
+| priority | **P2** — **spike-first**: the unproven part is triage→route, not running the tools |
+| lane | later | status | open |
+| evidence | **`measured` 2026-11-12**: `supwngo/analysis/source.py` already runs `builtin` (dangerous-function scan), `bearer` (Bearer CLI SAST) and `patterns`, emitting typed `SourceVulnerability`/`SourceVulnType` (SARIF) via the `supwngo source` CLI (`supwngo/cli.py:1335`). But `grep` finds it consumed **only** by that command and `supwngo/__init__.py` — nothing in `fuzzing/`, `exploit/` or `vulns/` ingests it, so hits dead-end in a report. Of the tools the owner named, only Bearer is wired. |
+| provenance | recorded (owner request 2026-11-12) + measured (the absence above) |
+| exit | each accepted analyzer's hits normalize into the existing `SourceVulnType` taxonomy, de-dupe and rank across tools, compliance-only hits are dropped (§5), and a routed hit **demonstrably drives a downstream action** — a generated fuzz harness, or an overflow/format-string/heap executor or `vulns/` detector seeded by the finding's location — proven by a control where the route does **not** fire on a clean target |
+| owes | a spike proving triage→route end to end on **one** bug class before any multi-tool build |
+
+Decomposition (sub-IDs assigned on acceptance, per the `G-8` precedent — never in advance):
+
+- **adapters** — add CodeQL, Semgrep, Coverity, cppcheck (and similar) behind the
+  existing `tools` switch next to Bearer; each adapter normalizes its native output
+  (SARIF where the tool emits it) into `SourceVulnerability`, records itself in
+  `tools_used`, and degrades gracefully when the tool is absent, exactly as the Bearer
+  path already does (`source.py:347`).
+- **triage** — a cross-tool layer that de-duplicates the same defect reported by N
+  tools, ranks by tool-agreement × severity × exploitability, and maps each surviving
+  hit onto supwngo's **internal** vuln taxonomy — the `vulns/` detectors (`stack_bof`,
+  `format_string`, `heap`/`heap_advanced`, `integer`/`integer_advanced`, `uaf`,
+  `off_by_one`, `race`). Compliance / privacy-only findings are discarded (**§5** —
+  control-framework findings are out of scope); the goal is exploitable bugs, not an
+  audit report.
+- **routing** — feed each triaged, classified hit into the matching downstream path:
+  memory-corruption candidates → fuzz-harness generation (`fuzzing/`); buffer /
+  format-string / heap / integer candidates → the corresponding executor or `vulns/`
+  detector, seeded with the finding's location. Source is a precondition; when only a
+  binary is present the route still applies if the hit's sink is locatable in the image
+  (symbols/strings), else the finding is logged as source-only rather than silently
+  dropped.
+
+**Scope note.** This **augments an existing module** and is **not** "security of the
+tool itself" (out of scope, §5): the analyzers run against **target** code to surface
+exploitable bugs for the pipeline to prove. Owner intent (2026-11-12): *"add additional
+processing steps like codeql, semgrep, bearer, coverity, etc. to catch more bugs; those
+hits should be triaged and then fed into the process — depending what type they are,
+potentially fuzzing, overflow, etc."*
+
 ---
 
 ## 3. Gates (must pass before work ships)
