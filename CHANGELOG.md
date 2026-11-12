@@ -141,6 +141,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `start_new_session=True` and SIGKILLs the entire process group on timeout
   (`_kill_process_group`), so the probe returns at its budget and leaves no
   descendant behind.
+- The generated walkthrough's own `offset` step no longer hangs or crashes when
+  gdb hangs. The emitted script measured the offset with
+  `subprocess.run(argv, timeout=60)` and no `TimeoutExpired` handling, so a
+  wedged gdb crashed the teaching script with an uncaught traceback and left its
+  inferior alive in gdb's process group — the same leak as the in-process probe,
+  on the second surface. The step now spawns gdb with `start_new_session=True`,
+  honours a `SUPWNGO_WALKTHROUGH_GDB_TIMEOUT` budget (default 60 s), SIGKILLs the
+  whole group on timeout, and reports a graceful failure instead of a stack
+  trace.
 
 ## [2.1.0] - 2026-09-28
 
