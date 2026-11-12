@@ -81,6 +81,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before raising, which `log_level="error"` does not filter. JSON mode now
   repoints that stream to stderr and restores it afterwards, so stdout carries
   exactly one JSON document.
+- `analyze` no longer misreports `stripped`. The check returned
+  `len(symbols) < 10`, but `strip(1)` removes `.symtab` while keeping `.dynsym`,
+  so a stripped dynamic binary still carried symbols and read as *not* stripped,
+  while a tiny unstripped target (e.g. a minimal SROP binary) read as stripped.
+  It now keys on `.symtab` section presence.
+- `analyze` no longer misreports `uses_tcache`. It was derived purely from a
+  libc version string, so a statically linked pure-syscall target with no
+  allocator reported `uses_tcache: true` (false positive), and a dynamic malloc
+  target reported `false` because the version probe read a `GLIBC_2.x`
+  symbol-version *requirement tag* (e.g. `malloc@@GLIBC_2.2.5`) as the runtime
+  libc release (false negative). tcache now gates on actual malloc/free linkage
+  and reads a version only from a real glibc *release banner*, assuming a modern
+  (tcache-bearing) glibc when the allocator is present but no banner pins the
+  release.
 
 ## [2.1.0] - 2026-09-28
 
