@@ -14,7 +14,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from collections import defaultdict
 import struct
 
-from supwngo.analysis._angr_callgraph import iter_callees
 from supwngo.core.binary import Binary
 from supwngo.utils.logging import get_logger
 
@@ -74,13 +73,18 @@ class CFGAnalyzer:
     - Generates call graphs for inter-procedural analysis
     """
 
-    def __init__(self, binary: Binary):
+    def __init__(self, binary: Binary, angr_timeout: Optional[float] = None):
         """
         Initialize CFG analyzer.
 
         Args:
             binary: Binary instance to analyze
+            angr_timeout: Wall-clock budget (seconds) for the angr CFG build.
+                When ``None`` the module default (``SUPWNGO_ANGR_TIMEOUT`` or
+                30 s) is used. See ``analysis/_angr_subprocess.py``.
         """
+        from supwngo.analysis._angr_subprocess import DEFAULT_ANGR_TIMEOUT
+
         self.binary = binary
         self.blocks: Dict[int, BasicBlock] = {}
         self.functions: Dict[str, Function] = {}
@@ -90,6 +94,11 @@ class CFGAnalyzer:
         self._dominators: Dict[int, Set[int]] = {}
         self._post_dominators: Dict[int, Set[int]] = {}
         self._capstone = None
+        self._angr_timeout = DEFAULT_ANGR_TIMEOUT if angr_timeout is None else angr_timeout
+        #: Provenance: which backend produced the CFG, and whether angr was
+        #: abandoned because it blew its budget (vs. simply being unavailable).
+        self.analysis_backend: str = "angr"
+        self.angr_budget_exceeded: bool = False
 
     def _get_disassembler(self):
         """Get capstone disassembler for the binary's architecture."""
@@ -125,66 +134,63 @@ class CFGAnalyzer:
         """
         logger.info("Building control flow graph...")
 
-        # Try angr first for accurate CFG
+        # Try angr first for accurate CFG, in a budgeted subprocess so a
+        # C-level CFGFast hang on a large static binary cannot wedge the command.
+        from supwngo.analysis._angr_subprocess import AnalysisBudgetExceeded
+
         try:
-            return self._build_cfg_angr()
+            result = self._build_cfg_angr()
+            self.analysis_backend = "angr"
+            return result
+        except AnalysisBudgetExceeded as e:
+            logger.warning(
+                f"angr CFG exceeded its {self._angr_timeout:g}s budget ({e}); "
+                "using capstone linear disassembly"
+            )
+            self.angr_budget_exceeded = True
+            self.analysis_backend = "capstone"
         except Exception as e:
             logger.debug(f"angr CFG failed: {e}, falling back to linear disassembly")
+            self.analysis_backend = "capstone"
 
         # Fallback to capstone-based analysis
         return self._build_cfg_capstone(start_addr)
 
     def _build_cfg_angr(self) -> Dict[int, BasicBlock]:
-        """Build CFG using angr."""
-        import angr
+        """Build CFG using angr, isolated in a budgeted subprocess.
 
-        proj = self.binary.get_angr_project()
-        cfg = proj.analyses.CFGFast(normalize=True)
+        The child builds its own ``Project`` and serializes the CFG to plain
+        dicts; this method reconstructs ``BasicBlock``/``Function`` objects and
+        recomputes the call graph and cyclomatic complexity exactly as the old
+        in-process path did. Raises ``AnalysisBudgetExceeded`` if angr blows the
+        budget (handled by :meth:`build_cfg`).
+        """
+        from supwngo.analysis._angr_subprocess import run_angr_op
 
-        # Convert angr CFG to our format
-        for node in cfg.graph.nodes():
-            if node.block is None:
-                continue
+        data = run_angr_op(str(self.binary.path), "cfg", self._angr_timeout)
 
-            block = BasicBlock(
-                address=node.addr,
-                size=node.size,
-                instructions=[],
-                successors=[succ.addr for succ in cfg.graph.successors(node)],
-                predecessors=[pred.addr for pred in cfg.graph.predecessors(node)],
+        # Reconstruct basic blocks.
+        for b in data["blocks"]:
+            self.blocks[b["address"]] = BasicBlock(
+                address=b["address"],
+                size=b["size"],
+                instructions=[tuple(i) for i in b["instructions"]],
+                successors=list(b["successors"]),
+                predecessors=list(b["predecessors"]),
+                calls=list(b["calls"]),
             )
 
-            # Extract instructions
-            try:
-                for insn in node.block.capstone.insns:
-                    block.instructions.append((insn.address, insn.mnemonic, insn.op_str))
-                    # Track calls
-                    if insn.mnemonic in ('call', 'bl', 'blx'):
-                        try:
-                            target = int(insn.op_str, 16) if insn.op_str.startswith('0x') else 0
-                            if target:
-                                block.calls.append(target)
-                        except ValueError:
-                            block.calls.append(0)  # Indirect call
-            except Exception:
-                pass
-
-            self.blocks[node.addr] = block
-
-        # Map blocks to functions
-        for func_addr, func in cfg.kb.functions.items():
+        # Reconstruct functions + call graph (post-processing stays parent-side).
+        for fn in data["functions"]:
             f = Function(
-                name=func.name or f"sub_{func_addr:x}",
-                address=func_addr,
-                size=func.size,
-                blocks=[b.addr for b in func.blocks if b.addr in self.blocks],
-                entry_block=func_addr,
+                name=fn["name"],
+                address=fn["address"],
+                size=fn["size"],
+                blocks=[a for a in fn["block_addrs"] if a in self.blocks],
+                entry_block=fn["address"],
             )
 
-            # Get function calls (angr 9.2 removed Function.functions_called();
-            # iter_callees resolves callees via the supported get_call_sites API)
-            for callee in iter_callees(func, cfg.kb.functions):
-                callee_name = callee.name or f"sub_{callee.addr:x}"
+            for callee_name, _callee_addr in fn["callees"]:
                 f.calls.append(callee_name)
                 self.call_graph[f.name].append(callee_name)
                 self.reverse_call_graph[callee_name].append(f.name)

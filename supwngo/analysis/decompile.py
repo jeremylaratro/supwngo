@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from supwngo.analysis._angr_callgraph import iter_callees
 from supwngo.core.binary import Binary
 from supwngo.utils.logging import get_logger
 
@@ -60,17 +59,26 @@ class Decompiler:
     - Control flow insights
     """
 
-    def __init__(self, binary: Binary):
+    def __init__(self, binary: Binary, angr_timeout: Optional[float] = None):
         """
         Initialize decompiler.
 
         Args:
             binary: Binary instance to decompile
+            angr_timeout: Wall-clock budget (seconds) for the angr decompilation
+                fallback before giving up. ``None`` uses the module default
+                (``SUPWNGO_ANGR_TIMEOUT`` or 30 s).
         """
+        from supwngo.analysis._angr_subprocess import DEFAULT_ANGR_TIMEOUT
+
         self.binary = binary
         self.decompiled_functions: Dict[str, DecompiledFunction] = {}
         self._ghidra_path = self._find_ghidra()
         self._retdec_path = self._find_retdec()
+        self._angr_timeout = DEFAULT_ANGR_TIMEOUT if angr_timeout is None else angr_timeout
+        #: Provenance of the angr decompilation fallback.
+        self.analysis_backend: str = "angr"
+        self.angr_budget_exceeded: bool = False
 
     def _find_ghidra(self) -> Optional[Path]:
         """Find Ghidra installation."""
@@ -346,48 +354,46 @@ with open("{output_path}", "w") as f:
 
     def _decompile_angr(self, func_name: Optional[str],
                         func_addr: Optional[int]) -> Optional[DecompiledFunction]:
-        """Fallback decompilation using angr."""
+        """Fallback decompilation using angr, isolated in a budgeted subprocess.
+
+        Both the ``CFGFast`` build and the ``Decompiler`` analysis run in a
+        spawned child (either can run unbounded C-level work on a large binary);
+        on a budget blow-out the child's process group is killed and this returns
+        ``None`` -- the prior failure behaviour -- while recording that it
+        degraded via ``analysis_backend`` / ``angr_budget_exceeded`` (RT-05).
+        """
+        from supwngo.analysis._angr_subprocess import (
+            AnalysisBudgetExceeded,
+            run_angr_op,
+        )
+
         try:
-            import angr
-            from angr.analyses.decompiler.structured_codegen import DummyStructuredCodeGenerator
-
-            proj = self.binary.get_angr_project()
-            cfg = proj.analyses.CFGFast()
-
-            # Find function
-            func = None
-            if func_addr:
-                func = cfg.kb.functions.get(func_addr)
-            elif func_name:
-                for f in cfg.kb.functions.values():
-                    if f.name == func_name:
-                        func = f
-                        break
-
-            if not func:
-                return None
-
-            # Decompile
-            try:
-                dec = proj.analyses.Decompiler(func, cfg=cfg)
-                if dec.codegen and hasattr(dec.codegen, 'text'):
-                    code = dec.codegen.text
-                else:
-                    code = f"// Decompilation failed for {func.name}"
-            except Exception as e:
-                code = f"// Decompilation failed: {e}"
-
-            return DecompiledFunction(
-                name=func.name,
-                address=func.addr,
-                return_type="void",
-                code=code,
-                calls=[c.name for c in iter_callees(func, cfg.kb.functions) if c.name],
+            data = run_angr_op(str(self.binary.path), "decompile", self._angr_timeout,
+                               func_name=func_name, func_addr=func_addr)
+        except AnalysisBudgetExceeded as e:
+            logger.warning(
+                f"angr decompilation exceeded its {self._angr_timeout:g}s budget "
+                f"({e}); no pseudo-C produced"
             )
-
+            self.angr_budget_exceeded = True
+            self.analysis_backend = "none"
+            return None
         except Exception as e:
             logger.warning(f"angr decompilation failed: {e}")
+            self.analysis_backend = "none"
             return None
+
+        if not data.get("found"):
+            return None
+
+        self.analysis_backend = "angr"
+        return DecompiledFunction(
+            name=data["name"],
+            address=data["address"],
+            return_type=data["return_type"],
+            code=data["code"],
+            calls=list(data["calls"]),
+        )
 
     def _parse_variables_from_code(self, code: str) -> List[DecompiledVariable]:
         """Parse variable declarations from C code."""

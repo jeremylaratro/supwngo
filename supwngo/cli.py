@@ -142,11 +142,15 @@ def cli(ctx, verbose):
 @cli.command()
 @click.argument("binary", type=click.Path(exists=True))
 @click.option("-o", "--output", default="./output", help="Output directory")
+@click.option("--angr-timeout", type=float, default=None,
+              help="Wall-clock budget (s) for the angr function analysis before "
+                   "falling back to the symbol table (default: SUPWNGO_ANGR_TIMEOUT or 30)")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def analyze(ctx, binary, output, json_output):
+def analyze(ctx, binary, output, angr_timeout, json_output):
     """Alias for `pwn --analyze-only`. Kept for backward compatibility."""
-    ctx.invoke(pwn, binary=binary, libc=None, no_gadgets=True, json_output=json_output, analyze_only=True)
+    ctx.invoke(pwn, binary=binary, libc=None, no_gadgets=True, json_output=json_output,
+               angr_timeout=angr_timeout, analyze_only=True)
 
 
 @cli.command()
@@ -722,12 +726,15 @@ def libc_id(ctx, puts, printf, system, json_output):
 @click.option("-l", "--libc", type=click.Path(exists=True), help="Target libc for ret2libc/one_gadget")
 @click.option("--no-gadgets", is_flag=True, help="Skip gadget enumeration (faster)")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.option("--angr-timeout", type=float, default=None,
+              help="Wall-clock budget (s) for the angr function analysis before "
+                   "falling back to the symbol table (default: SUPWNGO_ANGR_TIMEOUT or 30)")
 @click.option(
     "--analyze-only", is_flag=True,
     help="Protections and dangerous functions only — skip gadgets and strategy suggestions",
 )
 @click.pass_context
-def pwn(ctx, binary, libc, no_gadgets, json_output, analyze_only):
+def pwn(ctx, binary, libc, no_gadgets, json_output, angr_timeout, analyze_only):
     """
     CTF-focused analysis with exploit strategy suggestions.
 
@@ -760,8 +767,15 @@ def pwn(ctx, binary, libc, no_gadgets, json_output, analyze_only):
     console.print(Panel(prot_analyzer.checksec_report(), title="[bold]Security Features[/bold]"))
 
     with console.status("Running static analysis..."):
-        static = StaticAnalyzer(bin_obj)
+        static = StaticAnalyzer(bin_obj, angr_timeout=angr_timeout)
         static_results = static.analyze()
+
+    if static.angr_budget_exceeded:
+        console.print(
+            f"[yellow]\\[!] angr function analysis exceeded {static._angr_timeout:g}s on "
+            f"this binary; used the {static.analysis_backend} table -- some call data "
+            "may be missing.[/yellow]"
+        )
 
     if static_results.get("dangerous_calls"):
         table = Table(title="[bold red]Dangerous Functions[/bold red]")
@@ -788,6 +802,8 @@ def pwn(ctx, binary, libc, no_gadgets, json_output, analyze_only):
                 "protections": prots.to_dict(),
                 "dangerous_functions": static_results.get("dangerous_calls", []),
                 "input_sources": static_results.get("input_sources", []),
+                "analysis_backend": static.analysis_backend,
+                "angr_budget_exceeded": static.angr_budget_exceeded,
             })
         return
 
@@ -854,7 +870,10 @@ def pwn(ctx, binary, libc, no_gadgets, json_output, analyze_only):
         report = suggester.analyze()
 
     if json_output:
-        _emit_json(report.to_dict())
+        report_dict = report.to_dict()
+        report_dict["analysis_backend"] = static.analysis_backend
+        report_dict["angr_budget_exceeded"] = static.angr_budget_exceeded
+        _emit_json(report_dict)
     else:
         if report.warnings:
             console.print("[bold red]Warnings:[/bold red]")
@@ -1620,9 +1639,12 @@ def version(ctx, json_output):
 @click.option("-f", "--function", help="Specific function to analyze")
 @click.option("--loops", is_flag=True, help="Find and analyze loops")
 @click.option("--complexity", is_flag=True, help="Show complexity metrics")
+@click.option("--angr-timeout", type=float, default=None,
+              help="Wall-clock budget (s) for the angr CFG build before falling "
+                   "back to capstone (default: SUPWNGO_ANGR_TIMEOUT or 30)")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def cfg(ctx, binary, function, loops, complexity, json_output):
+def cfg(ctx, binary, function, loops, complexity, angr_timeout, json_output):
     """
     Build and analyze Control Flow Graph.
 
@@ -1639,12 +1661,18 @@ def cfg(ctx, binary, function, loops, complexity, json_output):
     console.print(f"\n[bold]CFG Analysis:[/bold] {binary}\n")
 
     bin_obj = Binary.load(binary)
-    analyzer = CFGAnalyzer(bin_obj)
+    analyzer = CFGAnalyzer(bin_obj, angr_timeout=angr_timeout)
 
     with console.status("Building control flow graph..."):
         blocks = analyzer.build_cfg()
 
     console.print(f"[cyan]Built CFG: {len(blocks)} basic blocks, {len(analyzer.functions)} functions[/cyan]")
+    if analyzer.angr_budget_exceeded:
+        console.print(
+            f"[yellow]\\[!] angr CFG exceeded {analyzer._angr_timeout:g}s on this "
+            f"binary; used {analyzer.analysis_backend} linear disassembly -- "
+            "results may be incomplete.[/yellow]"
+        )
 
     if loops:
         with console.status("Finding loops..."):
@@ -1707,6 +1735,8 @@ def cfg(ctx, binary, function, loops, complexity, json_output):
             "functions": len(analyzer.functions),
             "loops": len(analyzer.loops) if loops else 0,
             "patterns": patterns[:20],
+            "analysis_backend": analyzer.analysis_backend,
+            "angr_budget_exceeded": analyzer.angr_budget_exceeded,
         }
         _emit_json(result)
 
@@ -1716,9 +1746,12 @@ def cfg(ctx, binary, function, loops, complexity, json_output):
 @click.option("-f", "--function", help="Function to analyze (address in hex or name)")
 @click.option("--taint", is_flag=True, help="Perform taint analysis")
 @click.option("--integer", is_flag=True, help="Find integer vulnerabilities")
+@click.option("--angr-timeout", type=float, default=None,
+              help="Wall-clock budget (s) for the angr CFG build before falling "
+                   "back to the capstone heuristic (default: SUPWNGO_ANGR_TIMEOUT or 30)")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def dataflow(ctx, binary, function, taint, integer, json_output):
+def dataflow(ctx, binary, function, taint, integer, angr_timeout, json_output):
     """
     Perform data flow analysis on binary.
 
@@ -1737,7 +1770,7 @@ def dataflow(ctx, binary, function, taint, integer, json_output):
     console.print(f"\n[bold]Data Flow Analysis:[/bold] {binary}\n")
 
     bin_obj = Binary.load(binary)
-    analyzer = DataFlowAnalyzer(bin_obj)
+    analyzer = DataFlowAnalyzer(bin_obj, angr_timeout=angr_timeout)
 
     # Determine function address
     func_addr = None
@@ -1771,6 +1804,13 @@ def dataflow(ctx, binary, function, taint, integer, json_output):
     with console.status("Analyzing data flow..."):
         results = analyzer.analyze_function(func_addr)
 
+    if analyzer.angr_budget_exceeded:
+        console.print(
+            f"[yellow]\\[!] angr data-flow exceeded {analyzer._angr_timeout:g}s on this "
+            f"binary; used the {analyzer.analysis_backend} heuristic -- results may be "
+            "incomplete.[/yellow]"
+        )
+
     if results.get("tainted_paths"):
         console.print("\n[bold yellow]Taint Sources:[/bold yellow]")
         for path in results["tainted_paths"]:
@@ -1794,6 +1834,8 @@ def dataflow(ctx, binary, function, taint, integer, json_output):
                 console.print(f"      Risk: {op['risk']}")
 
     if json_output:
+        results["analysis_backend"] = analyzer.analysis_backend
+        results["angr_budget_exceeded"] = analyzer.angr_budget_exceeded
         _emit_json(results)
 
 
@@ -1802,9 +1844,12 @@ def dataflow(ctx, binary, function, taint, integer, json_output):
 @click.option("--format-strings", is_flag=True, help="Focus on format strings")
 @click.option("--crypto", is_flag=True, help="Find crypto constants")
 @click.option("--encoded", is_flag=True, help="Find encoded data")
+@click.option("--angr-timeout", type=float, default=None,
+              help="Wall-clock budget (s) for the angr xref build before leaving "
+                   "string references empty (default: SUPWNGO_ANGR_TIMEOUT or 30)")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def strings_analysis(ctx, binary, format_strings, crypto, encoded, json_output):
+def strings_analysis(ctx, binary, format_strings, crypto, encoded, angr_timeout, json_output):
     """
     Advanced string analysis for exploitation.
 
@@ -1824,12 +1869,18 @@ def strings_analysis(ctx, binary, format_strings, crypto, encoded, json_output):
     console.print(f"\n[bold]String Analysis:[/bold] {binary}\n")
 
     bin_obj = Binary.load(binary)
-    analyzer = StringAnalyzer(bin_obj)
+    analyzer = StringAnalyzer(bin_obj, angr_timeout=angr_timeout)
 
     with console.status("Analyzing strings..."):
         strings = analyzer.analyze()
 
     console.print(f"[cyan]Analyzed {len(strings)} interesting strings[/cyan]")
+    if analyzer.angr_budget_exceeded:
+        console.print(
+            f"[yellow]\\[!] angr string-xref analysis exceeded {analyzer._angr_timeout:g}s "
+            "on this binary; string references left empty -- results may be "
+            "incomplete.[/yellow]"
+        )
 
     # Summary
     categories = {}
@@ -1884,6 +1935,8 @@ def strings_analysis(ctx, binary, format_strings, crypto, encoded, json_output):
                 {"address": hex(s.address), "value": s.value, "type": s.exploit_type}
                 for s in exploitable
             ],
+            "analysis_backend": analyzer.analysis_backend,
+            "angr_budget_exceeded": analyzer.angr_budget_exceeded,
         }
         _emit_json(result)
 
@@ -1974,9 +2027,12 @@ def diff(ctx, binary1, binary2, security_only, output, json_output):
 @click.option("-f", "--function", help="Function to decompile")
 @click.option("--ghidra/--angr", default=True, help="Decompiler to use")
 @click.option("-o", "--output", type=click.Path(), help="Save decompiled code")
+@click.option("--angr-timeout", type=float, default=None,
+              help="Wall-clock budget (s) for the angr decompilation fallback "
+                   "before giving up (default: SUPWNGO_ANGR_TIMEOUT or 30)")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def decompile(ctx, binary, function, ghidra, output, json_output):
+def decompile(ctx, binary, function, ghidra, output, angr_timeout, json_output):
     """
     Decompile binary to pseudo-C code.
 
@@ -1993,7 +2049,7 @@ def decompile(ctx, binary, function, ghidra, output, json_output):
     console.print(f"\n[bold]Decompilation:[/bold] {binary}\n")
 
     bin_obj = Binary.load(binary)
-    decomp = Decompiler(bin_obj)
+    decomp = Decompiler(bin_obj, angr_timeout=angr_timeout)
 
     available = decomp.get_available_decompilers()
     console.print(f"[cyan]Available decompilers: {', '.join(available) or 'None'}[/cyan]")
@@ -2019,6 +2075,13 @@ def decompile(ctx, binary, function, ghidra, output, json_output):
     with console.status("Decompiling..."):
         result = decomp.decompile(func_name=func_name, func_addr=func_addr, use_ghidra=ghidra)
 
+    if decomp.angr_budget_exceeded:
+        console.print(
+            f"[yellow]\\[!] angr decompilation exceeded {decomp._angr_timeout:g}s on this "
+            "binary; no pseudo-C was produced -- try Ghidra or a larger "
+            "--angr-timeout.[/yellow]"
+        )
+
     if result:
         if json_output:
             decomp.decompiled_functions[result.name] = result
@@ -2031,6 +2094,8 @@ def decompile(ctx, binary, function, ghidra, output, json_output):
                 "calls": result.calls[:20] if result.calls else [],
                 "code": result.code,
                 "vulnerabilities": vulns or [],
+                "analysis_backend": decomp.analysis_backend,
+                "angr_budget_exceeded": decomp.angr_budget_exceeded,
             })
         else:
             console.print(f"\n[bold green]Decompiled: {result.name}[/bold green]")
@@ -2062,7 +2127,11 @@ def decompile(ctx, binary, function, ghidra, output, json_output):
                 for v in vulns:
                     console.print(f"  [{v['severity']}] {v['description']}")
     elif json_output:
-        _emit_json({"error": "Decompilation failed"})
+        _emit_json({
+            "error": "Decompilation failed",
+            "analysis_backend": decomp.analysis_backend,
+            "angr_budget_exceeded": decomp.angr_budget_exceeded,
+        })
     else:
         console.print("[red]Decompilation failed[/red]")
 
