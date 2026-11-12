@@ -97,14 +97,53 @@ def iter_callees(func, functions_kb):
   excepts stay (they guard real angr failures), but with the shim they no longer
   trip on every binary, so cfg/static/decompile regain their real angr call graph.
 
-### S4b — bound angr with a wall-clock budget, degrade cleanly (RT-05 + timeouts) — SEPARATE INCREMENT, redesigned per BLOCKER
+### S4b — bound the hanging analysis stages (RT-05 + explain/decompile hangs) — SEPARATE INCREMENT
+
+**Diagnosis update (2026-11-12, reproduced with faulthandler):** the three hangs
+do NOT share one cause. There are **two independent root causes**, so S4b splits
+into two independently-shippable work items:
+
+#### S4b-ii — bound the gdb offset probe (explain hangs: `ancient_interface`, `auth-or-out`) — surgical, light path
+
+The explain hang is **not angr**. `supwngo explain <bin> --no-probe` completes in
+both cases (rc=0, 7.5–8.6 KB); the hang is the dynamic probe. faulthandler pins it
+to `walkthrough/facts.py:865`, `probe_offset_with_gdb`: a `subprocess.run(["gdb",
+…], timeout=60)`. gdb launches the **target as its own inferior (grandchild)**;
+when the inferior never crashes/exits, gdb's `run` blocks. `subprocess.run`'s
+timeout then kills **only gdb** and its post-timeout drain `communicate()` blocks
+on the still-alive inferior that holds the stdout pipe — so the 60 s budget never
+takes effect and the outer harness kills it (rc=124 at 90 s).
+
+- Fix: spawn gdb in its **own process group** (`Popen(..., start_new_session=True)`)
+  and on `TimeoutExpired` kill the **whole group** (`os.killpg(os.getpgid(pid),
+  SIGKILL)`) before draining, so the inferior dies and the pipe reaches EOF. Keep
+  the existing `(offset, faulting_value) | None` contract; a timeout returns `None`
+  (probe inconclusive), exactly as its other failure paths do.
+- Single-function, well-understood bug + standard fix → **light path** (no separate
+  peer-review doc): RED-proof + regression.
+- **Validation (as built, 2026-11-12).** The fix was first confirmed end-to-end on
+  the real targets: `explain ancient_interface` and `explain auth-or-out` went
+  **rc=124 (hang) → rc=0** after the patch. For the committed RED-proof, a *real*
+  `gdb` fixture proved unsuitable: gdb reparents its inferior into gdb's own
+  job-control process group (build-dependent), so a group-kill of gdb's spawned
+  session does not deterministically reap the inferior, and a plain sleeping
+  inferior does not reproduce the hang under pytest (POSIX `subprocess.run` reaps
+  the direct child at its budget). The committed test therefore isolates the fix's
+  **mechanism** deterministically: a fake `gdb` on `PATH` backgrounds a
+  uniquely-named sleeper that *stays* in gdb's spawned process group, then blocks
+  so the probe's `communicate` times out. Pre-fix (`subprocess.run`) kills only the
+  direct child and the sleeper survives (**RED**); post-fix (`killpg`) reaps the
+  whole group (**GREEN**), and the probe returns at its budget. No committed C
+  fixture is needed (the fake gdb is an inline shell script);
+  `tests/test_gdb_probe_pgroup_kill.py`.
+
+#### S4b-i — isolate angr CFG/decompile in a budgeted subprocess (RT-05 `snow_scan`, decompile `sick_rop`) — full cycle
 
 angr has no clean cooperative cancel AND a Python-thread watchdog cannot stop the
 C-level `CFGFast` work: a leaked thread keeps running and keeps mutating the
 analyzer's own `self.blocks` / call graphs / kb after the fallback has begun,
 corrupting the result and never dying under the CLI or pytest. **The watchdog
-approach is rejected.** S4b runs each angr operation in an **isolated child
-process**:
+approach is rejected.** Each angr operation runs in an **isolated child process**:
 
 - Add `run_angr_in_subprocess(binary_path, op, seconds, **op_kwargs)` using
   `multiprocessing` with the **`spawn`** start method. The child receives only
@@ -116,22 +155,17 @@ process**:
   `kill()`s if still alive, and `join()`s — the OS reclaims all CPU/memory, so
   there is no leaked thread and no shared-state race. Raise
   `AnalysisBudgetExceeded` the caller converts to a clean fallback.
-- **Three independent closures, each its own work item + integration test:**
+- **Two closures, each its own work item + integration test:**
   1. **cfg** (RT-05 `snow_scan`): run `CFGFast` in the subprocess; on timeout fall
      back to `_build_cfg_capstone()` and emit a **visible** note ("angr CFG
      exceeded N s budget; showing linear disassembly") — not a silent DEBUG line.
-  2. **explain** (`ancient_interface`, `auth-or-out`): budget the angr-backed
-     stage; on timeout emit the sections that completed **before** the angr stage
-     plus a clear "analysis budget exceeded" note. "Best partial result" is only
-     what crossed a **stage boundary** before the kill — a killed child yields no
-     in-memory partial, so partials come from stages the parent already received.
-  3. **decompile** (`sick_rop`): budget the CFG build and the `Decompiler` run
+  2. **decompile** (`sick_rop`): budget the CFG build and the `Decompiler` run
      **separately** — if CFG succeeds but `Decompiler` exceeds budget, return the
      CFG-level function info with a note, rather than nothing.
 - Budget default and fallback wording **runtime-configurable** (CLI `--timeout`),
   not host-pinned.
 
-S4b carries its own plan + independent peer review before implementation (it is a
+S4b-i carries its own plan + independent peer review before implementation (it is a
 new multi-module design, not a mechanical port).
 
 ## Test strategy
