@@ -97,14 +97,21 @@ Priority order by band: P0 broken-command bugs (RT-01, RT-02) → P1 correctness
 |--------|-------|------|----------------|----------|
 | S1 broken commands | RT-01, RT-02 | P0 | `leaks` OK on ≥1 applicable target or honest "not applicable" JSON; heap/integer-analysis parse as JSON 7/7 | revert branch |
 | S2 reported facts | RT-06, RT-07 | P1 | stripped correct 7/7 vs `.symtab`; uses_tcache false on static-no-malloc | revert branch |
-| S3 libc correctness | CG-01, CG-02 | P1 | 2.31 constant retired to a resolver; mismatch detector refuses on a crafted mismatch; `--libc` on the agreed command set | revert branch |
+| S3 libc correctness | CG-01a, CG-02 | P1 | 2.31 constant retired to a resolver; offset-byte paths refuse on unknown libc and feature/feasibility verdicts read "unknown" across all importers; `--libc` pinned to the agreed command set. CG-01b mismatch detector + CG-04 split to deferred **S-libc-binding** (see note below). | revert branch |
 | S4 timeouts | RT-05, RT-04 | P1 | snow_scan analyze/cfg/dataflow/pwn no longer TIMEOUT at 60 s (OK or fast-skip with reason); explain OK on the 2 PIE targets | revert branch |
 | S5 decompile | RT-03 | P1 | `decompile` returns real output via ghidra on ≥1 target; angr path no longer raises | revert branch |
 | S6 detector depth | RT-10, RT-08, RT-09 | P2 | report flags the known vuln on ≥2 of the 3 zero-finding targets; pwn lists SROP for sick_rop; heap-analysis sees ta_alloc | revert (per-item) |
-| S7 cleanup + release | HO-01, I-45 redaction, CG-04 decision, HO-02 | P3 | dead code gone; flags redacted; 2.2.0 cut | revert branch |
+| S7 cleanup + release | HO-01, I-45 redaction, S-libc-binding (CG-01b + CG-04) decision, HO-02 | P3 | dead code gone; flags redacted; S-libc-binding scoped or deferred with evidence; 2.2.0 cut | revert branch |
 
-CG-04 (loader threading) rides in S3 if the Phase-4 spike shows it is small; otherwise it is
-recorded as deferred in S7 with the spike evidence.
+**S3 scope (narrowed after peer review — see `docs/plans/2026-11-11-s3-libc-correctness-plan.md`
+and its Daybreak Blue review):** S3 ships **CG-01a** (the honest `supwngo.utils.libc`
+resolver + refuse/tri-state across all seven `DEFAULT_LIBC_VERSION` importers) and **CG-02**
+(the `--libc` surface pin). The CG-01 **mismatch detector** (now **CG-01b**: offset-libc vs
+loaded-libc — it needs build-ID identity, provenance, remote semantics, and central binding at
+~6 offset-consumption sites) is entangled with **CG-04** (loader threading: patchelf /
+`LD_LIBRARY_PATH` so the target actually *runs* against the supplied libc). Both are too large
+for a sprint item and are split into a deferred **S-libc-binding** sprint, to be scoped and
+decided in **S7** with the spike evidence.
 
 ## Phase 4 — Research (reproduced this session)
 
