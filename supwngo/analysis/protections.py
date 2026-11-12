@@ -249,8 +249,14 @@ class ProtectionAnalyzer:
         return 0
 
     def _check_stripped(self) -> bool:
-        """Check if binary is stripped."""
-        return len(self.binary.symbols) < 10
+        """Check if binary is stripped.
+
+        A binary is stripped when its static symbol table (``.symtab``) has been
+        removed. ``strip(1)`` drops ``.symtab`` but keeps ``.dynsym``, so symbol
+        *count* is a poor proxy: a tiny unstripped binary (e.g. a minimal SROP
+        target) has very few symbols yet is not stripped, and a stripped dynamic
+        binary still carries ``.dynsym`` entries. Key on ``.symtab`` presence."""
+        return ".symtab" not in self.binary.sections
 
     def _check_static(self) -> bool:
         """Check if binary is statically linked."""
@@ -318,16 +324,58 @@ class ProtectionAnalyzer:
 
         return ""
 
+    def _uses_heap_allocator(self) -> bool:
+        """Whether the binary actually links a heap allocator.
+
+        tcache is a property of allocator *use*, not of glibc presence or static
+        linking. A program that never allocates has no tcache whatever its libc
+        version, and a statically linked binary may embed a real malloc. Detect
+        the allocator by its imported PLT entries (dynamic) or defined/undefined
+        symbols (static or unstripped)."""
+        alloc_funcs = ("malloc", "calloc", "realloc", "reallocarray", "free")
+        if any(fn in self.binary.plt for fn in alloc_funcs):
+            return True
+        if any(fn in self.binary.symbols for fn in alloc_funcs):
+            return True
+        return False
+
     def _check_tcache(self) -> bool:
-        """Check if libc uses tcache (glibc >= 2.26)."""
-        version = self._detect_libc_version()
+        """Check if the binary uses a tcache-bearing allocator (glibc >= 2.26).
+
+        Gates on actual allocator use first: a binary with no malloc/free (e.g. a
+        pure-syscall SROP target) reports no tcache regardless of any libc
+        version string it happens to carry. When the allocator is used but the
+        glibc *release* cannot be pinned from the binary, assume a modern glibc
+        (tcache has shipped by default since 2.26) rather than read a misleading
+        minimum-symbol-version tag as the libc version."""
+        if not self._uses_heap_allocator():
+            return False
+        version = self._detect_glibc_release_version()
         if version:
             try:
-                major, minor = map(int, version.split("."))
+                major, minor = map(int, version.split(".")[:2])
                 return major > 2 or (major == 2 and minor >= 26)
             except ValueError:
                 pass
-        return True  # Assume tcache by default
+        return True  # allocator present, release unknown -> assume modern tcache glibc
+
+    def _detect_glibc_release_version(self) -> str:
+        """Extract the glibc *release* version from an embedded banner.
+
+        Only a real release banner is trusted -- e.g. ``... stable release
+        version 2.31`` or ``Ubuntu GLIBC 2.31-0ubuntu9``. Bare ``GLIBC_2.x``
+        symbol-version tags are minimum-ABI requirements, not the runtime libc
+        version, so they must not be read as the libc release (a binary that
+        requires only ``GLIBC_2.4`` symbols still runs against whatever glibc is
+        installed). Returns '' when no release banner is present."""
+        for _addr, s in self.binary.strings():
+            m = re.search(r"release version (\d+\.\d+)", s)
+            if m:
+                return m.group(1)
+            m = re.search(r"GLIBC[ _](\d+\.\d+)-", s)
+            if m:
+                return m.group(1)
+        return ""
 
     def _check_system_aslr(self) -> bool:
         """Check system ASLR status."""
