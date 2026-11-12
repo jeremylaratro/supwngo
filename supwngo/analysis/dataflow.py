@@ -139,13 +139,18 @@ class DataFlowAnalyzer:
     - Integer overflow opportunities
     """
 
-    def __init__(self, binary: Binary):
+    def __init__(self, binary: Binary, angr_timeout: Optional[float] = None):
         """
         Initialize data flow analyzer.
 
         Args:
             binary: Binary instance to analyze
+            angr_timeout: Wall-clock budget (seconds) for the angr CFG build
+                before falling back to the capstone heuristic. ``None`` uses the
+                module default (``SUPWNGO_ANGR_TIMEOUT`` or 30 s).
         """
+        from supwngo.analysis._angr_subprocess import DEFAULT_ANGR_TIMEOUT
+
         self.binary = binary
         self.tainted_locations: Dict[str, TaintedValue] = {}
         self.use_def_chains: Dict[str, UseDefChain] = {}
@@ -153,6 +158,10 @@ class DataFlowAnalyzer:
         self.live_vars: Dict[int, Set[str]] = defaultdict(set)
         self.constants: Dict[str, Any] = {}
         self._cfg = None
+        self._angr_timeout = DEFAULT_ANGR_TIMEOUT if angr_timeout is None else angr_timeout
+        #: Provenance of the data-flow analysis.
+        self.analysis_backend: str = "angr"
+        self.angr_budget_exceeded: bool = False
 
     def analyze_function(self, func_addr: int) -> Dict[str, Any]:
         """
@@ -174,22 +183,40 @@ class DataFlowAnalyzer:
             "use_def_chains": [],
         }
 
+        from supwngo.analysis._angr_subprocess import AnalysisBudgetExceeded
+
         try:
-            # Use angr for more accurate analysis
+            # Use angr for more accurate analysis (budgeted subprocess).
             results = self._analyze_with_angr(func_addr)
+            self.analysis_backend = "angr"
+        except AnalysisBudgetExceeded as e:
+            logger.warning(
+                f"angr data-flow exceeded its {self._angr_timeout:g}s budget ({e}); "
+                "using the capstone heuristic"
+            )
+            self.angr_budget_exceeded = True
+            self.analysis_backend = "capstone"
+            results = self._analyze_heuristic(func_addr)
         except Exception as e:
             logger.debug(f"angr analysis failed: {e}, using heuristic analysis")
+            self.analysis_backend = "capstone"
             results = self._analyze_heuristic(func_addr)
 
         return results
 
     def _analyze_with_angr(self, func_addr: int) -> Dict[str, Any]:
-        """Analyze using angr's data flow capabilities."""
-        import angr
-        from angr.analyses.reaching_definitions import ReachingDefinitionsAnalysis
+        """Analyze using angr, isolated in a budgeted subprocess.
 
-        proj = self.binary.get_angr_project()
-        cfg = proj.analyses.CFGFast()
+        The child builds its own CFG and returns the function's ``call``
+        instructions as ``(addr, op_str)`` records; this method resolves each to
+        a PLT/symbol name against ``self.binary`` and classifies taint
+        sources/sinks exactly as the in-process path did. Raises
+        ``AnalysisBudgetExceeded`` on timeout (handled by :meth:`analyze_function`).
+
+        The former in-process reaching-definitions block was dead (its inner loop
+        body was ``pass``), so it is not reproduced.
+        """
+        from supwngo.analysis._angr_subprocess import run_angr_op
 
         results = {
             "address": hex(func_addr),
@@ -199,58 +226,33 @@ class DataFlowAnalyzer:
             "use_def_chains": [],
         }
 
-        # Get function
-        func = cfg.kb.functions.get(func_addr)
-        if not func:
+        data = run_angr_op(str(self.binary.path), "dataflow", self._angr_timeout,
+                           func_addr=func_addr)
+        if not data["found"]:
             return results
 
-        try:
-            # Reaching definitions analysis
-            rd = proj.analyses.ReachingDefinitions(
-                subject=func,
-                func_graph=func.graph,
-                cc=func.calling_convention,
-                observe_all=True,
-            )
-
-            # Extract use-def information
-            for block in func.blocks:
-                for observed in rd.observed_results.values():
-                    # Track definitions
-                    pass
-
-        except Exception as e:
-            logger.debug(f"Reaching definitions analysis failed: {e}")
-
-        # Check for taint sources in function
-        for block in func.blocks:
-            try:
-                for insn in block.capstone.insns:
-                    if insn.mnemonic == 'call':
-                        # Check if calling a taint source
-                        target = self._resolve_call_target(insn, proj)
-                        if target in TAINT_SOURCES:
-                            results["tainted_paths"].append({
-                                "source": target,
-                                "type": TAINT_SOURCES[target].name,
-                                "address": hex(insn.address),
-                            })
-                        elif target in TAINT_SINKS:
-                            results["dangerous_sinks"].append({
-                                "sink": target,
-                                "address": hex(insn.address),
-                                "dangerous_args": TAINT_SINKS[target],
-                            })
-            except Exception:
-                continue
+        for insn_addr, op_str in data["calls"]:
+            target = self._resolve_call_target_op(op_str)
+            if target in TAINT_SOURCES:
+                results["tainted_paths"].append({
+                    "source": target,
+                    "type": TAINT_SOURCES[target].name,
+                    "address": hex(insn_addr),
+                })
+            elif target in TAINT_SINKS:
+                results["dangerous_sinks"].append({
+                    "sink": target,
+                    "address": hex(insn_addr),
+                    "dangerous_args": TAINT_SINKS[target],
+                })
 
         return results
 
-    def _resolve_call_target(self, insn, proj) -> str:
-        """Resolve call instruction target to function name."""
+    def _resolve_call_target_op(self, op_str: str) -> str:
+        """Resolve a call instruction's ``op_str`` to a PLT/symbol name."""
         try:
-            if insn.op_str.startswith('0x'):
-                target_addr = int(insn.op_str, 16)
+            if op_str.startswith('0x'):
+                target_addr = int(op_str, 16)
                 # Check PLT
                 for name, addr in self.binary.plt.items():
                     if addr == target_addr:
@@ -262,6 +264,13 @@ class DataFlowAnalyzer:
         except (ValueError, AttributeError):
             pass
         return ""
+
+    def _resolve_call_target(self, insn, proj=None) -> str:
+        """Resolve a live capstone insn's target (kept for the heuristic path)."""
+        try:
+            return self._resolve_call_target_op(insn.op_str)
+        except AttributeError:
+            return ""
 
     def _analyze_heuristic(self, func_addr: int) -> Dict[str, Any]:
         """Heuristic-based data flow analysis without angr."""

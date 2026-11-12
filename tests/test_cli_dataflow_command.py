@@ -34,8 +34,12 @@ def _install_fakes(monkeypatch, *, symbols, entry_point):
     captured = {}
 
     class FakeAnalyzer:
-        def __init__(self, _binary):
-            pass
+        def __init__(self, _binary, angr_timeout=None):
+            # S4b-i added the budgeted-subprocess provenance channel: the command
+            # passes ``angr_timeout=`` and reads these markers after analysis.
+            captured["angr_timeout"] = angr_timeout
+            self.analysis_backend = "angr"
+            self.angr_budget_exceeded = False
 
         def analyze_function(self, addr):
             captured["addr"] = addr

@@ -111,19 +111,28 @@ class StringAnalyzer:
     commands, and encoded data.
     """
 
-    def __init__(self, binary: Binary):
+    def __init__(self, binary: Binary, angr_timeout: Optional[float] = None):
         """
         Initialize string analyzer.
 
         Args:
             binary: Binary instance to analyze
+            angr_timeout: Wall-clock budget (seconds) for the angr xref build
+                before leaving string references empty. ``None`` uses the module
+                default (``SUPWNGO_ANGR_TIMEOUT`` or 30 s).
         """
+        from supwngo.analysis._angr_subprocess import DEFAULT_ANGR_TIMEOUT
+
         self.binary = binary
         self.strings: List[AnalyzedString] = []
         self.format_strings: List[AnalyzedString] = []
         self.paths: List[AnalyzedString] = []
         self.commands: List[AnalyzedString] = []
         self.crypto_strings: List[AnalyzedString] = []
+        self._angr_timeout = DEFAULT_ANGR_TIMEOUT if angr_timeout is None else angr_timeout
+        #: Provenance of the string cross-reference pass.
+        self.analysis_backend: str = "angr"
+        self.angr_budget_exceeded: bool = False
 
     def analyze(self, min_length: int = 4) -> List[AnalyzedString]:
         """
@@ -506,24 +515,39 @@ class StringAnalyzer:
         return "unknown"
 
     def _find_string_xrefs(self) -> None:
-        """Find cross-references to strings."""
-        try:
-            proj = self.binary.get_angr_project()
-            cfg = proj.analyses.CFGFast()
+        """Find cross-references to strings (budgeted subprocess; empty on fail).
 
-            for analyzed in self.strings:
-                # Find references to this string address
-                for func in cfg.kb.functions.values():
-                    for block in func.blocks:
-                        try:
-                            for insn in block.capstone.insns:
-                                # Check if instruction references our string
-                                if hex(analyzed.address)[2:] in insn.op_str:
-                                    analyzed.references.append(insn.address)
-                        except Exception:
-                            continue
+        The child returns flat ``(insn_addr, op_str)`` records over all
+        instructions; this method does the substring match that fills each
+        string's ``references``. On a budget blow-out (a large static binary) it
+        leaves references empty -- the prior behaviour -- but records that it did.
+        """
+        from supwngo.analysis._angr_subprocess import (
+            AnalysisBudgetExceeded,
+            run_angr_op,
+        )
+
+        try:
+            records = run_angr_op(str(self.binary.path), "strings_xrefs", self._angr_timeout)
+            self.analysis_backend = "angr"
+        except AnalysisBudgetExceeded as e:
+            logger.warning(
+                f"angr string-xref analysis exceeded its {self._angr_timeout:g}s budget "
+                f"({e}); string references left empty"
+            )
+            self.angr_budget_exceeded = True
+            self.analysis_backend = "no_xrefs"
+            return
         except Exception as e:
             logger.debug(f"String xref analysis failed: {e}")
+            self.analysis_backend = "no_xrefs"
+            return
+
+        for analyzed in self.strings:
+            needle = hex(analyzed.address)[2:]
+            for insn_addr, op_str in records:
+                if needle in op_str:
+                    analyzed.references.append(insn_addr)
 
     def find_format_string_vulns(self) -> List[Dict[str, Any]]:
         """

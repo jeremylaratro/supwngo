@@ -79,6 +79,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `analysis_backend` / `angr_budget_exceeded` in `--json`. Measured worst
   case on snow_scan: ~31.7 s end-to-end (30 s budget + reap + fallback), well
   under the 60 s cut.
+- `analyze`/`pwn`, `dataflow` and `strings-analysis` no longer hang on a large
+  statically linked binary (RT-05, same root cause as `cfg`). Each built an
+  in-process `CFGFast` that never returned on a target like snow_scan. All three
+  now route the build through the same budgeted subprocess, take `--angr-timeout`,
+  and on a budget blow-out fall back and report it via a human note and
+  `analysis_backend` / `angr_budget_exceeded` in `--json` — `symbols` for the
+  static function summary, `capstone` for data flow, `no_xrefs` for string
+  cross-references. As part of this, `StaticAnalyzer`'s dangerous-function
+  cross-reference pass no longer builds one `CFGFast` per dangerous PLT entry (a
+  dead build that always returned `[]`): a full `analyze` now issues exactly one
+  angr subprocess op instead of N+1.
 - `dataflow` no longer crashes with `AttributeError: 'Binary' object has no
   attribute 'elf'` when the target has no `main` symbol (e.g. a stripped
   binary) and no `-f/--function` is given. The entry-point fallback now reads

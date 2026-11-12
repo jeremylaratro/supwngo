@@ -136,6 +136,72 @@ def _op_cfg(binary_path: str, **_kwargs) -> Dict[str, Any]:
     return {"blocks": blocks, "functions": functions}
 
 
+def _op_static_functions(binary_path: str, **_kwargs) -> Dict[str, Any]:
+    """Named-function summary for ``StaticAnalyzer._analyze_functions``.
+
+    Returns ``{func_name: {"address", "size", "calls": [callee_name, ...]}}`` for
+    every function angr names (skipping ``sub_*``), matching the in-process path.
+    """
+    from supwngo.analysis._angr_callgraph import iter_callees
+
+    proj = _load_project(binary_path)
+    cfg = proj.analyses.CFGFast()
+
+    out: Dict[str, Any] = {}
+    for func_addr, func in cfg.kb.functions.items():
+        if func.name and not func.name.startswith("sub_"):
+            calls = [callee.name for callee in iter_callees(func, cfg.kb.functions) if callee.name]
+            out[func.name] = {"address": func_addr, "size": func.size, "calls": calls}
+    return out
+
+
+def _op_dataflow(binary_path: str, func_addr: int = None, **_kwargs) -> Dict[str, Any]:
+    """Call-instruction records for one function (``DataFlowAnalyzer``).
+
+    The parent resolves each ``(insn_addr, op_str)`` to a PLT/symbol name against
+    its own ``Binary`` (the child never needs plt/symbols), so the child only has
+    to report the function's ``call`` instructions. ``found`` distinguishes
+    "function not in the CFG" from "function with no calls".
+    """
+    proj = _load_project(binary_path)
+    cfg = proj.analyses.CFGFast()
+
+    func = cfg.kb.functions.get(func_addr)
+    if not func:
+        return {"found": False, "calls": []}
+
+    calls = []
+    for block in func.blocks:
+        try:
+            for insn in block.capstone.insns:
+                if insn.mnemonic == "call":
+                    calls.append((insn.address, insn.op_str))
+        except Exception:
+            continue
+    return {"found": True, "calls": calls}
+
+
+def _op_strings_xrefs(binary_path: str, **_kwargs):
+    """Flat ``(insn_addr, op_str)`` records over all instructions (``StringAnalyzer``).
+
+    The parent substring-matches each string address against ``op_str`` to fill
+    ``AnalyzedString.references``, exactly as the in-process path did. Iteration
+    order (functions -> blocks -> insns) is preserved so reference order matches.
+    """
+    proj = _load_project(binary_path)
+    cfg = proj.analyses.CFGFast()
+
+    records = []
+    for func in cfg.kb.functions.values():
+        for block in func.blocks:
+            try:
+                for insn in block.capstone.insns:
+                    records.append((insn.address, insn.op_str))
+            except Exception:
+                continue
+    return records
+
+
 def _op_selftest(binary_path: str, mode: str = "echo", sentinel_path: str = "", **kwargs) -> Any:
     """Internal hook used only by ``tests/test_angr_subprocess.py``.
 
@@ -167,6 +233,9 @@ def _op_selftest(binary_path: str, mode: str = "echo", sentinel_path: str = "", 
 #: ``static_functions``, ``dataflow``, ``strings_xrefs`` and ``decompile``.
 _OPS: Dict[str, Callable[..., Any]] = {
     "cfg": _op_cfg,
+    "static_functions": _op_static_functions,
+    "dataflow": _op_dataflow,
+    "strings_xrefs": _op_strings_xrefs,
     "_selftest": _op_selftest,
 }
 

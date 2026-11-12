@@ -7,8 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from supwngo.analysis._angr_callgraph import iter_callees
-from supwngo.core.binary import Binary, Symbol
+from supwngo.core.binary import Binary
 from supwngo.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -121,18 +120,27 @@ class StaticAnalyzer:
     - Input source identification
     """
 
-    def __init__(self, binary: Binary):
+    def __init__(self, binary: Binary, angr_timeout: Optional[float] = None):
         """
         Initialize analyzer with binary.
 
         Args:
             binary: Binary instance to analyze
+            angr_timeout: Wall-clock budget (seconds) for the angr function
+                analysis before falling back to symbols. ``None`` uses the module
+                default (``SUPWNGO_ANGR_TIMEOUT`` or 30 s).
         """
+        from supwngo.analysis._angr_subprocess import DEFAULT_ANGR_TIMEOUT
+
         self.binary = binary
         self._angr_cfg = None
         self._functions: Dict[str, FunctionInfo] = {}
         self._dangerous_calls: List[DangerousCall] = []
         self._strings: List[StringReference] = []
+        self._angr_timeout = DEFAULT_ANGR_TIMEOUT if angr_timeout is None else angr_timeout
+        #: Provenance of the function analysis.
+        self.analysis_backend: str = "angr"
+        self.angr_budget_exceeded: bool = False
 
     def analyze(self) -> Dict[str, Any]:
         """
@@ -184,6 +192,8 @@ class StaticAnalyzer:
             }
             for name, f in list(self._functions.items())[:50]
         }
+        results["analysis_backend"] = self.analysis_backend
+        results["angr_budget_exceeded"] = self.angr_budget_exceeded
 
         logger.info(f"Found {len(self._dangerous_calls)} dangerous calls")
         return results
@@ -232,44 +242,29 @@ class StaticAnalyzer:
         """
         Find functions that call a target address.
 
-        Args:
-            target_addr: Address to find callers for
-
-        Returns:
-            List of (caller_name, caller_addr, call_site_addr) tuples
+        Returns an empty list. The former angr implementation here never
+        returned any caller: its first loop body was ``pass``, and its second
+        iterated ``self.binary.symbols.items()`` (which binds a ``Symbol``, not
+        an address) into ``cfg.kb.functions.get(Symbol)`` -- a ``Symbol`` is
+        unhashable, so every lookup raised and was swallowed. It only ever paid
+        for a full ``CFGFast`` build (once per dangerous PLT entry) and returned
+        ``[]``. S4b-i removes that dead build -- the dominant hang on a large
+        static binary's ``analyze`` -- while preserving the ``[]`` result. The
+        latent "callers are never computed" defect is tracked separately in the
+        work queue (it is a correctness gap, not part of the RT-05 timeout fix).
         """
-        callers = []
+        return []
 
-        try:
-            # Use angr CFG if available
-            proj = self.binary.get_angr_project()
-            cfg = proj.analyses.CFGFast()
-
-            # Find function containing target
-            for func_addr, func in cfg.kb.functions.items():
-                for block in func.blocks:
-                    # Check if block calls our target
-                    if hasattr(block, 'instruction_addrs'):
-                        for inst_addr in block.instruction_addrs:
-                            # Simplified: check if any call instruction targets our address
-                            pass
-
-            # Alternative: search for call instructions
-            for func_name, func_addr in self.binary.symbols.items():
-                try:
-                    func = cfg.kb.functions.get(func_addr)
-                    if func:
-                        for block in func.blocks:
-                            for succ in block.successors():
-                                if succ.addr == target_addr:
-                                    callers.append((func_name, func_addr, block.addr))
-                except Exception:
-                    continue
-
-        except Exception as e:
-            logger.debug(f"Could not find callers with angr: {e}")
-
-        return callers
+    def _functions_from_symbols(self) -> None:
+        """Populate function info from the symbol table (non-angr fallback)."""
+        for name, symbol in self.binary.symbols.items():
+            self._functions[name] = FunctionInfo(
+                name=name,
+                address=symbol.address,
+                size=symbol.size,
+                calls=[],
+                called_by=[],
+            )
 
     def detect_input_sources(self) -> List[Dict[str, Any]]:
         """
@@ -378,43 +373,37 @@ class StaticAnalyzer:
         return "unknown"
 
     def _analyze_functions(self) -> None:
-        """Analyze all functions in binary."""
+        """Analyze all functions in binary (angr summary, budgeted; symbols on fail)."""
+        from supwngo.analysis._angr_subprocess import (
+            AnalysisBudgetExceeded,
+            run_angr_op,
+        )
+
         try:
-            proj = self.binary.get_angr_project()
-            cfg = proj.analyses.CFGFast()
-
-            for func_addr, func in cfg.kb.functions.items():
-                if func.name and not func.name.startswith("sub_"):
-                    info = FunctionInfo(
-                        name=func.name,
-                        address=func_addr,
-                        size=func.size,
-                        calls=[],
-                        called_by=[],
-                    )
-
-                    # Get callees (angr 9.2 removed Function.functions_called())
-                    for callee in iter_callees(func, cfg.kb.functions):
-                        if callee.name:
-                            info.calls.append(callee.name)
-
-                    # Check if leaf function (no calls)
-                    info.is_leaf = len(info.calls) == 0
-
-                    self._functions[func.name] = info
-
-        except Exception as e:
-            logger.debug(f"Could not analyze functions with angr: {e}")
-
-            # Fallback: use symbols
-            for name, symbol in self.binary.symbols.items():
-                self._functions[name] = FunctionInfo(
+            data = run_angr_op(str(self.binary.path), "static_functions", self._angr_timeout)
+            for name, fn in data.items():
+                info = FunctionInfo(
                     name=name,
-                    address=symbol.address,
-                    size=symbol.size,
-                    calls=[],
+                    address=fn["address"],
+                    size=fn["size"],
+                    calls=list(fn["calls"]),
                     called_by=[],
                 )
+                info.is_leaf = len(info.calls) == 0
+                self._functions[name] = info
+            self.analysis_backend = "angr"
+        except AnalysisBudgetExceeded as e:
+            logger.warning(
+                f"angr function analysis exceeded its {self._angr_timeout:g}s budget "
+                f"({e}); using the symbol table"
+            )
+            self.angr_budget_exceeded = True
+            self.analysis_backend = "symbols"
+            self._functions_from_symbols()
+        except Exception as e:
+            logger.debug(f"Could not analyze functions with angr: {e}; using the symbol table")
+            self.analysis_backend = "symbols"
+            self._functions_from_symbols()
 
     def build_cfg(self) -> Any:
         """
