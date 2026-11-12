@@ -113,6 +113,23 @@ loaded-libc — it needs build-ID identity, provenance, remote semantics, and ce
 for a sprint item and are split into a deferred **S-libc-binding** sprint, to be scoped and
 decided in **S7** with the spike evidence.
 
+### Sprint status log
+
+- **2026-11-12 — S4 timeouts: DONE (merged to `main`).** All of S4 has landed:
+  **S4a** (port `functions_called()` → `iter_callees`, the shared angr-API fix),
+  **S4b-ii/-iii** (RT-04 — the `explain` gdb-probe + walkthrough-offset hangs on
+  `ancient_interface`/`auth-or-out`), and **S4b-i** (RT-05 — `cfg`, `analyze`/`pwn`,
+  `dataflow`, `strings-analysis` and `decompile --angr` now run angr's
+  `CFGFast`/`Decompiler` in a budgeted spawn subprocess that is process-group-killed
+  on timeout, then degrade visibly via `analysis_backend`/`angr_budget_exceeded`).
+  S4b-i merge: `b981c09` (branch `feat/s4b-i-angr-subprocess`, 6 commits). Full
+  suite on the branch: 2199 passed / 16 skipped; the 2 failures are the pre-existing
+  **I-2** `solve` timeout and a load-induced input-vector flake (passes in isolation).
+  Latent follow-up filed as **B-4** (`_find_callers` never computes callers).
+  Per-sprint plans: `2026-11-12-s4-angr-analysis-robustness-plan.md` (parent) +
+  `2026-11-12-s4b-i-angr-subprocess-isolation-plan.md`.
+- Next: **S5** (RT-03 decompile via ghidra), then S6 (detector depth), S7 (cleanup + 2.2.0).
+
 ## Phase 4 — Research (reproduced this session)
 
 Findings confirmed by running the real CLI and reading source:
