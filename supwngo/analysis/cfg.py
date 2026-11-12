@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from collections import defaultdict
 import struct
 
+from supwngo.analysis._angr_callgraph import iter_callees
 from supwngo.core.binary import Binary
 from supwngo.utils.logging import get_logger
 
@@ -180,11 +181,13 @@ class CFGAnalyzer:
                 entry_block=func_addr,
             )
 
-            # Get function calls
-            for callee in func.functions_called():
-                f.calls.append(callee.name or f"sub_{callee.addr:x}")
-                self.call_graph[f.name].append(callee.name or f"sub_{callee.addr:x}")
-                self.reverse_call_graph[callee.name or f"sub_{callee.addr:x}"].append(f.name)
+            # Get function calls (angr 9.2 removed Function.functions_called();
+            # iter_callees resolves callees via the supported get_call_sites API)
+            for callee in iter_callees(func, cfg.kb.functions):
+                callee_name = callee.name or f"sub_{callee.addr:x}"
+                f.calls.append(callee_name)
+                self.call_graph[f.name].append(callee_name)
+                self.reverse_call_graph[callee_name].append(f.name)
 
             # Check for recursion
             if f.name in f.calls:

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from supwngo.analysis._angr_callgraph import iter_callees
 from supwngo.core.binary import Binary
 from supwngo.utils.logging import get_logger
 
@@ -381,7 +382,7 @@ with open("{output_path}", "w") as f:
                 address=func.addr,
                 return_type="void",
                 code=code,
-                calls=[c.name for c in func.functions_called() if c.name],
+                calls=[c.name for c in iter_callees(func, cfg.kb.functions) if c.name],
             )
 
         except Exception as e:

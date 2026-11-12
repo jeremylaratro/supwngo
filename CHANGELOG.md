@@ -123,6 +123,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `build_fake_struct` requires a known version unconditionally before emitting
   offset bytes. This affects only the direct library API; the pipeline already
   resolved the real libc version and is unchanged.
+- `cfg`, `static` and `decompile` no longer silently lose their angr call graph.
+  angr 9.2 removed `Function.functions_called()`, so every call site raised
+  `AttributeError` that the surrounding broad `except` swallowed into the
+  capstone fallback — leaving each command with a call graph that had no angr
+  callees at all (uniform silent degradation; `trace_hits=0` across all targets).
+  A new `supwngo.analysis._angr_callgraph.iter_callees` resolves callees through
+  the supported `get_call_sites`/`get_call_target` API against the functions
+  knowledge base (de-duplicating repeated targets, matching the old unique-callee
+  set), and the three sites now use it, so the real angr call graph is recovered.
 
 ## [2.1.0] - 2026-09-28
 
