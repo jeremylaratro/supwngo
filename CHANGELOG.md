@@ -98,6 +98,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   child's process group is killed and the command returns no pseudo-C (its prior
   failure behaviour) while reporting the degradation via a human note and
   `analysis_backend: none` / `angr_budget_exceeded` in `--json`.
+- `decompile` now returns real Ghidra pseudo-C instead of silently falling
+  through to the angr path (RT-03). `_decompile_ghidra` wrote a `.py`
+  GhidraScript (Ghidra 12.x has no PyGhidra), never passed `-scriptPath`, and
+  ignored the subprocess result, so it always produced nothing and the command
+  emitted a `// Decompilation failed` sentinel with `analysis_backend: angr`. It
+  now drives a shipped Java GhidraScript (`supwngo/analysis/ghidra_scripts/
+  SupwngoDecompile.java`) from its own directory, under a bounded, killable
+  budget (`SUPWNGO_GHIDRA_TIMEOUT`, default 180 s, hard-capped), validates the
+  JSON output (empty/malformed/no-pseudo-C all degrade to the angr fallback),
+  and sets `analysis_backend: ghidra` only on a usable result. The script dir
+  must stay near-empty: Ghidra enumerates every file in each `-scriptPath`
+  directory to classify scripts, so a crowded one wedges resolution.
 - `dataflow` no longer crashes with `AttributeError: 'Binary' object has no
   attribute 'elf'` when the target has no `main` symbol (e.g. a stripped
   binary) and no `-f/--function` is given. The entry-point fallback now reads

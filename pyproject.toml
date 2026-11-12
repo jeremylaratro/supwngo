@@ -100,7 +100,7 @@ Issues = "https://github.com/jeremylaratro/supwngo/issues"
 exclude = ["tests*", "build*"]
 
 [tool.setuptools.package-data]
-supwngo = ["payloads/templates/*.py", "data/*.json"]
+supwngo = ["payloads/templates/*.py", "data/*.json", "analysis/ghidra_scripts/*.java"]
 
 [tool.black]
 line-length = 88
