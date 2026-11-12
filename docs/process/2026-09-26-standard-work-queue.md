@@ -726,6 +726,19 @@ potentially fuzzing, overflow, etc."*
 
 ---
 
+#### B-4 — `StaticAnalyzer._find_callers` never computes callers (latent, surfaced by S4b-i)
+
+| field | value |
+|---|---|
+| type | bug | relevance | 2 — degrades `analyze`/`pwn` dangerous-call attribution, not on the `T-1` solve path | complexity | 2 — recompute callers from the function kb the one `static_functions` op already builds |
+| priority | **P3** | lane | later | status | open |
+| evidence | **`measured`**: `supwngo/analysis/static.py:241` (`_find_callers` is now `return []`). The original angr body never returned a caller — its first loop body was `pass`, and its second iterated `self.binary.symbols.items()` binding a `Symbol` (unhashable `@dataclass`) into `cfg.kb.functions.get(Symbol)`, which raised on every lookup and was swallowed — so it only ever paid for a `CFGFast` build per dangerous PLT entry (the RT-05 N+1 hang) and returned `[]`. S4b-i removed the dead build and preserved the `[]` result; the "callers never computed" correctness gap is split out here. Consequence: `find_dangerous_functions` always takes its no-xref fallback and records every dangerous call with `caller="unknown"`, `caller_address=0`. |
+| provenance | measured |
+| exit | `_find_callers` returns real `(caller_name, caller_addr, call_addr)` tuples (resolved in the `static_functions` child op against the function kb, not re-spawning a second CFGFast), with a test that a fixture calling a dangerous function attributes the call to its true caller rather than `"unknown"` |
+| blocked-by | nothing — needs the child op to also emit call-site → caller edges |
+
+---
+
 ## 3. Gates (must pass before work ships)
 
 #### T-1 — canonical pipeline solves ≥3/7 HTB targets without legacy fallback
