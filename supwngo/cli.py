@@ -1620,9 +1620,12 @@ def version(ctx, json_output):
 @click.option("-f", "--function", help="Specific function to analyze")
 @click.option("--loops", is_flag=True, help="Find and analyze loops")
 @click.option("--complexity", is_flag=True, help="Show complexity metrics")
+@click.option("--angr-timeout", type=float, default=None,
+              help="Wall-clock budget (s) for the angr CFG build before falling "
+                   "back to capstone (default: SUPWNGO_ANGR_TIMEOUT or 30)")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.pass_context
-def cfg(ctx, binary, function, loops, complexity, json_output):
+def cfg(ctx, binary, function, loops, complexity, angr_timeout, json_output):
     """
     Build and analyze Control Flow Graph.
 
@@ -1639,12 +1642,18 @@ def cfg(ctx, binary, function, loops, complexity, json_output):
     console.print(f"\n[bold]CFG Analysis:[/bold] {binary}\n")
 
     bin_obj = Binary.load(binary)
-    analyzer = CFGAnalyzer(bin_obj)
+    analyzer = CFGAnalyzer(bin_obj, angr_timeout=angr_timeout)
 
     with console.status("Building control flow graph..."):
         blocks = analyzer.build_cfg()
 
     console.print(f"[cyan]Built CFG: {len(blocks)} basic blocks, {len(analyzer.functions)} functions[/cyan]")
+    if analyzer.angr_budget_exceeded:
+        console.print(
+            f"[yellow]\\[!] angr CFG exceeded {analyzer._angr_timeout:g}s on this "
+            f"binary; used {analyzer.analysis_backend} linear disassembly -- "
+            "results may be incomplete.[/yellow]"
+        )
 
     if loops:
         with console.status("Finding loops..."):
@@ -1707,6 +1716,8 @@ def cfg(ctx, binary, function, loops, complexity, json_output):
             "functions": len(analyzer.functions),
             "loops": len(analyzer.loops) if loops else 0,
             "patterns": patterns[:20],
+            "analysis_backend": analyzer.analysis_backend,
+            "angr_budget_exceeded": analyzer.angr_budget_exceeded,
         }
         _emit_json(result)
 

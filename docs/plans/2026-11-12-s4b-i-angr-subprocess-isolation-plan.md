@@ -87,6 +87,10 @@ run_angr_op(binary_path, op, seconds, **op_kwargs) -> Any
 - **Validation:** `seconds` must be a finite float `> 0` (reject NaN/inf/≤0 at the boundary).
 - **Measured viability (2026-11-12 smoke):** spawn+import+CFGFast in a child works; a 20 s budget on
   snow_scan returns at 20.3 s with the child **confirmed not alive** after terminate/kill/join.
+- **Measured budget validation (commit 1, 2026-11-12):** `cfg snow_scan --angr-timeout 30` completes
+  the full timeout→kill→capstone-fallback→output path in **31.7 s end-to-end** (backend switches to
+  capstone, `angr_budget_exceeded=true`), ~28 s under the 60 s harness cut. The 30 s default is
+  confirmed; no lowering needed.
 
 ### 3.2 The op builders (module-level, in the child) — minimal plain data per op
 

@@ -69,6 +69,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cfg` no longer hangs on a large statically linked binary (RT-05). The angr
+  `CFGFast` build runs uninterruptible C-level work that no in-process watchdog
+  can cancel; on a target like snow_scan it never returned and the command was
+  killed at the harness cut with no output. The build now runs in a spawned,
+  budgeted subprocess (`--angr-timeout`, default 30 s or `SUPWNGO_ANGR_TIMEOUT`)
+  whose whole process group is killed on timeout, after which `cfg` falls back
+  to capstone linear disassembly and reports the degradation via a human note
+  and `analysis_backend` / `angr_budget_exceeded` in `--json`. Measured worst
+  case on snow_scan: ~31.7 s end-to-end (30 s budget + reap + fallback), well
+  under the 60 s cut.
 - `dataflow` no longer crashes with `AttributeError: 'Binary' object has no
   attribute 'elf'` when the target has no `main` symbol (e.g. a stripped
   binary) and no `-f/--function` is given. The entry-point fallback now reads

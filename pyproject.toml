@@ -65,6 +65,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "pytest-asyncio>=0.20.0",
+    "pytest-timeout>=2.1.0",
     "black>=23.0.0",
     "isort>=5.12.0",
     "mypy>=1.0.0",
@@ -143,6 +144,7 @@ python_functions = ["test_*"]
 addopts = "-v --tb=short"
 markers = [
     "slow: spawns the real CLI against a compiled fixture (seconds, not ms)",
+    "timeout: per-test wall-clock cap (requires pytest-timeout; a hard safety net)",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",
