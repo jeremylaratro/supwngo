@@ -13,7 +13,10 @@ import _shim as shim  # noqa: E402
 
 def handle(call):
     if call.command == "decompile" and call.truth:
-        return shim.decompile_success("f", call.truth["address"], "void f(void)\n{\n}\n"), 0
+        return (
+            shim.decompile_success("f", call.truth["address"], "void f(void)\n{\n}\n"),
+            0,
+        )
     return None
 
 

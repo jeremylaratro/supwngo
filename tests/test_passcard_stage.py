@@ -254,9 +254,13 @@ def test_s0_cells_hold_exactly_the_binary_closure_and_placeholders(slug, tmp_pat
     truth = _truth(slug)
     stage = truth["stage"]
     cell = st.stage_cell(
-        tmp_path, f"{slug}-pwn-r1", _source(slug), stage["files"], stage["placeholders"],
+        tmp_path,
+        f"{slug}-pwn-r1",
+        _source(slug),
+        stage["files"],
+        stage["placeholders"],
         target=(TARGETS_ROOT / slug).resolve().name,
-    )  # fmt: skip
+    )
     assert cell.files == S0_EXPECTED[slug]
     # The answer keys stay out: sources, write-ups, the server, the real flag.txt
     # content (ancient_interface and snow_scan ship one; they are not staged).

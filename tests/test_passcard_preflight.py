@@ -111,7 +111,10 @@ def test_a_foreign_machine_is_machine_unsupported(cell):
 
 def test_an_unknown_host_machine_runs_nothing(cell):
     _write(cell / "t", tiny_elf())
-    assert pf.run_preflight(cell, "t", host_machine="riscv64").code == "machine_unsupported"
+    assert (
+        pf.run_preflight(cell, "t", host_machine="riscv64").code
+        == "machine_unsupported"
+    )
 
 
 def test_a_32_bit_x86_target_is_acceptable_on_an_x86_64_host(cell):
@@ -210,7 +213,9 @@ def test_the_host_loader_at_its_absolute_path_is_ok(dyn_cell):
 
 @needs_gcc
 @needs_host_loader
-def test_a_relative_loader_resolves_against_the_cell_not_the_cwd(dyn_cell, tmp_path, monkeypatch):
+def test_a_relative_loader_resolves_against_the_cell_not_the_cwd(
+    dyn_cell, tmp_path, monkeypatch
+):
     _dyn_target(dyn_cell, "./ld.so")
     shutil.copy(os.path.realpath(HOST_LOADER), dyn_cell / "ld.so")
     elsewhere = tmp_path / "elsewhere"
@@ -259,7 +264,9 @@ def test_codes_in_the_source_are_the_pinned_set():
     import re
 
     emitted = set(re.findall(r'_fail\(\s*"([a-z_]+)"', source))
-    emitted |= {"interp_" + s for s in ("missing", "not_regular", "empty", "not_executable")}
+    emitted |= {
+        "interp_" + s for s in ("missing", "not_regular", "empty", "not_executable")
+    }
     assert emitted == PINNED
 
 
@@ -267,7 +274,9 @@ def test_codes_in_the_source_are_the_pinned_set():
 
 
 def _truth(slug):
-    return yaml.safe_load((REPO_ROOT / "benchmark/truth/s0" / f"{slug}.yaml").read_text())
+    return yaml.safe_load(
+        (REPO_ROOT / "benchmark/truth/s0" / f"{slug}.yaml").read_text()
+    )
 
 
 # sabotage and bon-nie-appetit ship a zero-byte loader: OFF is VOID for them.
@@ -288,9 +297,13 @@ def test_s0_preflight_matches_the_truth_file(slug, tmp_path):
     truth = _truth(slug)
     source = (TARGETS_ROOT / slug).resolve().parent
     cell = st.stage_cell(
-        tmp_path, "c", source, truth["stage"]["files"], truth["stage"]["placeholders"],
+        tmp_path,
+        "c",
+        source,
+        truth["stage"]["files"],
+        truth["stage"]["placeholders"],
         target=(TARGETS_ROOT / slug).resolve().name,
-    )  # fmt: skip
+    )
     result = pf.run_preflight(cell.path, cell.target)
     assert result.code == S0_PREFLIGHT[slug], (slug, result)
     assert result.ok is (S0_PREFLIGHT[slug] == "")

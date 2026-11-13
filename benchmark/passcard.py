@@ -31,7 +31,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime as _dt
-import hashlib
 import importlib.metadata as _metadata
 import json
 import math
@@ -161,7 +160,9 @@ def _metric_set(truth: Mapping[str, Any]) -> FrozenSet[str]:
     names: set = set()
     for token in spec if isinstance(spec, list) else [spec]:
         if token not in METRIC_TOKENS:
-            raise TruthError("%s: unknown metrics token %r" % (truth.get("slug"), token))
+            raise TruthError(
+                "%s: unknown metrics token %r" % (truth.get("slug"), token)
+            )
         names.update(METRIC_TOKENS[token])
     return frozenset(names)
 
@@ -170,7 +171,9 @@ def _check_truth(truth: Any, where: str) -> Dict[str, Any]:
     if not isinstance(truth, dict):
         raise TruthError("%s is not a mapping" % where)
     missing = [
-        k for k in ("slug", "method_accept", "distance", "decompile", "stage") if k not in truth
+        k
+        for k in ("slug", "method_accept", "distance", "decompile", "stage")
+        if k not in truth
     ]
     if missing:
         raise TruthError("%s lacks %s" % (where, ", ".join(missing)))
@@ -201,7 +204,9 @@ def build_target(
         raise TruthError("%s: binary not found at %s" % (slug, path))
     name = path.name
     if name not in [os.path.normpath(f) for f in truth["stage"]["files"]]:
-        raise TruthError("%s: %s is not in stage.files %r" % (slug, name, truth["stage"]["files"]))
+        raise TruthError(
+            "%s: %s is not in stage.files %r" % (slug, name, truth["stage"]["files"])
+        )
     return Target(
         truth=truth,
         table=table,
@@ -226,7 +231,7 @@ def load_truths(
     only: Sequence[str] = (),
     skip_s0pe: bool = False,
 ) -> List[Target]:
-    """Every target under ``<truth_dir>/s0`` and ``<truth_dir>/s0pe``, in report order."""
+    """Every ``<truth_dir>/s0`` and ``<truth_dir>/s0pe`` target, in report order."""
     truth_dir = Path(truth_dir)
     targets: List[Target] = []
     for table, order in (("s0", S0_ORDER), ("s0pe", S0PE_ORDER)):
@@ -285,7 +290,9 @@ class Control:
                 anchors=tuple(expect["anchors"]["calls"]),
             )
         except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
-            raise HarnessError("control fixture %s is unusable: %s" % (directory, exc)) from exc
+            raise HarnessError(
+                "control fixture %s is unusable: %s" % (directory, exc)
+            ) from exc
 
 
 _SENTINEL = re.compile(r"\s*//\s*Decompilation failed")
@@ -308,7 +315,9 @@ def evaluate_control(control: Control, run: score.Run) -> List[str]:
         reasons.append("state:%s" % run.state.lower())
     elif run.rc != control.rc:
         reasons.append("rc:%s!=%s" % (run.rc, control.rc))
-    reasons += [p for p in parsed.problems if p not in reasons and p != run.state.lower()]
+    reasons += [
+        p for p in parsed.problems if p not in reasons and p != run.state.lower()
+    ]
     doc = parsed.doc
     if doc is None:
         return reasons or ["no_document"]
@@ -346,7 +355,11 @@ def parse_cli(text: str) -> List[str]:
     text = text.strip()
     if text.startswith("["):
         value = json.loads(text)
-        if not isinstance(value, list) or not all(isinstance(v, str) for v in value) or not value:
+        if (
+            not isinstance(value, list)
+            or not all(isinstance(v, str) for v in value)
+            or not value
+        ):
             raise ValueError("--cli JSON must be a non-empty list of strings")
         return value
     parts = shlex.split(text)
@@ -369,7 +382,9 @@ class CellRecord:
     signal: Optional[int] = None
     errno: Optional[int] = None
     survivor_pids: List[int] = field(default_factory=list)
-    survivor_info: List[str] = field(default_factory=list)  # "pid:state:comm" of each survivor
+    survivor_info: List[str] = field(
+        default_factory=list
+    )  # "pid:state:comm" of each survivor
     # bwrap's own exited init, reaped and not counted (see _reap_sandbox_init)
     sandbox_init_reaped: int = 0
 
@@ -408,8 +423,11 @@ class Harness:
             self.backend = "bwrap" if sandbox.available() else "none"
         else:
             self.backend = args.backend
-        # _main resolves the real scratch root (it may be created on demand) and run dir.
-        self.scratch: Path = Path(args.scratch_root) if args.scratch_root else Path("/var/tmp")
+        # _main resolves the real scratch root (it may be created on demand) and the
+        # run dir.
+        self.scratch: Path = (
+            Path(args.scratch_root) if args.scratch_root else Path("/var/tmp")
+        )
         self.run_dir: Path = self.scratch
         self.hide: List[str] = []
         self.records: List[CellRecord] = []
@@ -459,20 +477,32 @@ class Harness:
         seen["JAVA_TOOL_OPTIONS"] = " ".join(options)
         return dict(sorted(seen.items()))
 
-    def command_argv(self, cli: Sequence[str], command: str, target: str, inside: str, extra=()):
+    def command_argv(
+        self, cli: Sequence[str], command: str, target: str, inside: str, extra=()
+    ):
         binary = inside + "/" + target
         argv = list(cli) + [command, binary] + list(extra)
         if command == "template":
-            argv += ["-o", inside + "/tmp/exploit.py"]  # template writes into cwd by default
+            argv += [
+                "-o",
+                inside + "/tmp/exploit.py",
+            ]  # template writes into cwd by default
         return argv + ["--json"]
 
     # -- one cell --------------------------------------------------------------
 
     def stage(self, name: str, source_dir: Path, files, placeholders, target: str):
-        return stage.stage_cell(self.run_dir, name, source_dir, files, placeholders, target=target)
+        return stage.stage_cell(
+            self.run_dir, name, source_dir, files, placeholders, target=target
+        )
 
     def execute(
-        self, cell: stage.StagedCell, command: str, rep: int, cli: Sequence[str], extra=()
+        self,
+        cell: stage.StagedCell,
+        command: str,
+        rep: int,
+        cli: Sequence[str],
+        extra=(),
     ) -> CellRecord:
         inside = self.inside(cell.path)
         argv = self.command_argv(cli, command, cell.target, inside, extra)
@@ -521,7 +551,7 @@ class Harness:
         return record
 
     def _reap_sandbox_init(self, grace_s: float = 15.0) -> List[int]:
-        """Reap the exited ``bwrap`` namespace init a subreaper inherits; return its PIDs.
+        """Reap the exited ``bwrap`` namespace init a subreaper adopts; return PIDs.
 
         ``bwrap --unshare-pid`` runs an init process inside the new namespace. The
         outer ``bwrap`` (the process ``proc.run`` waits for) exits as soon as that
@@ -562,7 +592,10 @@ class Harness:
 
 
 def _stat_state_comm(pid: int) -> Optional[Tuple[str, str]]:
-    """(state, comm) from ``/proc/<pid>/stat``, parsed around the last ``)``; None if gone."""
+    """(state, comm) from ``/proc/<pid>/stat``; None if the process is gone.
+
+    ``comm`` may itself contain ``)``, so the line is parsed around the last one.
+    """
     try:
         data = Path("/proc/%d/stat" % pid).read_bytes().decode("ascii", "replace")
     except OSError:
@@ -587,8 +620,10 @@ def _user_base() -> Optional[str]:
 # --- scoring one target ---------------------------------------------------------
 
 
-def filter_cells(result: score.TargetScore, metrics: FrozenSet[str]) -> score.TargetScore:
-    """Drop the metrics a truth file does not enable (S0-PE scores DECOMP and ROBUST only)."""
+def filter_cells(
+    result: score.TargetScore, metrics: FrozenSet[str]
+) -> score.TargetScore:
+    """Drop the metrics a truth file does not enable (S0-PE: DECOMP, ROBUST only)."""
     if metrics >= ALL_METRICS:
         return result
     keep = [c for c in result.cells if c.metric in metrics]
@@ -629,10 +664,13 @@ class TargetOutcome:
         return all(signature(s) == signature(self.scores[0]) for s in self.scores)
 
 
-def time_samples(outcome: TargetOutcome, load_max: float) -> Dict[str, List[Dict[str, Any]]]:
+def time_samples(
+    outcome: TargetOutcome, load_max: float
+) -> Dict[str, List[Dict[str, Any]]]:
     return {
         command: [
-            score.time_sample(outcome.runs[rep][command], load_max) for rep in sorted(outcome.runs)
+            score.time_sample(outcome.runs[rep][command], load_max)
+            for rep in sorted(outcome.runs)
         ]
         for command in score.COMMANDS
     }
@@ -721,7 +759,8 @@ def build_header(
         "core_sha256": {name: stage.sha256_file(path) for name, path in core.items()},
         "core_paths": {name: str(path) for name, path in core.items()},
         "hide": harness.hide,
-        # With backend none the cell path differs per cell, so it is a placeholder there.
+        # With backend none the cell path differs per cell, so the header records a
+        # <cell> placeholder there.
         "env_passthrough": harness.passthrough(harness.inside(Path("<cell>"))),
         "v0_limits": list(V0_LIMITS),
     }
@@ -765,10 +804,16 @@ def table_report(
         if solve and o.target.slug in solve["per_target"]:
             entry["solve"] = solve["per_target"][o.target.slug]
         detail[o.target.slug] = entry
-    return {"targets": [o.target.slug for o in outcomes], "summary": score.aggregate(scores), "detail": detail}
+    return {
+        "targets": [o.target.slug for o in outcomes],
+        "summary": score.aggregate(scores),
+        "detail": detail,
+    }
 
 
-def time_report(outcomes: Sequence[TargetOutcome], load_max: float, quorum: Optional[int]) -> Dict[str, Any]:
+def time_report(
+    outcomes: Sequence[TargetOutcome], load_max: float, quorum: Optional[int]
+) -> Dict[str, Any]:
     per_command: Dict[str, Dict[str, Any]] = {}
     shortfalls: List[Dict[str, Any]] = []
     for command in score.COMMANDS:
@@ -795,7 +840,12 @@ def time_report(outcomes: Sequence[TargetOutcome], load_max: float, quorum: Opti
                     valid = sum(1 for s in samples[command] if s["valid"])
                     if valid < quorum:
                         shortfalls.append(
-                            {"target": o.target.slug, "command": command, "valid": valid, "needed": quorum}
+                            {
+                                "target": o.target.slug,
+                                "command": command,
+                                "valid": valid,
+                                "needed": quorum,
+                            }
                         )
     return {
         "load_max": _finite(load_max),
@@ -906,7 +956,10 @@ def _target_row(slug: str, entry: Mapping[str, Any]) -> List[str]:
 
 
 def _md_table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> List[str]:
-    out = ["| " + " | ".join(header) + " |", "|" + "|".join("---" for _ in header) + "|"]
+    out = [
+        "| " + " | ".join(header) + " |",
+        "|" + "|".join("---" for _ in header) + "|",
+    ]
     out += ["| " + " | ".join(row) + " |" for row in rows]
     return out
 
@@ -919,12 +972,25 @@ def _metric_rows(summary: Mapping[str, Any], metrics: Sequence[str]) -> List[Lis
         rows.append(
             [name, str(m["n"])]
             + [str(c[v]) for v in score.VERDICTS]
-            + [_pct(m["coverage"]), _pct(m["exact"]), _pct(m["selective"]), _pct(m["net"])]
+            + [
+                _pct(m["coverage"]),
+                _pct(m["exact"]),
+                _pct(m["selective"]),
+                _pct(m["net"]),
+            ]
         )
     return rows
 
 
-METRIC_HEADER = ["metric", "n", *score.VERDICTS, "coverage", "exact", "selective", "net"]
+METRIC_HEADER = [
+    "metric",
+    "n",
+    *score.VERDICTS,
+    "coverage",
+    "exact",
+    "selective",
+    "net",
+]
 
 
 def _solve_text(entry: Optional[Mapping[str, Any]]) -> str:
@@ -934,14 +1000,21 @@ def _solve_text(entry: Optional[Mapping[str, Any]]) -> str:
     techniques = sorted({r["technique"] for r in reps if r["technique"]})
     walls = [r["wall_s"] for r in reps if isinstance(r["wall_s"], (int, float))]
     wall = " %.0fs median" % statistics.median(walls) if walls else ""
-    return "%s: %s x%d%s" % (entry["verdict"], ",".join(techniques) or "-", len(reps), wall)
+    return "%s: %s x%d%s" % (
+        entry["verdict"],
+        ",".join(techniques) or "-",
+        len(reps),
+        wall,
+    )
 
 
 def render_markdown(report: Mapping[str, Any]) -> str:
     head = report["header"]
     lines: List[str] = ["# Passcard report", ""]
     if report["accepted"]:
-        lines.append("**ACCEPTED.** Every cell ran under `bwrap` and the control cell passed.")
+        lines.append(
+            "**ACCEPTED.** Every cell ran under `bwrap` and the control cell passed."
+        )
     elif not report["valid"]:
         lines.append(
             "**INVALID RUN, NOT ACCEPTED.** " + "; ".join(report["invalid_reasons"])
@@ -954,15 +1027,28 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     lines += ["", "## Header", ""]
     iso = head["isolation"]
     rows = [
-        ["git sha", "%s%s" % (head["git_sha"], " (dirty)" if head["git_dirty"] else "")],
+        [
+            "git sha",
+            "%s%s" % (head["git_sha"], " (dirty)" if head["git_dirty"] else ""),
+        ],
         ["schema", head["schema"]],
         ["started", head["started"]],
         ["python", head["python"]],
-        ["pwntools / angr / ghidra", "%s / %s / %s" % (head["pwntools"], head["angr"], head["ghidra"])],
+        [
+            "pwntools / angr / ghidra",
+            "%s / %s / %s" % (head["pwntools"], head["angr"], head["ghidra"]),
+        ],
         ["host arch", head["host_arch"]],
-        ["isolation backend", "%s (observed: %s)" % (iso["backend"], ", ".join(report["isolation_observed"]))],
+        [
+            "isolation backend",
+            "%s (observed: %s)"
+            % (iso["backend"], ", ".join(report["isolation_observed"])),
+        ],
         ["subreaper", str(iso["subreaper"])],
-        ["load at start / end", "%s / %s" % (_loads(head["load_start"]), _loads(head["load_end"]))],
+        [
+            "load at start / end",
+            "%s / %s" % (_loads(head["load_start"]), _loads(head["load_end"])),
+        ],
         ["reps / timeout", "%s / %ss" % (head["reps"], head["timeout_s"])],
         ["core/proc.py sha256", head["core_sha256"]["proc.py"]],
         ["core/sandbox.py sha256", head["core_sha256"]["sandbox.py"]],
@@ -981,14 +1067,28 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         verdict = "PASS" if control["passed"] else "FAIL"
         lines.append(
             "%s. sha256 %s, expected %s. %s"
-            % (verdict, control["sha256"], control["expect_sha256"], "; ".join(control["reasons"]))
+            % (
+                verdict,
+                control["sha256"],
+                control["expect_sha256"],
+                "; ".join(control["reasons"]),
+            )
         )
     lines.append("")
 
     s0 = report["s0"]
     lines += ["## S0 matrix (7 ELF targets, smoke, never a gate)", ""]
     solve = report.get("solve")
-    header = ["target", "METHOD-R0", "METHOD-L", "TEMPLATE", "OFF", "DECOMP", "ROBUST", "preflight"]
+    header = [
+        "target",
+        "METHOD-R0",
+        "METHOD-L",
+        "TEMPLATE",
+        "OFF",
+        "DECOMP",
+        "ROBUST",
+        "preflight",
+    ]
     if solve:
         header.append("solve (HYP-9)")
     rows = []
@@ -999,7 +1099,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         rows.append(row)
     lines += _md_table(header, rows)
     lines += ["", "### S0 metrics", ""]
-    lines += _md_table(METRIC_HEADER, _metric_rows(s0["summary"], score.VERDICT_METRICS))
+    lines += _md_table(
+        METRIC_HEADER, _metric_rows(s0["summary"], score.VERDICT_METRICS)
+    )
     lines += _extras(s0)
 
     pe = report["s0pe"]
@@ -1012,13 +1114,19 @@ def render_markdown(report: Mapping[str, Any]) -> str:
                     slug,
                     _row_value(pe["detail"][slug], "DECOMP"),
                     _row_value(pe["detail"][slug], "ROBUST"),
-                    "ok" if pe["detail"][slug]["preflight"]["ok"] else pe["detail"][slug]["preflight"]["code"],
+                    (
+                        "ok"
+                        if pe["detail"][slug]["preflight"]["ok"]
+                        else pe["detail"][slug]["preflight"]["code"]
+                    ),
                 ]
                 for slug in pe["targets"]
             ],
         )
         lines += [""]
-        lines += _md_table(METRIC_HEADER, _metric_rows(pe["summary"], ("DECOMP", "ROBUST")))
+        lines += _md_table(
+            METRIC_HEADER, _metric_rows(pe["summary"], ("DECOMP", "ROBUST"))
+        )
 
     notes = _cell_notes(report)
     if notes:
@@ -1029,10 +1137,18 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     rows = []
     for command, stats in t["per_command"].items():
         rows.append(
-            [command, "%d/%d" % (stats["valid"], stats["samples"]), _num(stats["wall_s"]["median"]),
-             _num(stats["wall_s"]["max"]), _num(stats["load1"]["median"])]
+            [
+                command,
+                "%d/%d" % (stats["valid"], stats["samples"]),
+                _num(stats["wall_s"]["median"]),
+                _num(stats["wall_s"]["max"]),
+                _num(stats["load1"]["median"]),
+            ]
         )
-    lines += _md_table(["command", "valid/samples", "median wall s", "max wall s", "median load1"], rows)
+    lines += _md_table(
+        ["command", "valid/samples", "median wall s", "max wall s", "median load1"],
+        rows,
+    )
     quorum = t["quorum"]
     if quorum:
         lines.append("")
@@ -1074,7 +1190,11 @@ def _row_value(entry: Mapping[str, Any], metric: str) -> str:
     cells = [c for c in entry["cells"] if c["metric"] == metric]
     if metric == "ROBUST":
         bad = [c["command"] for c in cells if c["verdict"] != score.PASS]
-        return "%d/%d%s" % (len(cells) - len(bad), len(cells), " (fail: %s)" % ",".join(bad) if bad else "")
+        return "%d/%d%s" % (
+            len(cells) - len(bad),
+            len(cells),
+            " (fail: %s)" % ",".join(bad) if bad else "",
+        )
     return _cell_text(cells[0]) if cells else "n/a"
 
 
@@ -1093,11 +1213,14 @@ def _extras(table: Mapping[str, Any]) -> List[str]:
         "VULN column: %s. off_unscored_numbers: %d."
         % (summary["vuln_column"] or "none", summary["off_unscored_numbers"]),
     ]
-    voids = [
-        v for m in summary["metrics"].values() for v in m["voids"]
-    ]
+    voids = [v for m in summary["metrics"].values() for v in m["voids"]]
     if voids:
-        lines.append("VOID cells: " + "; ".join("%s/%s: %s" % (v["target"], v["kind"], v["reason"]) for v in voids))
+        lines.append(
+            "VOID cells: "
+            + "; ".join(
+                "%s/%s: %s" % (v["target"], v["kind"], v["reason"]) for v in voids
+            )
+        )
     if summary["warnings"]:
         lines.append("Warnings: " + "; ".join(summary["warnings"]))
     return lines
@@ -1113,7 +1236,9 @@ def _cell_notes(report: Mapping[str, Any]) -> List[str]:
                     continue
                 where = c["command"] or c["kind"] or ""
                 label = c["metric"] + ("/" + where if where else "")
-                notes.append("- %s %s %s: %s" % (slug, label, c["verdict"], c["reason"]))
+                notes.append(
+                    "- %s %s %s: %s" % (slug, label, c["verdict"], c["reason"])
+                )
             if not entry["stable"]:
                 notes.append("- %s: verdicts differ between reps (unstable)" % slug)
     return notes
@@ -1140,8 +1265,12 @@ def run_control(harness: Harness, control: Control) -> Dict[str, Any]:
     if staged_sha != control.sha256:
         out["reasons"] = ["sha256_mismatch"]
         return out
-    cell = harness.stage("control-decompile-r1", control.directory, [control.binary], [], control.binary)
-    record = harness.execute(cell, "decompile", 1, harness.control_cli, extra=["-f", control.selector])
+    cell = harness.stage(
+        "control-decompile-r1", control.directory, [control.binary], [], control.binary
+    )
+    record = harness.execute(
+        cell, "decompile", 1, harness.control_cli, extra=["-f", control.selector]
+    )
     out["reasons"] = evaluate_control(control, record.run)
     out["passed"] = not out["reasons"]
     out["cell"] = record.as_dict()
@@ -1196,7 +1325,9 @@ def assemble(
     started: str,
     load_start: Sequence[float],
 ) -> Dict[str, Any]:
-    header = build_header(args, harness, proc, sandbox, started=started, load_start=load_start)
+    header = build_header(
+        args, harness, proc, sandbox, started=started, load_start=load_start
+    )
     observed = _all_isolation(harness)
     invalid: List[str] = []
     refused: List[str] = []
@@ -1232,8 +1363,10 @@ def assemble(
     }
 
 
-def _hide_paths(args: argparse.Namespace, targets: Sequence[Target], harness: Harness) -> List[str]:
-    """The paths hidden from every command (plan 3.3), deduplicated, in a stable order."""
+def _hide_paths(
+    args: argparse.Namespace, targets: Sequence[Target], harness: Harness
+) -> List[str]:
+    """The paths hidden from every command (plan 3.3): deduplicated, stably ordered."""
     paths = [
         REPO / "benchmark" / "truth",
         Path(args.truth_dir),
@@ -1244,7 +1377,9 @@ def _hide_paths(args: argparse.Namespace, targets: Sequence[Target], harness: Ha
     ]
     paths += [t.source_dir for t in targets]
     root = Path(args.targets_root).resolve()
-    if root.parent.name == "htb-targets":  # the real tree, which the worktree may not hold
+    if (
+        root.parent.name == "htb-targets"
+    ):  # the real tree, which the worktree may not hold
         paths.append(root.parent)
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     if runtime:
@@ -1256,7 +1391,9 @@ def _hide_paths(args: argparse.Namespace, targets: Sequence[Target], harness: Ha
         text = os.path.abspath(str(path))
         for keep in protected:
             if _contains(os.path.realpath(text), keep):
-                raise HarnessError("hide path %s would hide the checkout or interpreter" % text)
+                raise HarnessError(
+                    "hide path %s would hide the checkout or interpreter" % text
+                )
         if text not in out:
             out.append(text)
     return out
@@ -1287,33 +1424,94 @@ def _out_paths(out: str) -> Tuple[Path, Path]:
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Passcard v0 runner (SP-01 plan section 3).")
-    p.add_argument("--reps", type=int, default=1, help="repetitions per cell (TIME samples; default 1)")
-    p.add_argument("--load-max", type=float, default=float("inf"),
-                   help="a TIME sample is valid only when the 1-minute load is strictly below this")
-    p.add_argument("--require-time-quorum", type=int, default=None, metavar="N",
-                   help="exit 3 (time_quorum_failed) unless every (target, command) has N valid samples")
-    p.add_argument("--cli", type=parse_cli, default=default_cli(),
-                   help="CLI under test: a JSON list or a quoted command line (default: this python -m supwngo.cli)")
-    p.add_argument("--control-cli", type=parse_cli, default=None,
-                   help="CLI for the Ghidra control cell (default: the product CLI; test hook)")
-    p.add_argument("--targets-root", default=str(REPO / "tests" / "htb-targets" / "organized"))
+    p = argparse.ArgumentParser(
+        description="Passcard v0 runner (SP-01 plan section 3)."
+    )
+    p.add_argument(
+        "--reps",
+        type=int,
+        default=1,
+        help="repetitions per cell (TIME samples; default 1)",
+    )
+    p.add_argument(
+        "--load-max",
+        type=float,
+        default=float("inf"),
+        help=(
+            "a TIME sample is valid only when the 1-minute load is strictly below "
+            "this"
+        ),
+    )
+    p.add_argument(
+        "--require-time-quorum",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "exit 3 (time_quorum_failed) unless every (target, command) has N "
+            "valid samples"
+        ),
+    )
+    p.add_argument(
+        "--cli",
+        type=parse_cli,
+        default=default_cli(),
+        help=(
+            "CLI under test: a JSON list or a quoted command line "
+            "(default: this python -m supwngo.cli)"
+        ),
+    )
+    p.add_argument(
+        "--control-cli",
+        type=parse_cli,
+        default=None,
+        help="CLI for the Ghidra control cell (default: the product CLI; test hook)",
+    )
+    p.add_argument(
+        "--targets-root", default=str(REPO / "tests" / "htb-targets" / "organized")
+    )
     p.add_argument("--truth-dir", default=str(REPO / "benchmark" / "truth"))
-    p.add_argument("--control-dir", default=str(REPO / "benchmark" / "fixtures" / "ghidra_control"))
+    p.add_argument(
+        "--control-dir", default=str(REPO / "benchmark" / "fixtures" / "ghidra_control")
+    )
     p.add_argument("--extra-hide", action="append", default=[], metavar="PATH")
-    p.add_argument("--out", default=None, help="report path prefix; writes <out>.json and <out>.md")
-    p.add_argument("--no-control", action="store_true",
-                   help="skip the Ghidra control cell; the run is then never accepted")
+    p.add_argument(
+        "--out", default=None, help="report path prefix; writes <out>.json and <out>.md"
+    )
+    p.add_argument(
+        "--no-control",
+        action="store_true",
+        help="skip the Ghidra control cell; the run is then never accepted",
+    )
     p.add_argument("--backend", choices=("auto", "bwrap", "none"), default="auto")
-    p.add_argument("--timeout", type=float, default=600.0, help="per-command wall budget, seconds")
-    p.add_argument("--scratch-root", default=None, help="scratch directory (default: a fresh one under /var/tmp)")
+    p.add_argument(
+        "--timeout", type=float, default=600.0, help="per-command wall budget, seconds"
+    )
+    p.add_argument(
+        "--scratch-root",
+        default=None,
+        help="scratch directory (default: a fresh one under /var/tmp)",
+    )
     p.add_argument("--keep-scratch", action="store_true")
-    p.add_argument("--only", action="append", default=[], metavar="SLUG", help="score only these targets")
+    p.add_argument(
+        "--only",
+        action="append",
+        default=[],
+        metavar="SLUG",
+        help="score only these targets",
+    )
     p.add_argument("--skip-s0pe", action="store_true", help="omit the S0-PE table")
-    p.add_argument("--require-selected-by", action="store_true",
-                   help="DECOMP also requires `selected_by` (SP-01b onward)")
-    p.add_argument("--solve-artifact", default=None, metavar="PATH",
-                   help="HYP-9 solve artefact (scripts/htb_rescore.py JSON) to ingest as a column")
+    p.add_argument(
+        "--require-selected-by",
+        action="store_true",
+        help="DECOMP also requires `selected_by` (SP-01b onward)",
+    )
+    p.add_argument(
+        "--solve-artifact",
+        default=None,
+        metavar="PATH",
+        help="HYP-9 solve artefact (scripts/htb_rescore.py JSON) to ingest as a column",
+    )
     p.add_argument("--solve-commit", default=None)
     p.add_argument("--solve-command", default=None)
     p.add_argument("--solve-cwd-convention", default=None)
@@ -1339,13 +1537,21 @@ def summary_text(report: Mapping[str, Any], json_path: Path, md_path: Path) -> s
     lines.append("control cell: %s" % control_text)
     lines.append("isolation observed: %s" % ", ".join(report["isolation_observed"]))
     lines.append("")
-    lines += _md_table(METRIC_HEADER, _metric_rows(report["s0"]["summary"], score.VERDICT_METRICS))
+    lines += _md_table(
+        METRIC_HEADER, _metric_rows(report["s0"]["summary"], score.VERDICT_METRICS)
+    )
     if report["s0pe"]["targets"]:
         lines.append("")
         lines.append("S0-PE")
-        lines += _md_table(METRIC_HEADER, _metric_rows(report["s0pe"]["summary"], ("DECOMP", "ROBUST")))
+        lines += _md_table(
+            METRIC_HEADER, _metric_rows(report["s0pe"]["summary"], ("DECOMP", "ROBUST"))
+        )
     lines.append("")
-    state = "ACCEPTED" if report["accepted"] else ("INVALID" if not report["valid"] else "NOT ACCEPTED")
+    state = (
+        "ACCEPTED"
+        if report["accepted"]
+        else ("INVALID" if not report["valid"] else "NOT ACCEPTED")
+    )
     reasons = report["invalid_reasons"] + report["not_accepted_reasons"]
     lines.append("%s%s" % (state, " (%s)" % "; ".join(reasons) if reasons else ""))
     lines.append("report: %s, %s" % (json_path, md_path))
@@ -1371,12 +1577,17 @@ def _main(args: argparse.Namespace) -> int:
             REPO
             / "benchmark"
             / "results"
-            / ("passcard-" + _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+            / (
+                "passcard-"
+                + _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            )
         )
     )
     for path in (json_path, md_path):
         if path.parent.name == "baselines" and path.exists():
-            raise HarnessError("%s is an immutable baseline; write the post-fix run elsewhere" % path)
+            raise HarnessError(
+                "%s is an immutable baseline; write the post-fix run elsewhere" % path
+            )
 
     proc, sandbox = load_runtime()
     targets = load_truths(
@@ -1400,7 +1611,8 @@ def _main(args: argparse.Namespace) -> int:
     harness = Harness(args, proc, sandbox)
     harness.subreaper = bool(proc.become_subreaper())
     scratch, created = _scratch_root(args.scratch_root)
-    try:  # everything after the scratch root exists, so a refusal never leaves it behind
+    # Everything after the scratch root exists, so a refusal never leaves it behind.
+    try:
         stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         harness.scratch = scratch
         harness.run_dir = scratch / ("run-" + stamp)
@@ -1411,19 +1623,35 @@ def _main(args: argparse.Namespace) -> int:
         if control_spec is not None:
             print("control cell ...", flush=True)
             control = run_control(harness, control_spec)
-            verdict = "PASS" if control["passed"] else "FAIL " + ",".join(control["reasons"])
+            verdict = (
+                "PASS" if control["passed"] else "FAIL " + ",".join(control["reasons"])
+            )
             print("  control: %s" % verdict, flush=True)
         else:
-            control = {"ran": False, "passed": False, "reasons": [], "sha256": None, "expect_sha256": None}
+            control = {
+                "ran": False,
+                "passed": False,
+                "reasons": [],
+                "sha256": None,
+                "expect_sha256": None,
+            }
         outcomes = []
         for target in targets:
             print("%s ..." % target.slug, flush=True)
             outcomes.append(run_target(harness, target))
         harness.proc.reap_survivors()
         report = assemble(
-            args, harness, proc, sandbox, targets, control, outcomes, solve,
-            started=started, load_start=load_start,
-        )  # fmt: skip
+            args,
+            harness,
+            proc,
+            sandbox,
+            targets,
+            control,
+            outcomes,
+            solve,
+            started=started,
+            load_start=load_start,
+        )
     finally:
         if created and not args.keep_scratch:
             shutil.rmtree(scratch, ignore_errors=True)

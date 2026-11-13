@@ -26,12 +26,25 @@ from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 COMMANDS = ("pwn", "template", "decompile", "offset")
 
-# The 15 method families in plan section 2.2 order (bare family names map to themselves).
+# The 15 method families in plan section 2.2 order (a bare family name maps to
+# itself).
 FAMILIES = (
-    "ret2win", "ret2libc", "rop_syscall", "srop", "ret2dlresolve", "shellcode",
-    "stack_pivot", "one_gadget", "fmt_write", "got_overwrite", "objptr_hijack",
-    "heap_metadata", "fsop", "data_only", "env_hijack",
-)  # fmt: skip
+    "ret2win",
+    "ret2libc",
+    "rop_syscall",
+    "srop",
+    "ret2dlresolve",
+    "shellcode",
+    "stack_pivot",
+    "one_gadget",
+    "fmt_write",
+    "got_overwrite",
+    "objptr_hijack",
+    "heap_metadata",
+    "fsop",
+    "data_only",
+    "env_hijack",
+)
 
 DECLINE_RC = 2  # the failure envelope's exit code
 Handler = Callable[["Call"], Optional[Tuple[Any, int]]]
@@ -59,7 +72,9 @@ def parse(argv: Optional[Sequence[str]] = None) -> Call:
         options[args[0][2:].replace("-", "_")] = json.loads(args[1])
         del args[:2]
     if len(args) < 2 or args[0] not in COMMANDS:
-        raise SystemExit("shim: expected <%s> <binary> [-o PATH] [--json]" % "|".join(COMMANDS))
+        raise SystemExit(
+            "shim: expected <%s> <binary> [-o PATH] [--json]" % "|".join(COMMANDS)
+        )
     call = Call(command=args[0], binary=args[1], options=options)
     rest = args[2:]
     for flag in ("-o", "--output"):
@@ -89,7 +104,9 @@ def strategy(approach: str, confidence: float, priority: int) -> Dict[str, Any]:
 
 def pwn_success(approaches: Sequence[str], recommended: bool = True) -> Dict[str, Any]:
     """A ``pwn --json`` document; confidences strictly descend in list order."""
-    items = [strategy(a, round(0.95 - 0.05 * i, 2), i + 1) for i, a in enumerate(approaches)]
+    items = [
+        strategy(a, round(0.95 - 0.05 * i, 2), i + 1) for i, a in enumerate(approaches)
+    ]
     return {
         "binary_path": "shim",
         "arch": "amd64",
@@ -109,7 +126,11 @@ def pwn_success(approaches: Sequence[str], recommended: bool = True) -> Dict[str
 
 
 def template_success(technique: str, output: Optional[str]) -> Dict[str, Any]:
-    return {"technique": technique, "output": output or "exploit.py", "script_length": 100}
+    return {
+        "technique": technique,
+        "output": output or "exploit.py",
+        "script_length": 100,
+    }
 
 
 def decompile_success(
@@ -128,7 +149,9 @@ def decompile_success(
     }
 
 
-def offset_success(offset: Optional[int], canary_offset: Optional[int]) -> Dict[str, Any]:
+def offset_success(
+    offset: Optional[int], canary_offset: Optional[int]
+) -> Dict[str, Any]:
     return {
         "offset": offset,
         "crash_address": None,
@@ -148,7 +171,11 @@ def decline(command: str) -> Dict[str, Any]:
         doc.update(success=False, error="declined", error_code="declined")
         return doc
     if command == "decompile":
-        return {"error": "declined", "analysis_backend": "shim", "angr_budget_exceeded": False}
+        return {
+            "error": "declined",
+            "analysis_backend": "shim",
+            "angr_budget_exceeded": False,
+        }
     return {"error": "declined"}
 
 
@@ -162,7 +189,7 @@ def code_with_calls(calls: Sequence[str], *, commented: bool = False) -> str:
 
 
 def truth_document(call: Call) -> Optional[Dict[str, Any]]:
-    """The right answer for ``call`` from the explicit truth bundle (None without one)."""
+    """The right answer for ``call`` from the truth bundle (None without one)."""
     t = call.truth
     if not t:
         return None
@@ -172,7 +199,10 @@ def truth_document(call: Call) -> Optional[Dict[str, Any]]:
         return template_success(t["technique"], call.output)
     if call.command == "decompile":
         return decompile_success(
-            t.get("function", "f"), t["address"], code_with_calls(t["calls"]), t["calls"]
+            t.get("function", "f"),
+            t["address"],
+            code_with_calls(t["calls"]),
+            t["calls"],
         )
     return offset_success(t.get("offset"), t.get("canary_offset"))
 

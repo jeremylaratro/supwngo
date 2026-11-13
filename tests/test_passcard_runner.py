@@ -1,4 +1,4 @@
-"""Tests for benchmark/passcard.py (SP-01 plan sections 3.3, 3.4, 3.6, 3.8; 8.1 V-1, V-2, V-15).
+"""Tests for benchmark/passcard.py (SP-01 plan 3.3, 3.4, 3.6, 3.8; 8.1 V-1, V-2, V-15).
 
 The pure parts (truth loading, the control check, option parsing) run anywhere.
 The end-to-end tests run the runner as a subprocess against a synthetic one-target
@@ -56,11 +56,14 @@ def world():
 
 def common(w: World, *extra):
     return [
-        "--targets-root", w.targets_root,
-        "--truth-dir", w.truth_dir,
-        "--timeout", "30",
+        "--targets-root",
+        w.targets_root,
+        "--truth-dir",
+        w.truth_dir,
+        "--timeout",
+        "30",
         *extra,
-    ]  # fmt: skip
+    ]
 
 
 @pytest.fixture(scope="module")
@@ -93,14 +96,20 @@ def test_out_paths_normalise_the_suffix():
     assert pc._out_paths("/x/y.v1") == (Path("/x/y.v1.json"), Path("/x/y.v1.md"))
 
 
-# --- truth loading ----------------------------------------------------------------------
+# --- truth loading --------------------------------------------------------------------
 
 
 def test_metric_tokens_select_metrics():
     assert pc._metric_set({"slug": "x"}) == pc.ALL_METRICS
     assert pc._metric_set({"slug": "x", "metrics": "all"}) == pc.ALL_METRICS
-    assert pc._metric_set({"slug": "x", "metrics": ["decomp", "robust"]}) == {"DECOMP", "ROBUST"}
-    assert pc._metric_set({"slug": "x", "metrics": ["method"]}) == {"METHOD-R0", "METHOD-L"}
+    assert pc._metric_set({"slug": "x", "metrics": ["decomp", "robust"]}) == {
+        "DECOMP",
+        "ROBUST",
+    }
+    assert pc._metric_set({"slug": "x", "metrics": ["method"]}) == {
+        "METHOD-R0",
+        "METHOD-L",
+    }
     with pytest.raises(pc.TruthError, match="unknown metrics token"):
         pc._metric_set({"slug": "x", "metrics": ["bogus"]})
 
@@ -124,7 +133,9 @@ def test_build_target_reads_a_pinned_binary_in_place(tmp_path):
     binary.write_bytes(tiny_elf())
     sha = hashlib.sha256(tiny_elf()).hexdigest()
     spec = {"path": str(binary), "sha256": sha}
-    target = pc.build_target(mini_truth("thing", binary=spec), "s0pe", tmp_path / "unused")
+    target = pc.build_target(
+        mini_truth("thing", binary=spec), "s0pe", tmp_path / "unused"
+    )
     assert (target.slug, target.table, target.target) == ("thing", "s0pe", "thing")
     assert target.source_dir == binary.parent
     assert target.sha256 == sha and target.sha_ok
@@ -162,7 +173,10 @@ def test_build_target_refuses_a_missing_or_unlisted_binary(tmp_path):
 def test_load_truths_orders_filters_and_refuses(world):
     targets = pc.load_truths(world.truth_dir, world.targets_root)
     assert [t.slug for t in targets] == ["mini_a"]
-    assert pc.load_truths(world.truth_dir, world.targets_root, only=["mini_a"])[0].table == "s0"
+    assert (
+        pc.load_truths(world.truth_dir, world.targets_root, only=["mini_a"])[0].table
+        == "s0"
+    )
     with pytest.raises(pc.TruthError, match="names no truth file"):
         pc.load_truths(world.truth_dir, world.targets_root, only=["nope"])
     with pytest.raises(pc.TruthError, match="no truth directory"):
@@ -173,7 +187,9 @@ def test_load_truths_refuses_a_slug_in_both_tables(tmp_path):
     w = make_world()
     try:
         (w.truth_dir / "s0pe").mkdir()
-        shutil.copy(w.truth_dir / "s0" / "mini_a.yaml", w.truth_dir / "s0pe" / "mini_a.yaml")
+        shutil.copy(
+            w.truth_dir / "s0" / "mini_a.yaml", w.truth_dir / "s0pe" / "mini_a.yaml"
+        )
         with pytest.raises(pc.TruthError, match="duplicate slugs"):
             pc.load_truths(w.truth_dir, w.targets_root)
     finally:
@@ -198,9 +214,9 @@ def test_the_real_truth_dir_loads_seven_elfs_then_two_pe_fixtures():
     assert [t.slug for t in targets] == [*pc.S0_ORDER, *pc.S0PE_ORDER]
     assert [t.table for t in targets] == ["s0"] * 7 + ["s0pe"] * 2
     assert all(t.metrics == pc.ALL_METRICS for t in targets[:7])
-    assert [t.slug for t in pc.load_truths(truth_dir, TARGETS_ROOT, skip_s0pe=True)] == list(
-        pc.S0_ORDER
-    )
+    assert [
+        t.slug for t in pc.load_truths(truth_dir, TARGETS_ROOT, skip_s0pe=True)
+    ] == list(pc.S0_ORDER)
 
 
 def test_filter_cells_keeps_only_the_enabled_metrics(world):
@@ -213,7 +229,7 @@ def test_filter_cells_keeps_only_the_enabled_metrics(world):
     assert pc.filter_cells(full, pc.ALL_METRICS) is full
 
 
-# --- the control cell's check (V-2) ---------------------------------------------------------
+# --- the control cell's check (V-2) ---------------------------------------------------
 
 
 def control(**overrides):
@@ -237,7 +253,9 @@ GOOD_CODE = 'void ghidra_control(void)\n{\n  puts("hi");\n}\n'
 def control_run(doc=None, rc=0, state="EXITED", stdout=None):
     base = {"analysis_backend": "ghidra", "address": "0x401136", "code": GOOD_CODE}
     base.update(doc or {})
-    return ps.Run(state=state, rc=rc, stdout=json.dumps(base) if stdout is None else stdout)
+    return ps.Run(
+        state=state, rc=rc, stdout=json.dumps(base) if stdout is None else stdout
+    )
 
 
 def test_control_fixture_loads_its_expectation():
@@ -247,8 +265,15 @@ def test_control_fixture_loads_its_expectation():
         "ghidra_control",
         0x401136,
     )
-    assert loaded.analysis_backend == "ghidra" and loaded.rc == 0 and loaded.anchors == ("puts",)
-    assert loaded.sha256 == hashlib.sha256((CONTROL_DIR / loaded.binary).read_bytes()).hexdigest()
+    assert (
+        loaded.analysis_backend == "ghidra"
+        and loaded.rc == 0
+        and loaded.anchors == ("puts",)
+    )
+    assert (
+        loaded.sha256
+        == hashlib.sha256((CONTROL_DIR / loaded.binary).read_bytes()).hexdigest()
+    )
 
 
 def test_an_unusable_control_fixture_is_a_harness_error(tmp_path):
@@ -266,9 +291,18 @@ def test_a_correct_control_answer_passes():
     [
         (control_run({"analysis_backend": "angr"}), "analysis_backend:angr"),
         (control_run({"address": "0x401000"}), "address:0x401000!=0x401136"),
-        (control_run({"code": "// Decompilation failed for ghidra_control"}), "code_empty_or_sentinel"),
-        (control_run({"code": "void f(void)\n{\n  /* puts( */\n}\n"}), "anchor_missing:puts"),
-        (control_run({"code": "void f(void)\n{\n  fputs(x);\n}\n"}), "anchor_missing:puts"),
+        (
+            control_run({"code": "// Decompilation failed for ghidra_control"}),
+            "code_empty_or_sentinel",
+        ),
+        (
+            control_run({"code": "void f(void)\n{\n  /* puts( */\n}\n"}),
+            "anchor_missing:puts",
+        ),
+        (
+            control_run({"code": "void f(void)\n{\n  fputs(x);\n}\n"}),
+            "anchor_missing:puts",
+        ),
         (control_run(rc=2), "rc:2!=0"),
         (control_run(state="TIMEOUT", stdout=""), "state:timeout"),
         (control_run(stdout="not json"), None),
@@ -281,7 +315,7 @@ def test_a_wrong_control_answer_is_named(run, reason):
         assert reason in reasons
 
 
-# --- small helpers ---------------------------------------------------------------------------
+# --- small helpers --------------------------------------------------------------------
 
 
 def test_stat_state_comm_parses_around_the_last_paren():
@@ -291,7 +325,7 @@ def test_stat_state_comm_parses_around_the_last_paren():
     assert pc._stat_state_comm(2**22 + 123) is None
 
 
-# --- usage errors: refused before any cell runs ----------------------------------------------
+# --- usage errors: refused before any cell runs ---------------------------------------
 
 
 def test_a_committed_baseline_is_immutable(world, tmp_path):
@@ -299,7 +333,10 @@ def test_a_committed_baseline_is_immutable(world, tmp_path):
     baselines.mkdir()
     existing = baselines / "pre.json"
     existing.write_text("{}\n")
-    done, report = run_runner(common(world, "--no-control", "--cli", world.cli("decline.py")), baselines / "pre")
+    done, report = run_runner(
+        common(world, "--no-control", "--cli", world.cli("decline.py")),
+        baselines / "pre",
+    )
     assert done.returncode == pc.EXIT_USAGE
     assert "immutable baseline" in done.stderr
     assert existing.read_text() == "{}\n"
@@ -324,13 +361,15 @@ def test_usage_errors_exit_2_and_leave_no_scratch(world, tmp_path, extra, messag
     assert set(Path("/var/tmp").glob("passcard-*")) - before == set()
 
 
-@pytest.mark.parametrize("flag, value", [("--reps", "0"), ("--require-time-quorum", "0")])
+@pytest.mark.parametrize(
+    "flag, value", [("--reps", "0"), ("--require-time-quorum", "0")]
+)
 def test_non_positive_counts_are_refused(world, tmp_path, flag, value):
     done, _ = run_runner(common(world, "--no-control", flag, value), tmp_path / "u")
     assert done.returncode == pc.EXIT_USAGE
 
 
-# --- an end-to-end run (bwrap) ------------------------------------------------------------------
+# --- an end-to-end run (bwrap) --------------------------------------------------------
 
 
 @needs_bwrap
@@ -363,7 +402,9 @@ def test_every_cell_runs_under_bwrap_and_leaves_no_survivor(baseline):
     assert report["header"]["isolation"]["subreaper"] is True
     assert len(report["runs"]) == 4
     for rec in report["runs"]:
-        assert rec["isolation"] == "bwrap" and rec["state"] == "EXITED" and rec["rc"] == 2
+        assert (
+            rec["isolation"] == "bwrap" and rec["state"] == "EXITED" and rec["rc"] == 2
+        )
         assert rec["survivors"] == 0
         assert rec["sandbox_init_reaped"] <= 1
 
@@ -376,7 +417,11 @@ def test_each_command_gets_its_own_cell_and_the_inside_path(baseline):
     for command in COMMANDS:
         argv = cells["mini_a-%s-r1" % command]["argv"]
         assert argv[2:4] == [command, "/tmp/cell/mini_a"]
-        tail = ["-o", "/tmp/cell/tmp/exploit.py", "--json"] if command == "template" else ["--json"]
+        tail = (
+            ["-o", "/tmp/cell/tmp/exploit.py", "--json"]
+            if command == "template"
+            else ["--json"]
+        )
         assert argv[4:] == tail
         assert not any(part.startswith(".") for part in argv[3].split("/"))
 
@@ -389,7 +434,9 @@ def test_the_header_records_provenance(baseline, world):
     for name in ("proc.py", "sandbox.py"):
         path = REPO_ROOT / "supwngo" / "core" / name
         assert head["core_paths"][name] == str(path)
-        assert head["core_sha256"][name] == hashlib.sha256(path.read_bytes()).hexdigest()
+        assert (
+            head["core_sha256"][name] == hashlib.sha256(path.read_bytes()).hexdigest()
+        )
     assert head["load_max"] is None and head["reps"] == 1 and head["timeout_s"] == 30.0
     assert head["v0_limits"] and head["isolation"]["self_check"]
     assert head["env_passthrough"]["JAVA_TOOL_OPTIONS"].startswith(
@@ -399,7 +446,11 @@ def test_the_header_records_provenance(baseline, world):
     for hidden in (world.truth_dir, world.targets_root, world.source_dir):
         assert str(hidden) in head["hide"]
     assert str(REPO_ROOT / "benchmark" / "truth") in head["hide"]
-    assert not [h for h in head["hide"] if str(REPO_ROOT).startswith(h.rstrip("/") + "/") or h == str(REPO_ROOT)]
+    assert not [
+        h
+        for h in head["hide"]
+        if str(REPO_ROOT).startswith(h.rstrip("/") + "/") or h == str(REPO_ROOT)
+    ]
 
 
 @needs_bwrap
@@ -443,7 +494,9 @@ def test_passthrough_records_the_operator_knobs_a_cell_inherits(monkeypatch):
     assert all(env[key] == value for key, value in seen.items())
 
 
-def test_passthrough_without_a_bwrap_cell_path_and_without_operator_options(monkeypatch):
+def test_passthrough_without_a_bwrap_cell_path_and_without_operator_options(
+    monkeypatch,
+):
     monkeypatch.delenv("JAVA_TOOL_OPTIONS", raising=False)
     monkeypatch.delenv("PATH", raising=False)
     seen = _harness("none").passthrough("/var/tmp/passcard-x/cell")
@@ -455,13 +508,19 @@ def test_passthrough_without_a_bwrap_cell_path_and_without_operator_options(monk
 def test_a_command_sees_only_its_cell_and_a_scrubbed_environment(world, tmp_path):
     cli = cli_arg(
         world.shim("env_dump.py"),
-        "--probe", world.source_dir / "mini_a",
-        "--probe", world.truth_dir / "s0" / "mini_a.yaml",
-        "--probe", world.shim("decline.py"),
-        "--list", "/tmp",
-        "--list", "/tmp/cell",
-        "--list", world.source_dir,
-    )  # fmt: skip
+        "--probe",
+        world.source_dir / "mini_a",
+        "--probe",
+        world.truth_dir / "s0" / "mini_a.yaml",
+        "--probe",
+        world.shim("decline.py"),
+        "--list",
+        "/tmp",
+        "--list",
+        "/tmp/cell",
+        "--list",
+        world.source_dir,
+    )
     done, report = run_runner(
         common(world, "--no-control", "--cli", cli),
         tmp_path / "env",
@@ -477,8 +536,9 @@ def test_a_command_sees_only_its_cell_and_a_scrubbed_environment(world, tmp_path
     env = seen["env"]
     assert env["HOME"] == "/tmp/cell/home" and env["TMPDIR"] == "/tmp/cell/tmp"
     assert env["XDG_CACHE_HOME"] == "/tmp/cell/cache"
-    # A JVM ignores $HOME (Ghidra would write under the read-only real home), so user.home
-    # is pointed at the cell home; the operator's own options follow and so still win.
+    # A JVM ignores $HOME (Ghidra would write under the read-only real home), so
+    # user.home is pointed at the cell home; the operator's own options follow and
+    # so still win.
     assert env["JAVA_TOOL_OPTIONS"] == "-Duser.home=/tmp/cell/home -Dpasscard.probe=1"
     assert env["PYTHONPATH"] == str(REPO_ROOT) and env["PWNLIB_NOTERM"] == "1"
     assert "PASSCARD_LEAK_PROBE" not in env  # the parent environment is not inherited
@@ -489,7 +549,8 @@ def test_a_command_sees_only_its_cell_and_a_scrubbed_environment(world, tmp_path
     assert recorded["JAVA_TOOL_OPTIONS"] == env["JAVA_TOOL_OPTIONS"]
     assert "PASSCARD_LEAK_PROBE" not in recorded
     assert all(env[key] == value for key, value in recorded.items())
-    # The answer keys are hidden; the shim, which lives outside every hidden path, is not.
+    # The answer keys are hidden; the shim, which lives outside every hidden path,
+    # is not.
     assert seen["exists"] == {
         str(world.source_dir / "mini_a"): False,
         str(world.truth_dir / "s0" / "mini_a.yaml"): False,
@@ -503,7 +564,8 @@ def test_a_command_sees_only_its_cell_and_a_scrubbed_environment(world, tmp_path
 @needs_bwrap
 def test_reps_add_time_samples_without_changing_the_matrix(world, tmp_path):
     done, report = run_runner(
-        common(world, "--no-control", "--cli", world.cli("decline.py"), "--reps", "2"), tmp_path / "r"
+        common(world, "--no-control", "--cli", world.cli("decline.py"), "--reps", "2"),
+        tmp_path / "r",
     )
     assert done.returncode == 0, done.stdout + done.stderr
     assert len(report["runs"]) == 8
@@ -516,36 +578,61 @@ def test_reps_add_time_samples_without_changing_the_matrix(world, tmp_path):
 @needs_bwrap
 def test_a_missed_time_quorum_exits_3(world, tmp_path):
     done, report = run_runner(
-        common(world, "--no-control", "--cli", world.cli("decline.py"), "--require-time-quorum", "2"),
+        common(
+            world,
+            "--no-control",
+            "--cli",
+            world.cli("decline.py"),
+            "--require-time-quorum",
+            "2",
+        ),
         tmp_path / "q",
     )
     assert done.returncode == pc.EXIT_QUORUM
     assert "time_quorum_failed" in done.stderr
     assert report["time_quorum_failed"] is True and report["accepted"] is False
     assert "time_quorum_failed" in report["not_accepted_reasons"]
-    assert sorted((s["command"], s["valid"], s["needed"]) for s in report["time"]["shortfalls"]) == [
-        (c, 1, 2) for c in sorted(COMMANDS)
-    ]
+    assert sorted(
+        (s["command"], s["valid"], s["needed"]) for s in report["time"]["shortfalls"]
+    ) == [(c, 1, 2) for c in sorted(COMMANDS)]
 
 
 @needs_bwrap
 def test_a_met_quorum_does_not_fail_the_run(world, tmp_path):
     done, report = run_runner(
-        common(world, "--no-control", "--cli", world.cli("decline.py"),
-               "--reps", "2", "--require-time-quorum", "2"),
+        common(
+            world,
+            "--no-control",
+            "--cli",
+            world.cli("decline.py"),
+            "--reps",
+            "2",
+            "--require-time-quorum",
+            "2",
+        ),
         tmp_path / "q",
-    )  # fmt: skip
+    )
     assert done.returncode == 0, done.stdout + done.stderr
-    assert report["time_quorum_failed"] is False and report["time"]["quorum_met"] is True
+    assert (
+        report["time_quorum_failed"] is False and report["time"]["quorum_met"] is True
+    )
 
 
 @needs_bwrap
 def test_a_load_ceiling_invalidates_time_samples(world, tmp_path):
     done, report = run_runner(
-        common(world, "--no-control", "--cli", world.cli("decline.py"),
-               "--load-max", "0", "--require-time-quorum", "1"),
+        common(
+            world,
+            "--no-control",
+            "--cli",
+            world.cli("decline.py"),
+            "--load-max",
+            "0",
+            "--require-time-quorum",
+            "1",
+        ),
         tmp_path / "l",
-    )  # fmt: skip
+    )
     assert done.returncode == pc.EXIT_QUORUM
     assert report["header"]["load_max"] == 0
     for stats in report["time"]["per_command"].values():
@@ -555,7 +642,13 @@ def test_a_load_ceiling_invalidates_time_samples(world, tmp_path):
 @needs_bwrap
 def test_a_passing_control_and_all_bwrap_cells_are_accepted(world, tmp_path):
     done, report = run_runner(
-        common(world, "--cli", world.cli("decline.py"), "--control-cli", world.cli("control_ok.py")),
+        common(
+            world,
+            "--cli",
+            world.cli("decline.py"),
+            "--control-cli",
+            world.cli("control_ok.py"),
+        ),
         tmp_path / "ok",
     )
     assert done.returncode == 0, done.stdout + done.stderr
@@ -563,9 +656,15 @@ def test_a_passing_control_and_all_bwrap_cells_are_accepted(world, tmp_path):
     assert ctl["ran"] and ctl["passed"] and ctl["reasons"] == []
     assert ctl["sha256"] == ctl["expect_sha256"]
     assert ctl["cell"]["argv"][2:] == [
-        "decompile", "/tmp/cell/ghidra_control.elf", "-f", "ghidra_control", "--json",
-    ]  # fmt: skip
-    assert report["valid"] and report["accepted"] and report["not_accepted_reasons"] == []
+        "decompile",
+        "/tmp/cell/ghidra_control.elf",
+        "-f",
+        "ghidra_control",
+        "--json",
+    ]
+    assert (
+        report["valid"] and report["accepted"] and report["not_accepted_reasons"] == []
+    )
     # The control cell is recorded but is in no denominator.
     assert "control-decompile-r1" in by_cell(report)
     assert report["s0"]["summary"]["metrics"]["ROBUST"]["n"] == 4
@@ -575,14 +674,25 @@ def test_a_passing_control_and_all_bwrap_cells_are_accepted(world, tmp_path):
 @needs_bwrap
 def test_a_failing_control_makes_the_run_invalid(world, tmp_path):
     done, report = run_runner(
-        common(world, "--cli", world.cli("decline.py"), "--control-cli", world.cli("decline.py")),
+        common(
+            world,
+            "--cli",
+            world.cli("decline.py"),
+            "--control-cli",
+            world.cli("decline.py"),
+        ),
         tmp_path / "bad",
     )
     assert done.returncode == pc.EXIT_INVALID
     assert report["valid"] is False and report["accepted"] is False
     assert report["control"]["passed"] is False
-    assert report["invalid_reasons"] and report["invalid_reasons"][0].startswith("control_failed:")
-    assert "**INVALID RUN, NOT ACCEPTED.**" in Path(str(tmp_path / "bad") + ".md").read_text()
+    assert report["invalid_reasons"] and report["invalid_reasons"][0].startswith(
+        "control_failed:"
+    )
+    assert (
+        "**INVALID RUN, NOT ACCEPTED.**"
+        in Path(str(tmp_path / "bad") + ".md").read_text()
+    )
     # The product CLI still ran: INVALID is a verdict on the run, not an abort.
     assert report["s0"]["summary"]["metrics"]["ROBUST"]["n"] == 4
 
@@ -595,10 +705,17 @@ def test_a_changed_control_binary_is_invalid_without_running_it(world, tmp_path)
     expect["sha256"] = "0" * 64
     (fixture / "expect.yaml").write_text(yaml.safe_dump(expect))
     done, report = run_runner(
-        common(world, "--cli", world.cli("decline.py"), "--control-cli", world.cli("control_ok.py"),
-               "--control-dir", fixture),
+        common(
+            world,
+            "--cli",
+            world.cli("decline.py"),
+            "--control-cli",
+            world.cli("control_ok.py"),
+            "--control-dir",
+            fixture,
+        ),
         tmp_path / "sha",
-    )  # fmt: skip
+    )
     assert done.returncode == pc.EXIT_INVALID
     assert report["control"]["reasons"] == ["sha256_mismatch"]
     assert "cell" not in report["control"]
@@ -609,38 +726,62 @@ def test_a_changed_control_binary_is_invalid_without_running_it(world, tmp_path)
 @needs_bwrap
 def test_backend_none_runs_on_the_host_and_is_never_accepted(world, tmp_path):
     done, report = run_runner(
-        common(world, "--cli", world.cli("decline.py"), "--control-cli", world.cli("control_ok.py"),
-               "--backend", "none"),
+        common(
+            world,
+            "--cli",
+            world.cli("decline.py"),
+            "--control-cli",
+            world.cli("control_ok.py"),
+            "--backend",
+            "none",
+        ),
         tmp_path / "none",
-    )  # fmt: skip
+    )
     assert done.returncode == 0, done.stdout + done.stderr
     assert report["control"]["passed"] is True
     assert report["isolation_observed"] == ["none"]
-    assert report["accepted"] is False and "isolation:none" in report["not_accepted_reasons"]
+    assert (
+        report["accepted"] is False
+        and "isolation:none" in report["not_accepted_reasons"]
+    )
     argv = by_cell(report)["mini_a-pwn-r1"]["argv"]
-    assert argv[3].startswith("/var/tmp/passcard-") and argv[3].endswith("/mini_a-pwn-r1/mini_a")
-    assert all(rec["sandbox_init_reaped"] == 0 and rec["survivors"] == 0 for rec in report["runs"])
+    assert argv[3].startswith("/var/tmp/passcard-") and argv[3].endswith(
+        "/mini_a-pwn-r1/mini_a"
+    )
+    assert all(
+        rec["sandbox_init_reaped"] == 0 and rec["survivors"] == 0
+        for rec in report["runs"]
+    )
 
 
 @needs_bwrap
 def test_cells_are_staged_fresh_file_by_file_without_dot_components(world, tmp_path):
     scratch = world.root / "scratch"
     done, report = run_runner(
-        common(world, "--no-control", "--cli", world.cli("decline.py"),
-               "--scratch-root", scratch, "--keep-scratch"),
+        common(
+            world,
+            "--no-control",
+            "--cli",
+            world.cli("decline.py"),
+            "--scratch-root",
+            scratch,
+            "--keep-scratch",
+        ),
         tmp_path / "keep",
-    )  # fmt: skip
+    )
     assert done.returncode == 0, done.stdout + done.stderr
     cells = sorted(scratch.glob("run-*/mini_a-*-r1"))
     assert [c.name for c in cells] == ["mini_a-%s-r1" % c for c in sorted(COMMANDS)]
     for cell in cells:
-        assert sorted(p.name for p in cell.iterdir()) == sorted(["mini_a", *st.CELL_SUBDIRS])
+        assert sorted(p.name for p in cell.iterdir()) == sorted(
+            ["mini_a", *st.CELL_SUBDIRS]
+        )
         assert (cell / "mini_a").read_bytes() == tiny_elf()
         assert not any(part.startswith(".") for part in cell.parts)
     assert str(scratch) in report["header"]["hide"]
 
 
-# --- the S0-PE table and the pinned fixture hash (V-15) ---------------------------------------------
+# --- the S0-PE table and the pinned fixture hash (V-15) -------------------------------
 
 
 @pytest.fixture
@@ -653,18 +794,28 @@ def world_pe():
 
 
 @needs_bwrap
-def test_the_s0pe_table_is_separate_and_scores_decomp_and_robust_only(world_pe, tmp_path):
+def test_the_s0pe_table_is_separate_and_scores_decomp_and_robust_only(
+    world_pe, tmp_path
+):
     done, report = run_runner(
-        common(world_pe, "--no-control", "--cli", world_pe.cli("decline.py")), tmp_path / "pe"
+        common(world_pe, "--no-control", "--cli", world_pe.cli("decline.py")),
+        tmp_path / "pe",
     )
     assert done.returncode == 0, done.stdout + done.stderr
     assert report["valid"] is True
-    assert report["s0"]["targets"] == ["mini_a"] and report["s0pe"]["targets"] == ["mini_pe"]
-    scored = {m: v["n"] for m, v in report["s0pe"]["summary"]["metrics"].items() if v["n"]}
+    assert report["s0"]["targets"] == ["mini_a"] and report["s0pe"]["targets"] == [
+        "mini_pe"
+    ]
+    scored = {
+        m: v["n"] for m, v in report["s0pe"]["summary"]["metrics"].items() if v["n"]
+    }
     assert scored == {"DECOMP": 1, "ROBUST": 4}
     # The PE target adds nothing to the ELF matrix.
     assert report["s0"]["summary"]["metrics"]["ROBUST"]["n"] == 4
-    assert "## S0-PE (separate table: DECOMP and ROBUST only)" in Path(str(tmp_path / "pe") + ".md").read_text()
+    assert (
+        "## S0-PE (separate table: DECOMP and ROBUST only)"
+        in Path(str(tmp_path / "pe") + ".md").read_text()
+    )
 
 
 @needs_bwrap

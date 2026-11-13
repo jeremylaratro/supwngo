@@ -1,4 +1,4 @@
-"""Mutant `answer_key` (SP-01 plan 3.7): cheats from files it should not be able to read.
+"""Mutant `answer_key` (SP-01 plan 3.7): cheats from files it must not read.
 
 ``--keys-json`` is a list of absolute paths (the truth file, the challenge
 source, a ``.debug`` sibling of the original binary, a generator source). The

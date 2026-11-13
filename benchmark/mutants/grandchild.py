@@ -46,7 +46,9 @@ def handle(call):
     elif call.command == "template":
         doc = shim.template_success("ret2system", call.output)
     elif call.command == "decompile":
-        doc = shim.decompile_success("main", "0x401000", "int main(void)\n{\n  return 0;\n}\n")
+        doc = shim.decompile_success(
+            "main", "0x401000", "int main(void)\n{\n  return 0;\n}\n"
+        )
     else:
         doc = shim.offset_success(0, None)
     doc["sleeper_pid"] = sleeper

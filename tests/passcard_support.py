@@ -91,12 +91,48 @@ def tiny_elf(bits: int = 64, machine: int = 62, etype: int = 2) -> bytes:
     if bits == 64:
         return struct.pack(
             "<4sBBBBB7xHHIQQQIHHHHHH",
-            b"\x7fELF", 2, 1, 1, 0, 0, etype, machine, 1, 0, 0, 0, 0, 64, 0, 0, 0, 0, 0,
-        )  # fmt: skip
+            b"\x7fELF",
+            2,
+            1,
+            1,
+            0,
+            0,
+            etype,
+            machine,
+            1,
+            0,
+            0,
+            0,
+            0,
+            64,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
     return struct.pack(
         "<4sBBBBB7xHHIIIIIHHHHHH",
-        b"\x7fELF", 1, 1, 1, 0, 0, etype, machine, 1, 0, 0, 0, 0, 52, 0, 0, 0, 0, 0,
-    )  # fmt: skip
+        b"\x7fELF",
+        1,
+        1,
+        1,
+        0,
+        0,
+        etype,
+        machine,
+        1,
+        0,
+        0,
+        0,
+        0,
+        52,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
 
 
 def build_lib_tree(root: Path) -> Path:
@@ -115,19 +151,51 @@ def build_lib_tree(root: Path) -> Path:
     (build / "foo.c").write_text("int bar(void);\nint foo(void){return bar();}\n")
     (build / "bar.c").write_text("int bar(void){return 0;}\n")
     (build / "app2.c").write_text("int bar(void);\nint main(void){return bar();}\n")
-    gcc("-shared", "-fPIC", "-Wl,-soname,libbar.so", "-o", str(src / "lib/libbar.so"),
-        "bar.c", cwd=build)  # fmt: skip
-    gcc("-shared", "-fPIC", "-Wl,-soname,libfoo.so", "-Wl,--enable-new-dtags",
-        "-Wl,-rpath,$ORIGIN", "-Wl,-rpath-link," + str(src / "lib"),
-        "-o", str(src / "lib/libfoo.so"), "foo.c", "-L" + str(src / "lib"), "-lbar",
-        cwd=build)  # fmt: skip
-    gcc("-o", str(src / "app"), "app.c", "-Wl,--dynamic-linker=./ld/ld.so",
-        "-Wl,--enable-new-dtags", "-Wl,-rpath,$ORIGIN/lib",
-        "-Wl,-rpath-link," + str(src / "lib"), "-L" + str(src / "lib"), "-lfoo",
-        cwd=build)  # fmt: skip
+    gcc(
+        "-shared",
+        "-fPIC",
+        "-Wl,-soname,libbar.so",
+        "-o",
+        str(src / "lib/libbar.so"),
+        "bar.c",
+        cwd=build,
+    )
+    gcc(
+        "-shared",
+        "-fPIC",
+        "-Wl,-soname,libfoo.so",
+        "-Wl,--enable-new-dtags",
+        "-Wl,-rpath,$ORIGIN",
+        "-Wl,-rpath-link," + str(src / "lib"),
+        "-o",
+        str(src / "lib/libfoo.so"),
+        "foo.c",
+        "-L" + str(src / "lib"),
+        "-lbar",
+        cwd=build,
+    )
+    gcc(
+        "-o",
+        str(src / "app"),
+        "app.c",
+        "-Wl,--dynamic-linker=./ld/ld.so",
+        "-Wl,--enable-new-dtags",
+        "-Wl,-rpath,$ORIGIN/lib",
+        "-Wl,-rpath-link," + str(src / "lib"),
+        "-L" + str(src / "lib"),
+        "-lfoo",
+        cwd=build,
+    )
     shutil.copy(src / "lib/libbar.so", src / "ld/libbar.so")
-    gcc("-o", str(src / "app2"), "app2.c", "-Wl,--dynamic-linker=./ld/ld.so",
-        "-L" + str(src / "ld"), "-lbar", cwd=build)  # fmt: skip
+    gcc(
+        "-o",
+        str(src / "app2"),
+        "app2.c",
+        "-Wl,--dynamic-linker=./ld/ld.so",
+        "-L" + str(src / "ld"),
+        "-lbar",
+        cwd=build,
+    )
     shutil.copy(os.path.realpath(HOST_LOADER), src / "ld/ld.so")
     # Decoys.
     (src / "app.c").write_text("/* the answer key */\n")
@@ -148,7 +216,7 @@ def run_runner(
     timeout: float = 600,
     env_extra: Optional[Dict[str, str]] = None,
 ) -> Tuple[subprocess.CompletedProcess, Optional[Dict[str, Any]]]:
-    """Run the runner as a subprocess (it makes itself a subreaper, so never in-process).
+    """Run the runner as a subprocess (it makes itself a subreaper: never in-process).
 
     Returns the completed process and the parsed JSON report, or None when the
     run wrote none (a usage error).
@@ -156,9 +224,21 @@ def run_runner(
     env = dict(os.environ)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env.update(env_extra or {})
-    cmd = [sys.executable, "-B", str(RUNNER), *[str(a) for a in args], "--out", str(out)]
+    cmd = [
+        sys.executable,
+        "-B",
+        str(RUNNER),
+        *[str(a) for a in args],
+        "--out",
+        str(out),
+    ]
     done = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout, env=env, cwd=str(REPO_ROOT)
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=env,
+        cwd=str(REPO_ROOT),
     )
     report_path = Path(str(out) + ".json")
     report = json.loads(report_path.read_text()) if report_path.exists() else None
@@ -175,8 +255,13 @@ def by_cell(report: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return {rec["cell"]: rec for rec in report["runs"]}
 
 
-def verdicts(report: Dict[str, Any], table: str = "s0") -> Dict[Tuple[str, str], List[str]]:
-    """``{(slug, metric): [verdict, ...]}`` from a report table (ROBUST has one per command)."""
+def verdicts(
+    report: Dict[str, Any], table: str = "s0"
+) -> Dict[Tuple[str, str], List[str]]:
+    """``{(slug, metric): [verdict, ...]}`` from a report table.
+
+    ROBUST has one verdict per command.
+    """
     out: Dict[Tuple[str, str], List[str]] = {}
     for slug, entry in report[table]["detail"].items():
         for cell in entry["cells"]:
@@ -192,12 +277,12 @@ def load_truth(slug: str) -> Dict[str, Any]:
 
 
 def s0_binary_name(slug: str, targets_root: Optional[Path] = None) -> str:
-    """The shipped file's name (``snowscan`` for ``snow_scan``): the realpath's basename."""
+    """The shipped file's name (``snowscan`` for ``snow_scan``): the realpath tail."""
     return os.path.realpath((targets_root or TARGETS_ROOT) / slug).rsplit("/", 1)[-1]
 
 
 def truth_bundle(slugs: Sequence[str] = tuple(S0_SLUGS)) -> Dict[str, Dict[str, Any]]:
-    """The ``--truth-json`` bundle for the mutant shims, keyed by the binary's file name.
+    """The ``--truth-json`` bundle for the mutant shims, keyed by binary file name.
 
     This is the only way a shim learns the right answer: the test hands it over
     explicitly, because the sandbox hides ``benchmark/truth`` from the command.
@@ -206,7 +291,9 @@ def truth_bundle(slugs: Sequence[str] = tuple(S0_SLUGS)) -> Dict[str, Dict[str, 
     for slug in slugs:
         truth = load_truth(slug)
         known = {
-            d["kind"]: d["value"] for d in truth["distance"] if d.get("state") == "known_value"
+            d["kind"]: d["value"]
+            for d in truth["distance"]
+            if d.get("state") == "known_value"
         }
         accept = truth["method_accept"][0]
         bundle[s0_binary_name(slug)] = {
@@ -283,9 +370,7 @@ FAILURE_DOC = "{'error': 'declined', 'success': False, 'error_code': 'declined'}
 
 # Declines every command with the failure envelope (rc 2).
 SHIM_DECLINE = (
-    "import json, sys\n"
-    "print(json.dumps(%s))\n"
-    "sys.exit(2)\n" % FAILURE_DOC
+    "import json, sys\n" "print(json.dumps(%s))\n" "sys.exit(2)\n" % FAILURE_DOC
 )
 
 # Declines, and reports what the sandboxed command sees. `--probe PATH` (repeatable,
@@ -322,7 +407,7 @@ SHIM_CONTROL_OK = (
 
 @dataclass
 class World:
-    """One S0-shaped target (``mini_a``) built outside /tmp, so a sandbox sees the shims."""
+    """One S0-shaped target (``mini_a``) built outside /tmp so a sandbox sees it."""
 
     root: Path
     truth_dir: Path
@@ -347,7 +432,12 @@ def mini_truth(slug: str, binary: Optional[Dict[str, str]] = None) -> Dict[str, 
         "method_basis": "reviewed",
         "solve_proven": None,
         "distance": [
-            {"kind": "buf_to_ret", "state": "known_value", "value": 40, "provenance": "synthetic"}
+            {
+                "kind": "buf_to_ret",
+                "state": "known_value",
+                "value": 40,
+                "provenance": "synthetic",
+            }
         ],
         "decompile": {
             "vuln_function": {"addr": 0x401000, "provenance": "synthetic"},

@@ -76,7 +76,9 @@ def _file_problem(path: Path, prefix: str, label: str) -> Optional[Preflight]:
     except OSError as exc:
         return _fail(prefix + "_missing", "%s %s: %s" % (label, path, exc.strerror))
     if not stat.S_ISREG(info.st_mode):
-        return _fail(prefix + "_not_regular", "%s %s is not a regular file" % (label, path))
+        return _fail(
+            prefix + "_not_regular", "%s %s is not a regular file" % (label, path)
+        )
     if info.st_size == 0:
         return _fail(prefix + "_empty", "%s %s is zero bytes" % (label, path))
     if not os.access(path, os.X_OK):
@@ -141,7 +143,9 @@ def run_preflight(
 
     # Rule 5, loader half.
     if not has_elf_magic(loader):
-        return _fail("interp_not_elf", "interpreter %s is not an ELF file" % loader, interp)
+        return _fail(
+            "interp_not_elf", "interpreter %s is not an ELF file" % loader, interp
+        )
     try:
         loader_elf: ElfInfo = read_elf(loader)
     except ElfError as exc:
@@ -149,7 +153,8 @@ def run_preflight(
     if loader_elf.elf_class != elf.elf_class:
         return _fail(
             "interp_class_mismatch",
-            "interpreter is ELF%d, target is ELF%d" % (loader_elf.elf_class, elf.elf_class),
+            "interpreter is ELF%d, target is ELF%d"
+            % (loader_elf.elf_class, elf.elf_class),
             interp,
         )
     if loader_elf.machine != elf.machine:

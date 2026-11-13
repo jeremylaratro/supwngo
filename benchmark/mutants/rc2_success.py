@@ -8,7 +8,10 @@ import _shim as shim  # noqa: E402
 
 
 def handle(call):
-    return shim.truth_document(call) or shim.template_success("ret2system", call.output), 2
+    return (
+        shim.truth_document(call) or shim.template_success("ret2system", call.output),
+        2,
+    )
 
 
 shim.main(handle)
