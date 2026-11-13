@@ -48,9 +48,7 @@ FIXTURE_SRC = Path(__file__).parent / "fixtures" / "angr_callgraph" / "two_funcs
 
 
 def _cli_argv():
-    exe = shutil.which("supwngo")
-    if exe:
-        return [exe]
+    # Run the checkout, not whatever editable install `supwngo` resolves to.
     return [sys.executable, "-m", "supwngo.cli"]
 
 
