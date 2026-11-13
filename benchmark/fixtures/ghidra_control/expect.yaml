@@ -1,0 +1,23 @@
+# Ghidra control-cell expectation (SP-01 plan section 8.1 V-2, N5-6).
+#
+# Provenance -- exact commands, run from this directory
+# (gcc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0, GNU nm from binutils):
+#   gcc -no-pie -O0 -o ghidra_control.elf ghidra_control.c
+#   sha256sum ghidra_control.elf
+#   nm ghidra_control.elf | grep ' T ghidra_control$'
+#
+# The binary is non-PIE, so Ghidra's address for `ghidra_control` equals this
+# link-time virtual address both before and after V-10 (one address convention).
+#
+# A passcard run is INVALID, not merely failing, if the control does not pass or
+# if the committed binary's SHA-256 differs from the one pinned here. The control
+# cell is excluded from every semantic and ROBUST denominator.
+binary: ghidra_control.elf
+sha256: ad1c6feef649a5b769a324ff92a75124b54eb9b32a1e13334b0c0bdd89572d57
+selector: ghidra_control      # decompile -f <selector>
+address: 0x401136             # nm: `T ghidra_control`
+analysis_backend: ghidra
+rc: 0
+json_documents: 1             # exactly one JSON document on stdout
+anchors:
+  calls: [puts]               # non-sentinel `code` must contain a call to each

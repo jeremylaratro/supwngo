@@ -282,9 +282,17 @@ class TestSolveEndToEnd:
             p.wait()
             print(cyclic_find(p.corefile.fault_addr))
         """)
-        offset_result = subprocess.run(
-            ["python3", "-c", offset_script], capture_output=True, text=True, timeout=30,
-        )
+        # pwntools' `process` raises its own child's core limit, so this child
+        # dumps a core. Run it from tmp_path so the core lands there rather than
+        # in the repo root, and delete it afterwards (plan 8.1 V-4).
+        try:
+            offset_result = subprocess.run(
+                ["python3", "-c", offset_script], capture_output=True, text=True,
+                timeout=30, cwd=tmp_path,
+            )
+        finally:
+            for core in tmp_path.glob("core*"):
+                core.unlink(missing_ok=True)
         assert offset_result.returncode == 0, offset_result.stderr
         offset = int(offset_result.stdout.strip().splitlines()[-1])
 

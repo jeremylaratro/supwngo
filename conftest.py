@@ -53,12 +53,28 @@ analysing the same corpus binary therefore share one file, and a reader
 arriving mid-write raises out of ``ROP()``. Giving each session its own cache
 root removes the sharing outright. ``setdefault`` is used so an explicitly
 chosen cache root still wins.
+
+``RLIMIT_CORE`` -- no stray core files
+--------------------------------------
+With ``kernel.core_uses_pid = 1`` every crash fixture a test runs from the repo
+root leaves a ``core.<pid>`` behind (42 files, 112 MB, before this default).
+The soft ``RLIMIT_CORE`` is therefore zeroed at import, which every child of the
+pytest process inherits. Only the soft limit is lowered: the hard limit is kept
+so a child can still opt back in. pwntools' ``process`` does exactly that
+(``pwnlib/tubes/process.py`` raises its own child's limit), which is what lets a
+test read ``p.corefile`` -- such a test should run with ``cwd=tmp_path`` so the
+core lands in its own directory and delete it afterwards.
 """
 
 from __future__ import annotations
 
 import os
 import tempfile
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - non-POSIX platform
+    resource = None
 
 # Must happen at import time: conftest is imported before test collection, and
 # therefore before any test module can import `pwn`.
@@ -67,3 +83,12 @@ os.environ.setdefault(
     "XDG_CACHE_HOME",
     os.path.join(tempfile.gettempdir(), f"supwngo-test-cache-{os.getpid()}"),
 )
+
+# Soft RLIMIT_CORE = 0, hard limit untouched. Guarded so a platform without
+# RLIMIT_CORE (or one that refuses the call) cannot crash collection.
+if resource is not None and hasattr(resource, "RLIMIT_CORE"):
+    try:
+        _core_soft, _core_hard = resource.getrlimit(resource.RLIMIT_CORE)
+        resource.setrlimit(resource.RLIMIT_CORE, (0, _core_hard))
+    except (ValueError, OSError):  # pragma: no cover - platform refused
+        pass
