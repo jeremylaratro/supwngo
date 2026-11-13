@@ -10,12 +10,15 @@ run; a corpus cross-check runs only when the dev corpus has been built.
 from __future__ import annotations
 
 import json
+import types
 from pathlib import Path
 
 import pytest
 
+import supwngo.analysis.decompile as decompile_mod
 from supwngo.analysis import payoff
 from supwngo.analysis.decompile import Decompiler
+from supwngo.core.proc import ProcState
 
 # (format, backend_base/image_base, backend_addr/vaddr, expected truth rva)
 # PIE: image base 0 -> vaddr == rva. ET_EXEC: 0x400000. PE: 0x140000000.
@@ -427,3 +430,56 @@ def test_version_discovery_is_stringy_and_processfree():
     assert backend_version("angr") == angr_version()
     assert backend_version("bogus") == "unknown"
     assert isinstance(SCRIPT_VERSION, str) and SCRIPT_VERSION
+
+
+# --------------------------------------------------------------------------- #
+# Commit 4a: additive env= threading through _run_ghidra_headless
+# (round-2 BLOCKER 2). The payoff driver delivers a writable JVM user.home to
+# Ghidra's launcher via JAVA_TOOL_OPTIONS; that env must reach proc.run.
+# --------------------------------------------------------------------------- #
+
+
+def _fake_proc_result():
+    return types.SimpleNamespace(
+        state=ProcState.EXITED,
+        rc=0,
+        signal=None,
+        errno=None,
+        stdout=b"INFO  startup complete\n",
+        stderr=b"",
+        wall_s=0.1,
+    )
+
+
+def _spy_decompiler():
+    return Decompiler(types.SimpleNamespace(path="/nonexistent/target"))
+
+
+def test_run_ghidra_headless_threads_env_to_proc_run(monkeypatch):
+    seen = {}
+
+    def _spy_run(cmd, *, cwd, timeout, env=None):
+        seen["env"] = env
+        return _fake_proc_result()
+
+    monkeypatch.setattr(decompile_mod.proc, "run", _spy_run)
+    merged = {"JAVA_TOOL_OPTIONS": "-Duser.home=/tmp/jvmhome"}
+    _spy_decompiler()._run_ghidra_headless(["analyzeHeadless"], timeout=1, env=merged)
+
+    assert seen["env"] is merged
+    assert seen["env"]["JAVA_TOOL_OPTIONS"] == "-Duser.home=/tmp/jvmhome"
+
+
+def test_run_ghidra_headless_env_defaults_to_none_unchanged(monkeypatch):
+    """Existing callers pass no env; proc.run must still see env=None (the
+    byte-for-byte current behaviour)."""
+    seen = {}
+
+    def _spy_run(cmd, *, cwd, timeout, env=None):
+        seen["env"] = env
+        return _fake_proc_result()
+
+    monkeypatch.setattr(decompile_mod.proc, "run", _spy_run)
+    _spy_decompiler()._run_ghidra_headless(["analyzeHeadless"], timeout=1)
+
+    assert seen["env"] is None
