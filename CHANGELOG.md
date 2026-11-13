@@ -236,6 +236,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   honours a `SUPWNGO_WALKTHROUGH_GDB_TIMEOUT` budget (default 60 s), SIGKILLs the
   whole group on timeout, and reports a graceful failure instead of a stack
   trace.
+- `Protections.relro` now reports the level pwntools measured (`GNU_RELRO` plus
+  `BIND_NOW`) instead of inferring it from the write flag on `.got.plt`. A Full
+  RELRO image linked with gold, which keeps a writable `.got.plt` under `-z now`,
+  was reported as Partial RELRO. `core/relro.py` adds the `Relro` level type and
+  `normalize_relro()`, and `Protections.relro_kind` exposes the typed level while
+  `relro` and the `to_dict()` JSON keep the display strings unchanged.
 
 ## [2.1.0] - 2026-09-28
 
