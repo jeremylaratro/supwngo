@@ -203,3 +203,57 @@ pairs and all 16 strip-twin pairs, without abstaining. |
 | r1-3 | PARTIAL | Twins were rename-only; the checklist requires rename and strip | **Fixed.** 16 explicit strip-twin pairs. W-1 and W-5 run on both kinds of twin, and W-5 runs all four CLIs on both. |
 | r2-new | HIGH | The manifest lifecycle contradicts itself: deleted sites become "stale" | **Fixed.** An immutable baseline inventory with stable IDs and tombstones, plus a regenerated current-hit scan. The stale check applies to `open` entries only. |
 | r3 | PARTIAL | "Immutable" contradicted the status changes | **Fixed.** Only the entry set and the identity fields are frozen. The status changes one way, from `open` to `migrated` or `allowed`, and a test checks this against the W-0 copy. |
+
+## 10. W-0 execution log (2026-11-13)
+
+W-0 was built as one dependency-ordered set of commits on the trunk branch `feat/w0-payoff-corpus`
+(base `main` `4158d5c`), not yet PR'd at time of writing:
+
+| Commit | Content | Its own tests |
+|---|---|---|
+| `be9f1fc` | Payoff corpus v0 generator + rename/strip-twin harness (`benchmark/gen/payoff/`) | 23 passed |
+| `a0f5fc9` | HTB solve-column regression gate (`scripts/check_htb_rescore.py`, W-6 tooling) | 13 passed |
+| `5212378` | Target-value inventory manifest + scanner (`scripts/audit_target_values.py`, baseline, test) | 44 passed |
+| `83cb0c4` | Reusable sandboxed runner extracted from `OffsetFinder` into `supwngo/core/sandbox_runner.py` | 43 passed |
+
+**Done-when (all met).** Inventory test is RED on an unclassified current hit (names the site) and on a
+stale `open` entry (hand-verified on `tester.py` and `W-0095`); corpus builds 32 positives + 32 twins +
+8 negatives + 8 PE with truth for each; the runner carries the SP-01b process and hide tests from its new
+home; the checker fails on 6/7, 20/21 and a timed-out report. Full test collection on the integrated trunk
+is clean (3156 tests, no import/collection error). The `offset --json` output is byte-identical to pre-W-0
+`main` (the runner extraction is a pure move: `offset_finder.py` delta is −144/+31, all delegation). A
+load-sensitive integrated re-confirm of the sandbox/offset suites on a quiet host is the only verification
+left open.
+
+**Runner kept strictly move-only.** The first extraction added an opt-in `reap`/`survivors` surface and
+duplicated `benchmark/passcard.py`'s bubblewrap-0.6.1 zombie-reap helpers (`_reap_sandbox_init`,
+`_stat_state_comm`). That was removed: no consumer uses it, and two copies of that sharp-edge logic would
+rot. When **W-4** needs survivor reaping, add it as a **shared** helper that both `passcard.py` and the
+runner call, not a third copy.
+
+**Inventory classification review (for the consuming phases).** The scan froze 157 entries
+(A 29, A′ 5, B 69, C 54). Every rev-1 seed is caught and in its expected class. The following edge
+classifications are deliberately left `open` for the phase that consumes them to resolve to `migrated` or
+`allowed` — they do **not** block the frozen baseline (the entry set and IDs are frozen; only `status`
+moves):
+
+- **W-2 (class B) — generic POSIX constants that are almost certainly `allowed`, not target guesses, so
+  W-2 must mark them `allowed` rather than try to migrate them:** signal-code sets
+  (`offset_finder.py:1048,1073`, `delivery.py:61` `FAULT_SIGNALS`), bad-char lists (`verify.py:477`,
+  `stack_bug.py:378`), mask bytes (`reliability.py:621`), crash patterns (`crash_triage.py:446,528`), the
+  ioctl-code list (`cli.py:1610`), and slab sizes (`kernel/module.py:68`).
+- **W-3/W-5 (class A vs C vs allowed) — substring "hint" lists, not exact payoff names:** `_SECRET_HINTS`
+  (`path_traversal:766`, `symlink_write:645`, `toctou:667`, `library_hijack:269`) and `PRIV_HINTS`
+  (`uninit_disclosure:386`) are classed A `name_list` but are secret-file / privileged-variable hints;
+  resolve to C or `allowed`. `heap_techniques.py:385` (`symbols.get("dispatch_table")`) is A `symtab_get`
+  but target-shaped, not a payoff name.
+- **A′ false positive to keep in mind:** `walkthrough/families/fmtstr.py:370` `'win'` is an f-string
+  fallback name, not generated-script text; it is classed A′ `template_name` because masking replacement
+  fields would also drop the real `templates.py:697` template-in-field case. `triage.py:184` is correctly
+  A′ (keyword tuple inside a generated script string).
+- **Exemptions that change the denominator if touched:** `UNIVERSAL_NAMES`, `UNIVERSAL_PREFIXES`,
+  `LIBC_ROOTS` are pinned in the scanner; changing them requires a baseline regeneration.
+
+The baseline adds an `anchor` field (hash of the source line) beyond the spec, for drift-tolerant matching
+of a moved hit. The `git show <W-0-sha>` frozen-fields check is a TODO in the test until this set is merged
+and the W-0 sha exists.
