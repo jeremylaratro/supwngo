@@ -251,6 +251,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for a No RELRO binary). They now decide on `Protections.relro_kind`. A lint
   (`tests/test_relro_lint.py`) rejects any new read of `.relro` outside
   `supwngo/core` that is not display-only or allowlisted by receiver type.
+- `ProtectionAnalyzer` now derives RELRO from the same pwntools level as the
+  core `Binary` instead of probing for `.got.plt` and two dynamic tags. A binary
+  with no `.got.plt` section was reported as Full RELRO even when it was
+  Partial, and one that requests eager binding only through
+  `DT_FLAGS_1 & DF_1_NOW` (or that keeps a writable `.got.plt`, as gold does)
+  was reported as Partial. The walkthrough protection cross-check, which compares
+  this value with the ELF-derived level, no longer emits a spurious "ELF wins"
+  RELRO note for such binaries.
 
 ## [2.1.0] - 2026-09-28
 

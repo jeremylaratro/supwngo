@@ -10,6 +10,7 @@ The truth for every fixture comes from ``readelf -lW -d`` (``GNU_RELRO`` plus
 """
 
 import shutil
+import struct
 import subprocess
 from pathlib import Path
 
@@ -35,6 +36,9 @@ FIXTURES = {
     "relro_lazy": (["-Wl,-z,relro", "-Wl,-z,lazy"], "partial"),
     "relro_now": (["-Wl,-z,relro", "-Wl,-z,now"], "full"),
     "relro_now_gold": (["-fuse-ld=gold", "-Wl,-z,relro", "-Wl,-z,now"], "full"),
+    # relro_lazy with DT_DEBUG rewritten to DT_FLAGS_1 = DF_1_NOW: eager binding
+    # requested only through FLAGS_1, with no DT_BIND_NOW and no DF_BIND_NOW.
+    "relro_now_flags1": (["-Wl,-z,relro", "-Wl,-z,lazy"], "full"),
 }
 
 #: The display strings the core ``Protections.relro`` field has always held.
@@ -56,7 +60,30 @@ def build_fixture(directory: Path, name: str) -> Path:
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if proc.returncode != 0:
         pytest.skip(f"cannot build {name}: {proc.stderr.strip()[:200]}")
+    if name == "relro_now_flags1":
+        _debug_tag_to_flags_1_now(out)
     return out
+
+
+def _debug_tag_to_flags_1_now(path: Path) -> None:
+    """Rewrite the DT_DEBUG dynamic entry as DT_FLAGS_1 = DF_1_NOW, in place."""
+    from elftools.elf.elffile import ELFFile
+
+    dt_debug, dt_flags_1, df_1_now = 0x15, 0x6FFFFFFB, 0x1
+    with open(path, "r+b") as handle:
+        elf = ELFFile(handle)
+        dynamic = next(
+            s for s in elf.iter_segments() if s.header.p_type == "PT_DYNAMIC"
+        )
+        offset, size = dynamic.header.p_offset, dynamic.header.p_filesz
+        for pos in range(offset, offset + size, 16):
+            handle.seek(pos)
+            (tag,) = struct.unpack("<q", handle.read(8))
+            if tag == dt_debug:
+                handle.seek(pos)
+                handle.write(struct.pack("<qQ", dt_flags_1, df_1_now))
+                return
+    pytest.skip("no DT_DEBUG entry to rewrite")
 
 
 def readelf_dump(path: Path) -> str:

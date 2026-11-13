@@ -86,6 +86,13 @@ class Read:
 
 ALLOWLIST: Tuple[AllowEntry, ...] = (
     AllowEntry(
+        "supwngo/analysis/protections.py",
+        "ProtectionAnalyzer._get_relro_type",
+        "self.binary._elf.relro",
+        "pwntools ELF",
+        "Reads pwntools' level and hands it straight to normalize_relro().",
+    ),
+    AllowEntry(
         "supwngo/exploit/rop/ret2dlresolve.py",
         "Ret2dlresolve.can_use_technique",
         "elf.relro",
