@@ -279,13 +279,16 @@ def test_decompile_on_a_pe_is_not_gated(name, monkeypatch):
     its code. (A control: it passes on the base and must keep passing.)"""
     from supwngo.analysis import decompile as decompile_module
 
-    function = SimpleNamespace(
+    # The real result type, so the fake carries every field the success path
+    # reads (``selected_by`` today) as the decompiler sets it.
+    function = decompile_module.DecompiledFunction(
         name="main",
         address=0x401000,
         return_type="int",
         parameters=[],
         calls=["puts"],
         code='int main(void) { return puts("hi"); }',
+        selected_by="symbol",
     )
     loaded = []
 
