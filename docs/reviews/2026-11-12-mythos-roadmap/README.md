@@ -18,7 +18,7 @@ This folder is the record of the adversarial review that re-focused supwngo on t
 | 2. Synthesis | Mythos 5-2 | `synthesis-draft-mythos.md` | The draft roadmap, sprint map and plan. |
 | 3. Peer review | Daybreak Blue (Codex, xhigh) | `peer-review-daybreak-blue-roadmap.md` | Adversarial review: 12 blocking and 8 non-blocking items. |
 | 4. Fold | Mythos 5-2 | `roadmap-final-mythos.md` (§12 dispositions every item), `inputs/FOLD-NOTES.md` (facts supplied by the orchestrator) | The final roadmap. |
-| 5. Verify | Mythos 5-2, single thread, **execution allowed** | `verify-mythos-execution.md` (follow-up PR) | Self-review of the final roadmap, run on a scratch copy of the repo. It runs the unit suite, the HTB scorecard from challenge-directory copies, cheap hypotheses and the SP-01/SP-02 RED tests, then writes amendments (AMD-n). This step was still running when this folder was first committed. Its record, prompt and launch script land in a follow-up docs PR, which also adds the amendments to roadmap §14. |
+| 5. Verify | Mythos 5-2, single thread, **execution allowed** | `verify-mythos-execution.md` | Self-review of the final roadmap, run on a scratch copy of the repo. It ran the unit suite, the HTB scorecard from challenge-directory copies, cheap hypotheses and the SP-01/SP-02 RED tests, then wrote AMD-1..AMD-18. The run took 72 min over 41 turns, with `is_error = False`; one `rm -rf` chain was denied and re-run in an allowed form. The prompt is `prompts/VERIFY.md` and the launcher is `prompts/launch-verify.sh`. Dispositions are in roadmap §14 "Verify-pass amendments"; SP-01 adoptions are in SP-01 plan §8. |
 
 `prompts/` holds the prompt heads for steps 1–4.
 
