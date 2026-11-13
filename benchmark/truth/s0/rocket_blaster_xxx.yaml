@@ -1,0 +1,48 @@
+# S0 truth for rocket_blaster_xxx (SP-01 plan 2.3). Smoke set: never a gate.
+# Commands run from tests/htb-targets/organized (the binary is read in place).
+slug: rocket_blaster_xxx
+format: elf
+arch: amd64
+vuln_family: stack_bof
+method_accept: [ret2win, ret2libc]
+method_basis: reviewed
+solve_proven: ret2libc_leak
+distance:
+  - kind: buf_to_ret
+    state: known_value
+    value: 40
+    provenance: >-
+      objdump -d --no-show-raw-insn rocket_blaster_xxx --disassemble=main:
+      main (0x4014fa) is push rbp; mov rsp,rbp; sub $0x20,rsp; the read at
+      0x40156e is lea -0x20(rbp),rax with count $0x66, so buffer = rbp-0x20
+      and the saved RIP is at rbp+8: 0x20 + 8 = 40. Matches plan 2.3.
+decompile:
+  vuln_function:
+    addr: 0x4014fa
+    provenance: "nm rocket_blaster_xxx | grep -w main  ->  00000000004014fa T main (the read at 0x40156e overflows its 0x20 buffer)"
+  default_function_any_of: [0x4014fa]
+  anchors:
+    calls: [banner, read]
+    min_calls: 2
+stage:
+  files: [rocket_blaster_xxx]
+  placeholders: [flag.txt]
+forbidden_symbols: [fill_ammo]
+provenance:
+  default_function: >-
+    nm rocket_blaster_xxx | grep -w main  ->  main at 0x4014fa; plan 4.4
+    step 1 (main symbol). Entry is 0x401190 (readelf -hW).
+  anchors: >-
+    objdump -d --no-show-raw-insn rocket_blaster_xxx --disassemble=main ->
+    calls banner (0x4014c7, a program symbol), fflush, printf, read, puts.
+    banner and read are used; the other libc calls are left out so a
+    decompiler's choice of alias cannot fail the cell. Not cross-checked
+    against a Ghidra run.
+  stage_files: "ls -p tests/htb-targets/a12c7380-1e06-401a-a27b-7c4db3087492/challenge -> rocket_blaster_xxx and the glibc/ directory (loader closure is added by staging)"
+  placeholders: >-
+    strings -a rocket_blaster_xxx | grep -i flag  ->  "./flag.txt" and "Error
+    opening flag.txt, please contact an Administrator.", so the binary opens
+    ./flag.txt at runtime; staged with neutral content.
+  forbidden_symbols: "plan 2.3; nm rocket_blaster_xxx | grep fill_ammo -> 00000000004012f5 T fill_ammo"
+  vuln_family: "plan 2.3; single unchecked read into a 0x20 frame"
+  method_accept: "plan 2.3: write-up method (ret2win) plus the family solve proved (ret2libc_leak)"

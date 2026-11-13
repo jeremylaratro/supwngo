@@ -1,0 +1,67 @@
+# S0 truth for ancient_interface (SP-01 plan 2.3). Smoke set: never a gate.
+# Commands run from tests/htb-targets/organized (the binary is read in place).
+slug: ancient_interface
+format: elf
+arch: amd64
+vuln_family: integer
+method_accept: [rop_syscall, ret2libc]
+method_basis: reviewed
+solve_proven: eintr_accumulator_rop
+distance:
+  - kind: buf_to_ret
+    state: known_value
+    value: 4120
+    provenance: >-
+      objdump -d --no-show-raw-insn --start-address=0x40189b
+      --stop-address=0x401a89 ancient_interface: the read at 0x401a15 targets
+      lea -0x1010(%rbp) (0x401a00), so buffer = rbp-0x1010 and the saved RIP
+      is at rbp+8: 0x1010 + 8 = 0x1018 = 4120. Matches plan 2.3.
+  - kind: buf_to_canary
+    state: known_value
+    value: 4104
+    provenance: >-
+      Same function: the canary is stored at -0x8(%rbp) (0x4018c3, loaded
+      from %fs:0x28) and checked at 0x401a73, so buffer to canary is
+      0x1010 - 8 = 0x1008 = 4104. Matches plan 2.3.
+decompile:
+  vuln_function:
+    addr: 0x40189b
+    provenance: >-
+      objdump -d --no-show-raw-insn --start-address=0x40189b
+      --stop-address=0x4018c0 ancient_interface: endbr64 at 0x40189b opens a
+      frame of 0x1030 bytes; read loop at 0x401a00-0x401a36. Plan 2.3 names
+      the same address. Reached through main's indirect dispatch
+      (call *%rdx at 0x401c92), not a direct call.
+  # Stripped image: plan 4.4 step 2 (the libc start call's first argument).
+  default_function_any_of: [0x401b12]
+  anchors:
+    calls: [read, strcmp]
+    min_calls: 2
+stage:
+  files: [ancient_interface]
+  placeholders: []
+forbidden_symbols: []
+provenance:
+  default_function: >-
+    nm ancient_interface -> "no symbols" (stripped). readelf -hW ->
+    entry 0x401290. objdump -d --no-show-raw-insn --start-address=0x401290
+    --stop-address=0x4012c0 ancient_interface: the entry stub loads
+    $0x401b12 into rdi and then calls through the GOT slot of
+    __libc_start_main (0x4012b1-0x4012b8). Plan 4.4 step 2 selects the
+    function at 0x401b12.
+  anchors: >-
+    objdump -d --no-show-raw-insn --start-address=0x401b12
+    --stop-address=0x401cd0 ancient_interface: the function calls 0x401397
+    (a program function, unnamed in a stripped image), printf, memset, read,
+    strchr, strcmp, an indirect call, and printf again. The PLT-named calls
+    read and strcmp are used. Not cross-checked against a Ghidra run.
+  stage_files: >-
+    ls -p tests/htb-targets/a12c7393-371d-449e-b43d-b1e55dd9d35f/challenge ->
+    ancient_interface, ancient_interface.c, flag.txt. Only the binary is
+    staged: the source holds the answer and flag.txt is not opened by it.
+  placeholders: "strings -a ancient_interface | grep -ci flag -> 0; ancient_interface.c has no fopen"
+  vuln_family: >-
+    plan 2.3, re-checked: eintr_accumulator_rop is "ROP past a canary via a
+    signal-underflowed read accumulator" (signal_underflow_techniques.py), an
+    integer underflow, so integer stands.
+  method_accept: "plan 2.3: write-up method plus the family solve proved (eintr_accumulator_rop -> ret2libc)"

@@ -1,0 +1,53 @@
+# S0 truth for snow_scan (SP-01 plan 2.3). Smoke set: never a gate.
+# Commands run from tests/htb-targets/organized (snow_scan -> .../challenge/snowscan).
+slug: snow_scan
+format: elf
+arch: amd64
+vuln_family: stack_bof
+method_accept: [srop, rop_syscall]
+method_basis: reviewed
+solve_proven: container_file_rop
+distance:
+  # Kind known, value not yet extracted: VOID(no-truth), listed in the gaps column.
+  - kind: indexed_base_ptr
+    state: unknown
+    provenance: >-
+      plan 2.3. The fill loop in main reloads its base pointer and index from
+      stack slots (container_file_techniques.py); no number has been extracted.
+decompile:
+  vuln_function:
+    addr: 0x402361
+    provenance: >-
+      nm snow_scan | grep -w main  ->  0000000000402361 T main. The VLA fill
+      loop (jmp to main+0x1b6, one _IO_getc call, fclose) is inside main.
+  default_function_any_of: [0x402361]
+  anchors:
+    calls: [loadBitmap, scan]
+    min_calls: 2
+stage:
+  files: [snowscan]
+  placeholders: []
+forbidden_symbols: []
+provenance:
+  default_function: >-
+    nm snow_scan | grep -w -e main -e __libc_start_main  ->  main at
+    0x402361 (and __libc_start_main at 0x4028f0); plan 4.4 step 1 (main
+    symbol). Entry is 0x401df0 (readelf -hW snow_scan).
+  anchors: >-
+    objdump -d --no-show-raw-insn snow_scan --disassemble=main | grep call
+    -> setup, error, loadBitmap, scan (program symbols) and libc calls
+    (fopen, fseek, getc, fclose and two unnamed PLT stubs, reached through
+    alias names). The two program symbols loadBitmap (0x402020) and scan
+    (0x4022e1) are used because libc alias names in a static image may
+    differ between objdump and a decompiler. Not cross-checked against a
+    Ghidra run.
+  stage_files: >-
+    ls -p tests/htb-targets/a12c736f-06d6-4b36-a0f1-9bb76498a4f2/challenge ->
+    flag.txt, server.py, snowscan. Only the shipped binary snowscan is staged;
+    server.py and flag.txt are not used by the four scored commands.
+  placeholders: >-
+    strings -a snow_scan | grep -i flag  ->  5 hits, all glibc internals
+    (mode_flags, DT_FLAGS_1, _dl_stack_flags); no .txt path. The binary
+    opens only the file named in argv.
+  vuln_family: "plan 2.3; stack overflow from the VLA fill loop in main"
+  method_accept: "plan 2.3: write-up method plus the family solve proved (container_file_rop -> rop_syscall)"

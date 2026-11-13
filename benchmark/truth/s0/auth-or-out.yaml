@@ -1,0 +1,52 @@
+# S0 truth for auth-or-out (SP-01 plan 2.3). Smoke set: never a gate.
+# Commands run from tests/htb-targets/organized (the binary is read in place).
+slug: auth-or-out
+format: elf
+arch: amd64
+# Re-checked against objptr_hijack_techniques.py: the chain starts from the
+# custom allocator's size arithmetic (ta_alloc) and ends in an overflowed heap
+# record whose function pointer is later called. heap_overflow (the consequence)
+# is kept as in plan 2.3; the root defect could also be read as integer.
+vuln_family: heap_overflow
+method_accept: [objptr_hijack]
+method_basis: reviewed
+solve_proven: objptr_hijack
+distance:
+  # Kind known, value not yet extracted: VOID(no-truth), listed in the gaps column.
+  - kind: record_to_fnptr
+    state: unknown
+    provenance: >-
+      plan 2.3. The record stride and function-pointer offset are recovered at
+      run time by the executor; no number has been extracted here.
+decompile:
+  vuln_function:
+    addr: 0x105d
+    provenance: >-
+      LOW CONFIDENCE. nm auth-or-out | grep -w ta_alloc  ->  000000000000105d
+      T ta_alloc. objptr_hijack_techniques.py names ta_alloc as the allocator
+      wrapper whose size arithmetic is the wrap this target is solved through.
+      The exact overflowing write was not isolated from the disassembly. Not
+      scored in v0 (DECOMP scores the default function only).
+  default_function_any_of: [0x1971]
+  anchors:
+    calls: [add_author, print_author, delete_author]
+    min_calls: 3
+stage:
+  files: [auth-or-out]
+  placeholders: []
+forbidden_symbols: []
+provenance:
+  default_function: >-
+    nm auth-or-out | grep -w main  ->  0000000000001971 T main; plan 4.4
+    step 1 (main symbol). Link-time vaddr of a PIE image; entry is 0x880
+    (readelf -hW auth-or-out).
+  anchors: >-
+    objdump -d --no-show-raw-insn auth-or-out --disassemble=main | grep call
+    -> setvbuf, memset, ta_init, puts, print_menu, add_author,
+    modify_author, print_author, delete_author. Three program symbols are
+    used; the image carries debug info and symbols. Not cross-checked
+    against a Ghidra run.
+  stage_files: "ls -p tests/htb-targets/a12c7357-1dde-4030-8809-60de9c659449/challenge -> auth-or-out only"
+  placeholders: "strings -a auth-or-out | grep -i flag -> _flags, _flags2 (libc FILE members); no .txt path"
+  vuln_family: "plan 2.3, re-checked as noted in the header comment; unchanged"
+  method_accept: "plan 2.3: the proven family (objptr_hijack) is also the write-up method"

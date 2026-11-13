@@ -1,0 +1,52 @@
+# S0 truth for sabotage (SP-01 plan 2.3). Smoke set: never a gate.
+# Commands run from tests/htb-targets/organized (the binary is read in place).
+slug: sabotage
+format: elf
+arch: amd64
+# Re-checked against env_path_techniques.py: Malloc(n) adds a bias to the size,
+# so a caller-supplied n of 2**64 - N wraps to malloc(0); that is an integer
+# defect that becomes a heap overflow. integer stands, as in plan 2.3.
+vuln_family: integer
+method_accept: [env_hijack]
+method_basis: reviewed
+solve_proven: env_path_hijack
+distance:
+  # Kind known, value not yet extracted: VOID(no-truth), listed in the gaps column.
+  - kind: buf_to_var
+    state: unknown
+    provenance: >-
+      plan 2.3. Intra-heap distance between two chunks, measured at run time by
+      the executor; no number has been extracted here.
+decompile:
+  vuln_function:
+    addr: 0x169b
+    provenance: >-
+      nm sabotage | grep -w enter_command_control  ->  000000000000169b T
+      enter_command_control. objdump -d --no-show-raw-insn sabotage shows it
+      calling __isoc99_scanf (0x170b), Malloc (0x1717), readBuffer (0x175c)
+      and system (0x1780), the chain env_path_techniques.py describes.
+  default_function_any_of: [0x1852]
+  anchors:
+    calls: [read_option, enter_command_control, action_menu]
+    min_calls: 3
+stage:
+  files: [sabotage]
+  placeholders: []
+forbidden_symbols: []
+provenance:
+  default_function: >-
+    nm sabotage | grep -w main  ->  0000000000001852 T main; plan 4.4 step 1
+    (main symbol). Link-time vaddr of a PIE image; entry is 0xd50 (readelf
+    -hW sabotage).
+  anchors: >-
+    objdump -d --no-show-raw-insn sabotage --disassemble=main | grep call ->
+    setup, welcome, action_menu, read_option, enter_command_control,
+    quantum_destabilizer, combat_enemy_destroyer,
+    intercept_c2_communication, puts, exit. Three program symbols are used.
+    Not cross-checked against a Ghidra run.
+  stage_files: >-
+    ls -p tests/htb-targets/a12c7382-edc2-4554-ab36-fe26b48f8fd4/challenge ->
+    sabotage and the glibc/ directory (loader closure is added by staging).
+  placeholders: "strings -a sabotage | grep -ci flag -> 0; the only runtime path is /dev/urandom"
+  vuln_family: "plan 2.3, re-checked as noted in the header comment; unchanged"
+  method_accept: "plan 2.3: the proven family (env_path_hijack -> env_hijack) is also the write-up method"
