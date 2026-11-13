@@ -906,13 +906,24 @@ def pwn(ctx, binary, libc, no_gadgets, json_output, angr_timeout, analyze_only):
 @click.option("-m", "--max-length", default=2048, help="Maximum pattern length")
 @click.option("-i", "--input-method", type=click.Choice(["stdin", "argv", "file"]), default="stdin")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.option(
+    "--no-sandbox",
+    "no_sandbox",
+    is_flag=True,
+    help="Run the target and gdb unsandboxed (debugging); reports isolation none",
+)
 @click.pass_context
-def offset(ctx, binary, max_length, input_method, json_output):
+def offset(ctx, binary, max_length, input_method, json_output, no_sandbox):
     """
     Find buffer overflow offset automatically.
 
     Uses cyclic patterns and crash analysis to determine the exact
     offset needed to overwrite the return address.
+
+    The target and gdb run in a bubblewrap sandbox from the binary's own
+    directory (the result's "isolation" field says what actually ran). The
+    sandbox contains writes, IP networking and processes; it is not a
+    host-confidentiality boundary. With --json, a failure exits 2.
     """
     _reset_console()
     if json_output:
@@ -926,13 +937,15 @@ def offset(ctx, binary, max_length, input_method, json_output):
     # Load binary to get architecture
     bin_obj = Binary.load(binary)
 
-    finder = OffsetFinder(binary, bits=bin_obj.bits)
+    finder = OffsetFinder(binary, bits=bin_obj.bits, use_sandbox=not no_sandbox)
 
     with console.status(f"Testing with pattern length up to {max_length}..."):
         result = finder.find_offset(max_length, input_method)
 
     if json_output:
         _emit_json(result.to_dict())
+        if not result.success:
+            ctx.exit(2)
     else:
         if result.success:
             console.print(Panel(f"""

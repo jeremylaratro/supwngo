@@ -494,6 +494,16 @@ def test_passthrough_records_the_operator_knobs_a_cell_inherits(monkeypatch):
     assert all(env[key] == value for key, value in seen.items())
 
 
+def test_bwrap_cells_carry_the_outer_sandbox_markers_and_others_do_not(monkeypatch):
+    monkeypatch.setenv("SUPWNGO_OUTER_SANDBOX", "0")  # an operator value cannot win
+    env = _harness("bwrap").env(pc.INSIDE)
+    assert env["SUPWNGO_OUTER_SANDBOX"] == "1"
+    assert env["SUPWNGO_HOST_PIDNS"] == os.readlink("/proc/self/ns/pid")
+    none_env = _harness("none").env("/var/tmp/passcard-x/cell")
+    assert "SUPWNGO_HOST_PIDNS" not in none_env
+    assert none_env.get("SUPWNGO_OUTER_SANDBOX") != "1"
+
+
 def test_passthrough_without_a_bwrap_cell_path_and_without_operator_options(
     monkeypatch,
 ):

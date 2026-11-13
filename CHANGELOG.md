@@ -40,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads. It sweeps positive and negative indices in one process, reassembles
   printed integers at 1-, 4-, and 8-byte widths, and verifies at
   `FLAG_CAPTURED` without claiming a shell.
+- Add `offset --no-sandbox`, which runs the target and gdb unsandboxed for
+  debugging. The result JSON (`OffsetResult`) gains `kind` (`buf_to_ret`),
+  `error_code` (`timeout`, `spawn_error`, `target_not_executable`,
+  `unsupported_format`, `no_offset`) and `isolation` (`bwrap`, `outer` or
+  `none`: what actually contained the run).
+- Add `supwngo/core/exec_preflight.py`, which says whether a target can be
+  executed here at all (a regular non-empty native ELF, executable, of a machine
+  the host runs, with a usable `PT_INTERP` loader) and names the failing file.
 
 ### Changed
 
@@ -69,6 +77,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `offset` no longer crashes under load or reports a fabricated result. Every run of the target and of
+  gdb now goes through the bubblewrap sandbox from the binary's own directory,
+  with a private `/tmp/supwngo-offset-*` workspace for the pattern and gdb
+  script, so a descendant that outlives the target dies with it. The binary
+  search is tri-state: a probe that times out or cannot be spawned aborts with
+  `error_code` `timeout` or `spawn_error` instead of raising `TimeoutExpired`
+  out of the refine loop or being read as "no crash" and fabricating a
+  threshold. A target that cannot start (a missing, empty or wrong-class
+  relative loader, a PE) is reported as `target_not_executable` or
+  `unsupported_format` with the file named, not as "Could not determine offset
+  with any method", and a relative binary path no longer breaks a relative
+  loader. The core-dump method no longer analyses any `core*` found in the
+  current directory or global `/tmp`: it is skipped under the sandbox (whose
+  working directory is read-only) and otherwise reads only this run's
+  `core.<pid>` or a `core` that did not exist before, and removes it.
+  `offset --json` now exits 2 when `success` is false (human mode is unchanged).
+  A binary whose directory the sandbox cannot use (a `.`-prefixed component,
+  `/dev`, `/proc`) runs unsandboxed and reports `isolation: none`.
 - `cfg` no longer hangs on a large statically linked binary (RT-05). The angr
   `CFGFast` build runs uninterruptible C-level work that no in-process watchdog
   can cancel; on a target like snow_scan it never returned and the command was
