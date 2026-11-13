@@ -198,6 +198,13 @@ decided in **S7** with the spike evidence.
     - v4.2 adds the verify-pass deltas in §8.
     - v4.3 applies round 5, which reviewed that delta: APPROVE WITH CHANGES, N5-1..N5-9.
     - SP-01a implementation started on 2026-11-12.
+- **2026-11-12 — SP-01a part 1 merged (PRs #30, #31, #32; main `3332a0a`).**
+  - Merged: I-45 redaction, `core/proc.py`, `core/sandbox.py`, passcard families, the scorer, S0 truth,
+    V-3/V-4 test hygiene, the Ghidra control fixture (V-2) and the S0-PE fixtures (V-15).
+  - Full suite on `3332a0a`: 2533 passed, 18 skipped, 3 failed. All 3 are `test_input_vector_delivery.py` load
+    flakes that pass alone (8/8). Result: 0 genuine failures.
+  - **Next:** the SP-01a harness (staging, preflight, `passcard.py`, mutants, self-test), then the pre-fix
+    baseline. The live checklist is `docs/plans/2026-11-12-session-goals-checklist.md`.
 
 ## Phase 4 — Research (reproduced this session)
 
