@@ -128,6 +128,33 @@ def test_json_refusal_is_one_document_with_exit_2(command, target, workdir):
         }
 
 
+def test_offset_refusal_document_says_nothing_ran_with_isolation_none(target, workdir):
+    """RED on the base commit: ``isolation`` is ``""``, outside the field's value
+    set (``bwrap``, ``outer``, ``none``). Nothing ran, so the answer is ``none``."""
+    path, _ = target
+    result = invoke("offset", path, "--json")
+    assert result.exit_code == 2, (result.exit_code, result.output, result.exception)
+    doc = one_document(result)
+    assert doc["error_code"] == "unsupported_format", doc
+    assert doc["isolation"] == "none", doc
+
+
+def test_a_library_refusal_also_reports_a_member_of_the_isolation_set(
+    target, monkeypatch
+):
+    """A control: ``OffsetFinder.find_offset`` on the same files already reports
+    one of ``bwrap``, ``outer`` or ``none``, so no library path needs a change."""
+    from supwngo.exploit.offset_finder import OffsetFinder
+
+    monkeypatch.setattr(OffsetFinder, "_check_gdb", lambda self: False)
+    path, _ = target
+    result = OffsetFinder(path).find_offset(max_length=64)
+    # An empty file is ``target_not_executable`` here: the library keeps
+    # ``unsupported_format`` for a non-ELF that has content.
+    assert result.success is False and result.error_code, result
+    assert result.isolation in ("bwrap", "outer", "none"), result.isolation
+
+
 @pytest.mark.parametrize("command", COMMANDS)
 def test_json_refusal_does_not_touch_stdout_with_anything_else(
     command, target, workdir

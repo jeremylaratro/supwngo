@@ -74,8 +74,8 @@ def _require_native_elf(ctx, binary, json_output, *, offset_document=False):
     ``{"error": "Unsupported binary format: <pe|unknown>", "error_code":
     "unsupported_format"}``, or for ``offset`` the ordinary ``OffsetResult``
     failure document (``offset_document``). Nothing ran, so its ``isolation``
-    is empty. Without ``--json`` the diagnostic goes to stderr and stdout stays
-    empty.
+    is ``none``. Without ``--json`` the diagnostic goes to stderr and stdout
+    stays empty.
     """
     from supwngo.core import fileformat
 
@@ -93,6 +93,7 @@ def _require_native_elf(ctx, binary, json_output, *, offset_document=False):
                     success=False,
                     error=f"{message} ({binary} is not a native ELF executable)",
                     error_code="unsupported_format",
+                    isolation="none",
                 ).to_dict()
             )
         else:

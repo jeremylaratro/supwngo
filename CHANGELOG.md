@@ -110,9 +110,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any output file, and a refusal exits 2. With `--json`, `pwn` and `template`
   print exactly `{"error": "Unsupported binary format: <pe|unknown>",
   "error_code": "unsupported_format"}`, and `offset` prints its ordinary
-  failure document with `error_code` `unsupported_format` and an empty
-  `isolation` (nothing ran). Without `--json` a diagnostic goes to stderr and
-  stdout stays empty. `decompile` is not gated and still decompiles a PE.
+  failure document with `error_code` `unsupported_format` and `isolation`
+  `none` (nothing ran, so no sandbox applied). Without `--json` a diagnostic
+  goes to stderr and stdout stays empty. `decompile` is not gated and still
+  decompiles a PE.
 - `cfg` no longer hangs on a large statically linked binary (RT-05). The angr
   `CFGFast` build runs uninterruptible C-level work that no in-process watchdog
   can cancel; on a target like snow_scan it never returned and the command was
