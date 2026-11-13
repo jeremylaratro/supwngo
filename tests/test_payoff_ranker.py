@@ -18,7 +18,7 @@ import pytest
 
 import supwngo.analysis.decompile as decompile_mod
 from supwngo.analysis import payoff
-from supwngo.analysis.decompile import Decompiler
+from supwngo.analysis.decompile import Decompiler, GhidraRun
 from supwngo.core.proc import ProcState
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -629,3 +629,398 @@ def test_real_param_atom_derived_for_decoy_filecopy():
     ev = payoff.score_function(by_rva[decoy_rva])
     assert payoff.ATOM_TARGET_IS_PARAM in ev.atoms, (entry["id"], ev.atoms)
     assert payoff.ATOM_FILE_FIXED not in ev.atoms  # param target is not a candidate
+
+
+# ---------------------------------------------------------------------------
+# Commit 6/7: failure-injection, cache-safety and cache-integration.
+#
+# These patch the Ghidra seam (``Decompiler._run_ghidra_headless``) to write a
+# crafted envelope and return a canned run, so the driver's trust logic is
+# exercised without launching Ghidra. They are fast and always run. The binary
+# only needs a real header (for ``_entry_info``) and a stable digest, so a
+# corpus positive is used when the dev corpus is built, else a ubiquitous
+# system ELF.
+# ---------------------------------------------------------------------------
+
+
+def _mock_binary():
+    if _PAYOFF_ENTRIES:
+        return str(_bin_for(_PAYOFF_ENTRIES[0]))
+    for cand in ("/bin/true", "/usr/bin/true", "/bin/ls", sys.executable):
+        if cand and Path(cand).is_file():
+            return cand
+    return None
+
+
+_MOCK_BIN = _mock_binary()
+
+
+def _envelope(*, enumerated=2, analyzed=2, failed=0, with_payoff=True, marker=True):
+    """A real-shaped extractor envelope (mirrors SupwngoPayoff.java output)."""
+    records = [
+        {
+            "address": 0x1000,
+            "name": "main",
+            "sinks": [],
+            "has_read": False,
+            "has_stdout_output": False,
+            "unreferenced": False,
+        }
+    ]
+    if with_payoff:
+        records.append(
+            {
+                "address": 0x1234,
+                "name": "win",
+                "sinks": [
+                    {
+                        "api": "system",
+                        "target": {
+                            "kind": "const_string",
+                            "address": 0x2000,
+                            "value": "/bin/sh",
+                        },
+                    }
+                ],
+                "has_read": False,
+                "has_stdout_output": False,
+                "unreferenced": True,
+            }
+        )
+    body = {"script_version": payoff.SCRIPT_VERSION, "backend_base": 0}
+    if marker:
+        body.update(enumerated=enumerated, analyzed=analyzed, failed=failed)
+    body["records"] = records
+    return json.dumps(body)
+
+
+def _out_path_from_cmd(cmd):
+    return Path(cmd[cmd.index("-postScript") + 2])
+
+
+def _patch_extractor(
+    monkeypatch, *, envelope=None, counter=None, mutate=None, raw=None
+):
+    """Make ``Decompiler`` believe Ghidra is present and have the driver's
+    ``_run_ghidra_headless`` call write ``envelope`` (or ``raw`` bytes, or
+    nothing) to the out-file and return a clean EXITED run, without launching
+    Ghidra. ``counter`` (a list) records one entry per spawn; ``mutate`` runs
+    mid-call to exercise the TOCTOU guard."""
+    if envelope is None and raw is None:
+        envelope = _envelope()
+    monkeypatch.setattr(
+        Decompiler, "_find_ghidra", lambda self: Path("/fake/analyzeHeadless")
+    )
+
+    def fake(self, cmd, timeout, *, env=None):
+        if counter is not None:
+            counter.append(env)
+        out = _out_path_from_cmd(cmd)
+        if raw is not None:
+            out.write_text(raw, encoding="utf-8")
+        elif envelope is not None:
+            out.write_text(envelope, encoding="utf-8")
+        if mutate is not None:
+            mutate()
+        return GhidraRun(
+            state=ProcState.EXITED,
+            rc=0,
+            signal=None,
+            errno=None,
+            stdout_tail="",
+            stderr_tail="",
+            first_error="",
+            wall_s=0.01,
+            timeout_s=float(timeout),
+        )
+
+    monkeypatch.setattr(Decompiler, "_run_ghidra_headless", fake)
+
+
+def _key(bin_path):
+    sha = payoff._sha256_of(bin_path)
+    return sha, payoff.SCRIPT_VERSION, payoff.backend_version("ghidra")
+
+
+skip_no_bin = pytest.mark.skipif(not _MOCK_BIN, reason="no binary for mocked driver")
+
+
+@skip_no_bin
+def test_missing_marker_is_error_and_not_cached(monkeypatch, tmp_path):
+    """An envelope with no completion marker is untrustworthy: ERROR, and
+    nothing is written to the cache."""
+    from supwngo.core.database import Database
+
+    _patch_extractor(monkeypatch, envelope=_envelope(marker=False))
+    db = Database(db_path=str(tmp_path / "c.db"))
+    report = payoff.rank_payoffs(_MOCK_BIN, db=db)
+
+    assert report.status is payoff.PayoffStatus.ERROR
+    assert report.candidates == ()
+    assert db.get_payoff_analysis(*_key(_MOCK_BIN)) is None
+
+
+@skip_no_bin
+def test_failed_count_is_degraded_not_complete_and_not_cached(monkeypatch, tmp_path):
+    """``failed > 0`` means the pass is incomplete: DEGRADED (never a COMPLETE
+    negative), no candidates, and not cached — even though a payoff record is
+    present, trust is withheld."""
+    from supwngo.core.database import Database
+
+    _patch_extractor(
+        monkeypatch, envelope=_envelope(enumerated=3, analyzed=2, failed=1)
+    )
+    db = Database(db_path=str(tmp_path / "c.db"))
+    report = payoff.rank_payoffs(_MOCK_BIN, db=db)
+
+    assert report.status is payoff.PayoffStatus.DEGRADED
+    assert report.candidates == ()
+    assert report.counts == {"enumerated": 3, "analyzed": 2, "failed": 1}
+    assert db.get_payoff_analysis(*_key(_MOCK_BIN)) is None
+
+
+@skip_no_bin
+def test_unaccounted_functions_are_degraded_not_complete(monkeypatch, tmp_path):
+    """``analyzed != enumerated`` (with failed == 0) is still not COMPLETE: a
+    function went unaccounted for, so the empty/negative verdict is not trusted."""
+    from supwngo.core.database import Database
+
+    _patch_extractor(
+        monkeypatch, envelope=_envelope(enumerated=5, analyzed=2, failed=0)
+    )
+    db = Database(db_path=str(tmp_path / "c.db"))
+    report = payoff.rank_payoffs(_MOCK_BIN, db=db)
+
+    assert report.status is payoff.PayoffStatus.DEGRADED
+    assert db.get_payoff_analysis(*_key(_MOCK_BIN)) is None
+
+
+@skip_no_bin
+@pytest.mark.parametrize("raw", ["", "{ this is not json", "[1, 2, 3]", "42"])
+def test_malformed_or_nonobject_output_is_error_and_not_cached(
+    monkeypatch, tmp_path, raw
+):
+    """Empty, non-JSON, or non-object extractor output is ERROR and uncached:
+    the driver fails closed rather than inventing a verdict."""
+    from supwngo.core.database import Database
+
+    _patch_extractor(monkeypatch, raw=raw)
+    db = Database(db_path=str(tmp_path / "c.db"))
+    report = payoff.rank_payoffs(_MOCK_BIN, db=db)
+
+    assert report.status is payoff.PayoffStatus.ERROR
+    assert db.get_payoff_analysis(*_key(_MOCK_BIN)) is None
+
+
+@skip_no_bin
+def test_absent_output_file_is_error_and_not_cached(monkeypatch, tmp_path):
+    """If the extractor writes no file at all, the driver reports ERROR."""
+    from supwngo.core.database import Database
+
+    # A clean run that writes nothing to the out-file.
+    monkeypatch.setattr(
+        Decompiler, "_find_ghidra", lambda self: Path("/fake/analyzeHeadless")
+    )
+    monkeypatch.setattr(
+        Decompiler,
+        "_run_ghidra_headless",
+        lambda self, cmd, timeout, *, env=None: GhidraRun(
+            state=ProcState.EXITED,
+            rc=0,
+            signal=None,
+            errno=None,
+            stdout_tail="",
+            stderr_tail="",
+            first_error="",
+            wall_s=0.01,
+            timeout_s=float(timeout),
+        ),
+    )
+    db = Database(db_path=str(tmp_path / "c.db"))
+    report = payoff.rank_payoffs(_MOCK_BIN, db=db)
+
+    assert report.status is payoff.PayoffStatus.ERROR
+    assert db.get_payoff_analysis(*_key(_MOCK_BIN)) is None
+
+
+@skip_no_bin
+def test_timeout_is_timeout_status_and_not_cached(monkeypatch, tmp_path):
+    """A timed-out (not finished) run yields TIMEOUT, not ERROR, and no cache
+    write."""
+    from supwngo.core.database import Database
+
+    monkeypatch.setattr(
+        Decompiler, "_find_ghidra", lambda self: Path("/fake/analyzeHeadless")
+    )
+    monkeypatch.setattr(
+        Decompiler,
+        "_run_ghidra_headless",
+        lambda self, cmd, timeout, *, env=None: GhidraRun(
+            state=ProcState.TIMEOUT,
+            rc=None,
+            signal=None,
+            errno=None,
+            stdout_tail="",
+            stderr_tail="",
+            first_error="",
+            wall_s=float(timeout),
+            timeout_s=float(timeout),
+        ),
+    )
+    db = Database(db_path=str(tmp_path / "c.db"))
+    report = payoff.rank_payoffs(_MOCK_BIN, db=db)
+
+    assert report.status is payoff.PayoffStatus.TIMEOUT
+    assert db.get_payoff_analysis(*_key(_MOCK_BIN)) is None
+
+
+@skip_no_bin
+def test_digest_change_mid_run_blocks_cache_write(monkeypatch, tmp_path):
+    """TOCTOU guard: if the file digest changes during the pass, the result is
+    still a valid COMPLETE report, but it is NOT cached under any key — a stale
+    binary must never poison the cache."""
+    from supwngo.core.database import Database
+
+    target = tmp_path / "target.bin"
+    target.write_bytes(Path(_MOCK_BIN).read_bytes())
+    orig_key = _key(str(target))
+
+    def mutate():
+        with open(target, "ab") as fh:
+            fh.write(b"\x00")
+
+    _patch_extractor(monkeypatch, mutate=mutate)
+    db = Database(db_path=str(tmp_path / "c.db"))
+    report = payoff.rank_payoffs(str(target), db=db)
+
+    assert report.status is payoff.PayoffStatus.COMPLETE
+    new_key = _key(str(target))
+    assert db.get_payoff_analysis(*orig_key) is None
+    assert db.get_payoff_analysis(*new_key) is None
+    outcomes = {a["outcome"] for a in report.attempts if a["backend"] == "cache"}
+    assert "skipped" in outcomes
+
+
+class _BrokenDB:
+    """A cache whose every access raises — a broken cache must degrade to
+    uncached analysis, never suppress it."""
+
+    def get_payoff_analysis(self, *a, **k):
+        raise RuntimeError("read boom")
+
+    def save_payoff_analysis(self, *a, **k):
+        raise RuntimeError("write boom")
+
+
+@skip_no_bin
+def test_broken_injected_cache_still_runs_uncached(monkeypatch):
+    """An injected DB that raises on read and write does not stop the analysis:
+    COMPLETE, not from cache, with both failures recorded in attempts."""
+    _patch_extractor(monkeypatch)
+    report = payoff.rank_payoffs(_MOCK_BIN, db=_BrokenDB())
+
+    assert report.status is payoff.PayoffStatus.COMPLETE
+    assert report.from_cache is False
+    outcomes = {a["outcome"] for a in report.attempts if a["backend"] == "cache"}
+    assert "read_error" in outcomes
+    assert "write_error" in outcomes
+
+
+@skip_no_bin
+def test_default_cache_construction_failure_runs_uncached(monkeypatch):
+    """When no DB is injected and the default ``Database()`` cannot be built
+    (e.g. an unwritable home), analysis still runs COMPLETE and records the
+    cache as unavailable (round-2 MAJOR 3)."""
+    import supwngo.core.database as dbmod
+
+    def boom(self, *a, **k):
+        raise OSError("read-only home")
+
+    monkeypatch.setattr(dbmod.Database, "__init__", boom)
+    _patch_extractor(monkeypatch)
+    report = payoff.rank_payoffs(_MOCK_BIN)  # db=None -> default path -> fails
+
+    assert report.status is payoff.PayoffStatus.COMPLETE
+    outcomes = {a["outcome"] for a in report.attempts if a["backend"] == "cache"}
+    assert "unavailable" in outcomes
+
+
+@skip_no_bin
+def test_use_cache_false_never_touches_the_db(monkeypatch, tmp_path):
+    """``use_cache=False`` bypasses the cache entirely: no read, no write, and
+    a second call re-runs the extractor."""
+    from supwngo.core.database import Database
+
+    calls = []
+    _patch_extractor(monkeypatch, counter=calls)
+    db = Database(db_path=str(tmp_path / "c.db"))
+
+    r1 = payoff.rank_payoffs(_MOCK_BIN, db=db, use_cache=False)
+    r2 = payoff.rank_payoffs(_MOCK_BIN, db=db, use_cache=False)
+
+    assert r1.status is payoff.PayoffStatus.COMPLETE
+    assert r2.from_cache is False
+    assert len(calls) == 2
+    assert db.get_payoff_analysis(*_key(_MOCK_BIN)) is None
+
+
+@skip_no_bin
+def test_first_call_runs_extractor_once_second_is_cache_hit(monkeypatch, tmp_path):
+    """Cache integration: the first call spawns exactly one extractor pass and
+    caches it; the second returns from cache with zero spawns and the same
+    candidate RVAs."""
+    from supwngo.core.database import Database
+
+    calls = []
+    _patch_extractor(monkeypatch, counter=calls)
+    db = Database(db_path=str(tmp_path / "c.db"))
+
+    r1 = payoff.rank_payoffs(_MOCK_BIN, db=db)
+    r2 = payoff.rank_payoffs(_MOCK_BIN, db=db)
+
+    assert len(calls) == 1
+    assert r1.from_cache is False and r2.from_cache is True
+    assert r1.status is payoff.PayoffStatus.COMPLETE
+    assert r2.status is payoff.PayoffStatus.COMPLETE
+    assert r1.candidates, "mocked payoff envelope should yield a candidate"
+    assert [c.rva for c in r1.candidates] == [c.rva for c in r2.candidates]
+
+
+@skip_no_bin
+def test_budget_is_the_configured_limit_on_miss_and_hit(monkeypatch, tmp_path):
+    """``budget_s`` is the resolved limit on both the miss and the subsequent
+    cache hit; ``elapsed_s`` is non-negative."""
+    from supwngo.core.database import Database
+
+    _patch_extractor(monkeypatch)
+    db = Database(db_path=str(tmp_path / "c.db"))
+
+    r1 = payoff.rank_payoffs(_MOCK_BIN, db=db, ghidra_timeout=123.0)
+    r2 = payoff.rank_payoffs(_MOCK_BIN, db=db, ghidra_timeout=123.0)
+
+    assert r1.budget_s == 123.0
+    assert r2.budget_s == 123.0
+    assert r1.elapsed_s >= 0.0
+    assert r2.from_cache is True
+
+
+@pytest.mark.skipif(not _PAYOFF_ENTRIES, reason="dev payoff corpus not built")
+def test_jvm_user_home_override_reaches_runner_and_completes(monkeypatch, corpus_db):
+    """End-to-end with REAL Ghidra: the per-call JVM ``user.home`` override is
+    threaded all the way to ``proc.run``, and the pass completes on Ghidra (a
+    silent degrade to a different backend would fail the backend assertion)."""
+    need_ghidra()
+    captured = {}
+    real = Decompiler._run_ghidra_headless
+
+    def spy(self, cmd, timeout, *, env=None):
+        captured["env"] = env
+        return real(self, cmd, timeout, env=env)
+
+    monkeypatch.setattr(Decompiler, "_run_ghidra_headless", spy)
+    report = payoff.rank_payoffs(str(_bin_for(_PAYOFF_ENTRIES[0])), db=corpus_db)
+
+    assert report.status is payoff.PayoffStatus.COMPLETE
+    assert report.backend == "ghidra"
+    assert captured["env"] is not None
+    assert "-Duser.home=" in captured["env"].get("JAVA_TOOL_OPTIONS", "")
