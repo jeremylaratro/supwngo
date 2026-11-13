@@ -1024,4 +1024,41 @@ and recorded here as an amendment.
 
 #### Verify-pass amendments (Mythos 5-2, execution allowed)
 
-Pending: `docs/reviews/2026-11-12-mythos-roadmap/verify-mythos-execution.md`.
+**Record:** `docs/reviews/2026-11-12-mythos-roadmap/verify-mythos-execution.md`.
+- Run: claude-mythos-5-2, 72 minutes, 41 turns, `is_error = False`.
+- It worked on a scratch copy and wrote nothing to the live repo.
+- One command, an `rm -rf` chain, was denied; the experiment was re-run in a form that was allowed.
+
+**Status values:**
+- **ADOPTED (SP-01)** means folded into SP-01 plan §8.
+- **RECORDED (SP-xx)** means binding on that sprint when it is planned.
+- **FROZEN (F)** means parked by directive F until gate F is met.
+
+| ID | Amendment, in brief | Status |
+|---|---|---|
+| AMD-1 | **§0/§1.6 "Today" corrected.** From challenge-directory copies: <ul><li>offset is 2 of 3 valid stack-return cells correct (sick_rop and rocket both 40), with no crash; the earlier crash was a repo-root run artefact;</li><li>decompile is 5/7, not 3/7;</li><li>ROBUST is 28/28 single documents, but 28/28 exit 0 including the failures.</li></ul> Method 2/7 and the constant template 7/7 reproduce. | ADOPTED (SP-01 §8 V-5); the passcard baseline replaces the numbers |
+| AMD-2 | **Preflight.** A loader must be regular, non-empty and executable; sabotage and bon-nie-appetit ship a 0-byte loader. Proposal: move `run_with_loader` to SP-01a. | Preflight already planned. The move is **declined**: both targets are outside the F focus and stay honestly VOID. CG-04 stays in SP-02c for F-2. |
+| AMD-3 | **Cells.** No dot-component paths, a private `/tmp` tmpfs, and a Ghidra control cell. | ADOPTED (SP-01 §8 V-1, V-2) |
+| AMD-4 | **SP-03 store.** Keep exported JSON only, not Ghidra projects. Add a stale-lock-after-kill test. | RECORDED (SP-03) |
+| AMD-5 | **`__*_chk` sinks.** Add them to the sink table. The generator sets fortify explicitly per variant; a fortified build is a patched twin. | RECORDED (SP-04a, SP-02c); binding on the gate-F suite |
+| AMD-6 | **angr `CFGFast(normalize=True)`.** Fix it, and make the happy-path test assert real code. | ADOPTED (SP-01 §8 V-7) |
+| AMD-7 | **Test entry point.** Three test files run the installed CLI; switch to `sys.executable -m supwngo.cli`. | ADOPTED (SP-01 §8 V-3) |
+| AMD-8 | **Exit 2 collides with click usage errors.** | ADOPTED (SP-01 §8 V-13): exit 2 is kept, and every negative test asserts the JSON error field |
+| AMD-9 | **SP-02a RED proofs.** Every "must not produce X" proof asserts that the option was accepted first. Add the `secret`/`vuln_func` decoy fixture. | RECORDED (SP-02a); binding on F-1 |
+| AMD-10 | **PE.** `unsupported_format` for `pwn`/`template`/`offset`; PE default function and PE DECOMP baseline in SP-01. | ADOPTED (SP-01 §8 V-8, V-9, §8.3) |
+| AMD-11 | **The crash-driven finder** stays permanently as the `--dynamic` confirmer. Fix the `core*` glob. | Glob already in SP-01b. The DEC-9 change is RECORDED (SP-04). |
+| AMD-12 | **`rax_control` evidence is semantic,** not the executor's one-shape regex. The negative fixture must make the return value uncontrollable. | RECORDED (SP-02b); binding on F-3 |
+| AMD-13 | **RELRO replacement list** drops `got_plt.py`; the lint covers `Protections` receivers. | Already covered (SP-01 §4.3 allowlists it by receiver type) |
+| AMD-14 | **Identifier lint** needs a docstring decision and an inventory. | Already covered (SP-01 §4.5) |
+| AMD-15 | **HYP-14** restated as statement coverage over the passcard. `--version` takes 1.07 s. | FROZEN (F); M3 |
+| AMD-16 | **SP-03A gates.** G3 is measured with fortify on and off. Add a static-axis line decided by the FID probe. | RECORDED (SP-03A) |
+| AMD-17 | **SP-04a breakpoint truth** breaks on callsite addresses, never on symbols. | RECORDED (SP-04a) |
+| AMD-18 | **Q10 / HYP-24 closed:** bubblewrap works unprivileged on this host, including for Ghidra with a private `/tmp`. | ADOPTED. The owner question is removed; the SP-01 §3.3 contingency stays as a guard. |
+
+**Findings beyond the AMD list:**
+- `template` discards what it measures (it emits `offset = 0`), adopted into SP-02b.
+- PIE addresses differ by backend, adopted into SP-01 §8 V-10.
+- Ghidra failures hide their reason, adopted into SP-01 §8 V-11.
+- Bet 1 held, with zero wrong answers: P-code distance was exact on 8 of 23 new fixtures and abstained on 15.
+  The abstentions were fortified `-O2` sinks, callee sinks (no depth-1 summary yet) and a stripped static
+  binary. This is input to SP-03A and SP-04a.

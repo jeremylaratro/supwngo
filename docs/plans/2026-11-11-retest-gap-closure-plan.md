@@ -181,6 +181,13 @@ decided in **S7** with the spike evidence.
     a scratch copy of the repo. It is recorded at
     `docs/reviews/2026-11-12-mythos-roadmap/verify-mythos-execution.md`, and its amendments are in §14 of the
     roadmap.
+    - It corrected the baseline: offset is 2/3 correct on valid stack-return cells, and decompile is 5/7.
+    - It confirmed that bubblewrap works unprivileged here, Ghidra included.
+    - It found the honesty bugs below, which SP-01 plan §8 adopts as V-1..V-14:
+      - `pwn` on PE answers SHELLCODE with exit 0;
+      - angr `normalize=True`;
+      - dot-path cells break Ghidra;
+      - PIE addresses differ by backend.
   - **Owner directive F (2026-11-12).** Pick 2-3 strategies and do not move on until they are bulletproof.
     - The focus is F-1 `ret2win`, F-2 `ret2libc` and F-3 syscall ROP (`srop`/`rop_syscall`).
     - Gate F and the focus path are in roadmap §14. All other strategies and SP-07+ are frozen until gate F is
@@ -188,6 +195,9 @@ decided in **S7** with the spike evidence.
   - **Next: SP-01** (passcard v0 and the honesty fixes):
     `docs/plans/2026-11-12-sp01-passcard-and-honesty-plan.md`. Plan v4.1 is approved: Daybreak Blue round 4 was APPROVE WITH CHANGES,
     after rounds 1–3 were REJECT. All four rounds are recorded beside the plan.
+    - v4.2 adds the verify-pass deltas in §8.
+    - v4.3 applies round 5, which reviewed that delta: APPROVE WITH CHANGES, N5-1..N5-9.
+    - SP-01a implementation started on 2026-11-12.
 
 ## Phase 4 — Research (reproduced this session)
 

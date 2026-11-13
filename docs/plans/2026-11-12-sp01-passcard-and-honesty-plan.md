@@ -1,4 +1,4 @@
-# SP-01 — Passcard v0 and the honesty fixes (plan v4.1, 2026-11-12)
+# SP-01 — Passcard v0 and the honesty fixes (plan v4.3, 2026-11-12)
 
 - **Roadmap.** `docs/roadmaps/2026-11-12-mythos-roadmap.md` §5–6 (SP-01). This is the canonical copy of
   `docs/reviews/2026-11-12-mythos-roadmap/roadmap-final-mythos.md`.
@@ -10,6 +10,8 @@
   - v3: REJECT, B3-1..B3-5 (`…-review-daybreak-blue-r3.md`). The §3.7 arithmetic was confirmed consistent.
   - v4: **APPROVE WITH CHANGES**, no blocking items (`…-review-daybreak-blue-r4.md`). The four required edits,
     N4-1..N4-4, are applied in v4.1.
+  - v4.2 (the §8 verify-pass delta): **APPROVE WITH CHANGES**, no blocking items (`…-review-daybreak-blue-r5.md`).
+    N5-1..N5-9 are applied in v4.3.
   - §9 maps every review item to the change it caused.
 
 ## 1. Goal
@@ -22,7 +24,8 @@
    instrument and the product's `offset` (DEC-25).
 
 **Not in scope (SP-02):** the SROP gate, role tiering, overrides on `pwn`/`template`, and template honesty.
-`pwn`, `template` and `solve` are measured here, not changed.
+`pwn`, `template` and `solve` are measured here, not changed. The one exception is §8 V-8: `pwn` and `template`
+refuse non-ELF input (N5-9).
 
 **Owner directive F** (roadmap §14) keeps SP-01 unchanged, because gate F needs this instrument. The three
 targets outside the focus strategies (auth-or-out, sabotage, bon-nie-appetit) are measured here and are not
@@ -51,6 +54,7 @@ stage:                         # allowlist copied into the cell, relative to the
   files: [sick_rop]            # the shipped binary; loader/libc closure is added automatically
   placeholders: []             # runtime files synthesized with neutral content, e.g. flag.txt
 forbidden_symbols: []          # target-specific identifiers only (e.g. fill_ammo)
+metrics: all                   # optional; default all. The S0-PE fixtures use [decomp, robust] (§8 V-15, N5-8)
 ```
 
 ### 2.1 Truth states and OFF cells (B-1, B2-2)
@@ -246,7 +250,8 @@ file list equals the computed closure.
 
 **Harness invocation.** The harness runs each command through `sandbox.run` with:
 - `binds = [(<host cell>, /tmp/cell)]` and `cwd = /tmp/cell`. The cell's private `TMPDIR`, `HOME` and
-  `XDG_CACHE_HOME` are `/tmp/cell/.tmp`, `.home` and `.cache`.
+  `XDG_CACHE_HOME` are `/tmp/cell/tmp`, `/tmp/cell/home` and `/tmp/cell/cache`. No path may contain a
+  dot-component, because Ghidra rejects it (§8 V-1).
 - `hide`:
   - `benchmark/truth`;
   - `benchmark/gen` (generator sources and seeds, from SP-02c; recorded as `hide_absent` until it exists);
@@ -613,7 +618,7 @@ Each step has a deterministic unit test.
 **RetDec.** Bypassed for an empty selector, because it fabricates `main` (`decompile.py:468-476`); recorded in
 CHANGELOG. Unchanged with `-f`. RetDec is not installed on this host.
 
-**PE default selection** moves to SP-03: `Binary.load` (`cli.py:2051`, `binary.py:175`) is ELF-only.
+**PE default selection** moves to SP-03: `Binary.load` (`cli.py:2051`, `binary.py:175`) is ELF-only. *(Superseded by §8 V-9: PE default selection is in SP-01b.)*
 
 **Fixtures.**
 - `nomain.S`: freestanding `_start`, built with `-nostdlib -static`.
@@ -718,7 +723,200 @@ callers with `git grep` first.
 
 ## 8. Amendments from the execution-enabled verify pass
 
-(Filled in after `VERIFY.md`.)
+**Source.** `docs/reviews/2026-11-12-mythos-roadmap/verify-mythos-execution.md` (Mythos 5-2, single thread,
+execution allowed, 72 min). Roadmap-level dispositions are in roadmap §14. Every item below is adopted into
+SP-01 and overrides the section it names.
+
+### 8.1 SP-01a
+
+- **V-1, cell paths with no dot-component (AMD-3).**
+  - Ghidra rejects any project path with a component starting with `.`. With `TMPDIR=<cell>/.tmp`, decompile went
+    from 5/7 to 0/7.
+  - The cell layout becomes `/tmp/cell/tmp`, `/tmp/cell/home` and `/tmp/cell/cache`. Staging asserts that no
+    scratch or cell path contains a dot-component.
+- **V-2, Ghidra control cell (AMD-3, N5-6).**
+  - Every passcard run includes a control cell. It catches a broken Ghidra, Java or sandbox environment before
+    it reads as product failures.
+  - **Fixture.** Source `benchmark/fixtures/ghidra_control/ghidra_control.c`. It defines a non-static
+    `ghidra_control()` that calls `puts`, and a `main` that calls it.
+  - **Binary.** It is built **non-PIE** (`-no-pie -O0`), so its Ghidra address equals the link-time vaddr both
+    before and after V-10. The binary is committed as `ghidra_control.elf`, with its SHA-256 pinned in
+    `benchmark/fixtures/ghidra_control/expect.yaml`.
+  - **Expectation**, also in `expect.yaml`:
+    - selector `-f ghidra_control`;
+    - expected address from `nm`;
+    - rc 0 and exactly one JSON document;
+    - `analysis_backend == "ghidra"`;
+    - non-sentinel `code` containing a call to `puts`.
+  - **Acceptance precondition.** If the control does not pass, or the binary's SHA-256 differs, the run is
+    **invalid**: the header says so, and the run is not accepted.
+  - The control is excluded from every semantic and ROBUST denominator.
+- **V-3, tests import the checkout (AMD-7).** These three files build their CLI from `shutil.which("supwngo")`,
+  which resolves to the editable install under `/usr/bin/python3`:
+  - `tests/test_cfg_angr_budget.py:38`
+  - `tests/test_decompile_angr_budget.py:43`
+  - `tests/test_static_dataflow_strings_angr_budget.py:51`
+
+  They change to `[sys.executable, "-m", "supwngo.cli"]`. A test asserts that no file under `tests/` calls
+  `which("supwngo")`. This commit lands before the baseline.
+- **V-4, core-dump hygiene.**
+  - `core_uses_pid = 1`, and the suite runs crash fixtures from the repo root. That left 42 `core.*` files
+    (112 MB), which were deleted on 2026-11-12 after checking each with `file`.
+  - The root `conftest.py` already sets `PWNLIB_NOTERM` and `XDG_CACHE_HOME` at import. It now also sets the soft
+    `RLIMIT_CORE` to 0 at import. The hard limit is unchanged.
+  - No test exercises `_find_with_coredump` (grep, 2026-11-12).
+  - **The one core consumer is
+    `tests/test_solve_command.py::test_guided_fallback_resumes_to_success_with_supplied_offset` (N5-7).**
+    - It reads `p.corefile` from a `python3 -c` child that runs from the repo root, which is the likely source of
+      the stray cores.
+    - pwntools' `process` already raises its own child's soft limit (`pwnlib/tubes/process.py:439`,
+      `setrlimit(RLIMIT_CORE, (-1, -1))`).
+    - The fix: run that child with `cwd=tmp_path`, so the core lands in `tmp_path`, and delete the core afterwards.
+    - The test must still pass under the new conftest. If pwntools' own raise fails, give the child a
+      `preexec_fn` that raises the soft limit to the hard limit.
+  - **Focused test.** The pytest process has a soft limit of 0, and a child that opts in gets a non-zero limit.
+- **V-5, ROBUST baseline expectation (AMD-1).** These are recorded as measured expectations, not tuned targets:
+  - offset 2 of 3 valid stack-return cells, with no crash;
+  - decompile 5/7;
+  - ROBUST 28/28 single documents, but 28/28 exit 0 including the failures.
+- **V-6, loader helper (AMD-2): not moved into SP-01a.**
+  - sabotage and bon-nie-appetit ship a 0-byte loader. They stay VOID(`interp_empty`) for execution cells, which
+    is the honest result.
+  - Both are outside directive F's focus.
+  - `run_with_loader` (CG-04) stays in SP-02c, where F-2 needs it for a supplied libc.
+- **V-15, S0-PE fixtures and table (N5-8).**
+  - **Location.** The two mingw PE64 fixtures from V-9 live in `benchmark/fixtures/s0pe/`, with `pe_vuln.c`:
+    - `pe_sym.exe`, built with symbols;
+    - `pe_strip.exe`, the same build stripped.
+  - **Build.** `x86_64-w64-mingw32-gcc`. The binaries are committed and their SHA-256 values pinned, so the
+    pre-fix baseline and the post-fix run score the same bytes.
+  - **Placement.** They are built in **SP-01a**, so the pre-fix baseline includes them.
+  - **Truth.** Each has a truth file under `benchmark/truth/s0pe/`, with `format: pe` and
+    `metrics: [decomp, robust]`.
+  - **Separate table.** They are scored in their own **S0-PE** table, with its own denominators:
+    - 2 DECOMP cells;
+    - 8 ROBUST cells (4 commands × 2).
+  - The S0 matrix stays at 7 ELF targets: 28 ROBUST, 8 OFF and 7 cells for each other metric.
+  - The §3.7 mutant self-test still runs on that 7-ELF matrix only.
+
+### 8.2 SP-01b
+
+- **V-7, angr CFG (AMD-6).**
+  - `_angr_subprocess.py` builds `CFGFast()` without `normalize=True`, so the fallback never produces code on
+    this host.
+  - The fix goes in the same commit as the tagged union.
+  - `test_decompile_angr_happy_path_uses_subprocess_and_returns_function` is rewritten to assert real code: a
+    non-sentinel body that names the fixture's call. Today it passes only because the sentinel counts as a
+    function.
+- **V-8, PE refusal (AMD-10, N5-3, N5-4).**
+  - `pwn` on a mingw PE returns SHELLCODE at 0.9 with exit 0 and `arch: ""`, a false success.
+  - **Detection.** New `supwngo/core/fileformat.py` defines `detect_format(path) -> elf | pe | unknown`.
+    - `elf`: the `\x7fELF` magic and a parseable ELF header.
+    - `pe`, only when all of these hold:
+      1. the file starts with `MZ`;
+      2. `e_lfanew` is readable and in bounds;
+      3. `PE\0\0` is at that offset;
+      4. the COFF and optional headers are complete;
+      5. the optional-header magic is `0x10b` or `0x20b`.
+    - Everything else is `unknown`.
+  - **Detection tests:**
+    - truncated `MZ`;
+    - out-of-range `e_lfanew`;
+    - missing PE signature;
+    - PE32+ and, where `i686-w64-mingw32-gcc` builds it, PE32;
+    - a truncated ELF.
+  - **Refusal documents.** Detection runs before `Binary.load` and before any template output file is created.
+    - `offset --json`: the ordinary `OffsetResult` failure, with `success: false`, a non-empty `error`,
+      `error_code: "unsupported_format"` and exit 2.
+    - `pwn --json` and `template --json`: exactly
+      `{"error": "Unsupported binary format: <pe|unknown>", "error_code": "unsupported_format"}` and exit 2.
+    - Human mode: a readable diagnostic on stderr and exit 2, with no JSON.
+  - **`decompile` on PE keeps working.** VERIFY measured correct Ghidra pseudo-C with `-f`.
+  - This corrects §4.4: `Binary.load` does not block PE decompile; it degrades silently.
+- **V-9, PE default function (AMD-10, N5-1).**
+  - §4.4 no longer defers PE to SP-03. The PE entry RVA is `AddressOfEntryPoint` from the optional header, parsed
+    by `fileformat.py` with `struct`, with no new dependency.
+  - That is the CRT start (`mainCRTStartup`), **not** the user's `main`. The PE order is therefore:
+    1. `main` symbol → `symbol`.
+    2. `mingw_crt_main_arg` → `mingw_crt_main_arg`. Search the CRT start's call tree, to a bounded depth, for the
+       function that calls `__getmainargs` (or UCRT `__p___argc`). Take the target of its first direct call after
+       that one that receives the argc and argv globals. Proved on `pe_strip.exe`.
+    3. `entry` → `entry`, the CRT start itself, labelled as such.
+  - `first_reachable` is **not** used for PE: a BFS through CRT initialisation is not a main detector.
+  - **Truth.** For both PE fixtures, `default_function_any_of` lists the user `main` address only. An `entry`
+    result is therefore an honest DECOMP FAIL, never a pass.
+  - **Tests** (tool tier, under `SUPWNGO_REQUIRE_GHIDRA=1`) assert the planted user-function address and a code
+    anchor (its `puts` call), not merely non-empty code.
+  - **Cut line, as in §4.4.** If step 2 cannot be proved on the fixture inside SP-01b:
+    - it moves to SP-03;
+    - the `pe_strip` test becomes `xfail(strict=True)` with the reason;
+    - S0-PE reports the stripped cell as a FAIL with `selected_by: entry`.
+- **V-10, one address convention (finding 9, N5-2).**
+  - For PIE, Ghidra reports an address based at `0x100000` and angr one based at `0x400000`, for the same
+    function.
+  - Both backends' `address` is normalised to the file's link-time virtual address, the objdump convention.
+  - **`backend_base` is reported by each backend, never assumed from observed constants.** Hardcoding `0x100000`
+    or `0x400000` would corrupt ET_EXEC addresses.
+    - Ghidra: `currentProgram.getImageBase().getOffset()`, added to the Java JSON.
+    - angr: `proj.loader.main_object.mapped_base`, added to the worker reply.
+  - **File base.**
+    - ELF: `min(PT_LOAD.p_vaddr)`.
+    - PE: `ImageBase` from the optional header, via `fileformat.py`.
+  - **Mapping:** `rva = backend_addr − backend_base`, then `address = file_base + rva`.
+  - The inverse mapping is applied to an explicit `-f 0x...` selector before it reaches either backend.
+  - **Independent-oracle tests.** The expected value comes from `nm`/objdump, or from the PE header and symbol
+    table. Cross-backend equality alone does not count, because both can be wrong the same way. The fixtures are:
+    - an ELF PIE;
+    - an ELF ET_EXEC;
+    - PE32+;
+    - PE32, when the toolchain builds it.
+  - DECOMP truth uses this convention.
+- **V-11, Ghidra errors are surfaced (finding 4, N5-5).**
+  - The Ghidra runner returns a structured result instead of a Boolean. It carries:
+    - its `ProcResult` state;
+    - bounded stdout and stderr tails;
+    - the first `ERROR` line from stdout.
+  - Today stdout is discarded (`decompile.py:291`).
+  - The diagnostic survives the RetDec and angr fallbacks. It is included in `error` only if the whole operation
+    fails.
+  - **Test.** The test exercises the Ghidra seam directly with a dot-component project path, and asserts that the
+    structured result's error contains `Path element starting with '.'`.
+  - **CLI-level test.** It forces RetDec unavailable and the angr worker into a tagged failure, so a successful
+    fallback cannot make it vacuous.
+- **V-12, RED-test mechanics (VERIFY §4).**
+  - Patches on the target runner match `argv[0]`. A blanket `subprocess.run` patch caught an unrelated `file -b`
+    call.
+  - `CliRunner(mix_stderr=False)` is used wherever a test parses `--json` stdout.
+  - The parent-side sentinel RED feeds the **legacy** worker reply.
+- **V-13, exit 2 versus click's usage error (AMD-8).** Exit 2 is kept. Click usage errors print text, not JSON, so
+  they fail ROBUST's "exactly one JSON document" check. Every negative-result test asserts the JSON
+  `error_code` (offset) or `error` (others) as well as the exit code.
+- **V-14, already covered.** These need no change:
+  - AMD-13 (RELRO): `got_plt.py` is already allowlisted by receiver type (§4.3).
+  - AMD-14 (identifiers): already a zero policy for code plus a generated documentation inventory (§4.5).
+  - AMD-11's `core*` glob: already deleted (§4.1).
+
+### 8.3 Exit-criteria additions
+
+**SP-01a:**
+- The Ghidra control cell passes in every accepted run.
+- The S0-PE fixtures are committed with pinned hashes, and the pre-fix baseline includes the S0-PE table.
+- The `which("supwngo")` test is green.
+
+**SP-01b:**
+- `pwn`, `template` and `offset` on both PE fixtures return `unsupported_format` with exit 2.
+- The angr fallback returns real code on the tiny fixture.
+- The PE default-function fixtures pass under `SUPWNGO_REQUIRE_GHIDRA=1`.
+- Both backends report the same normalised address on the PIE fixture.
+- The **S0-PE table** (V-15) scores 2 DECOMP and 8 ROBUST cells, separately from the 7-ELF S0 matrix:
+  - all 8 ROBUST cells PASS;
+  - `pe_sym` DECOMP PASSES;
+  - `pe_strip` DECOMP PASSES, or is the stated V-9 cut-line FAIL.
+- The address-normalisation oracle tests pass for ELF PIE, ELF ET_EXEC and PE32+.
+
+**Unit suite:** VERIFY measured 2229 passed, 2 failed and 18 skipped at load 13–43. Both failures are
+wall-budget timeouts that pass alone. The exit criterion compares against a pre-branch run on the same host,
+and re-runs any wall-budget failure alone before counting it.
 
 ## 9. Review disposition
 
@@ -773,3 +971,17 @@ callers with `git grep` first.
 | N4-3 workspace path | `mkdtemp(dir="/tmp", …)`, bound at the same path under the sandbox `/tmp`. |
 | N4-4 survivor fixture | The sleeper closes its standard descriptors and signals readiness before the parent emits. Cleanup kills, reaps and rescans until nothing is left. |
 | N3-1 / AMD-O1 | Landed in roadmap §14, with an inline marker at the SP-01 `confidence` line. |
+
+### Round 5 (v4.2 → v4.3; APPROVE WITH CHANGES; §8 delta only)
+
+| Item | Change |
+|---|---|
+| N5-1 HIGH, stripped mingw default is the CRT start | V-9 order is now `main` → `mingw_crt_main_arg` → `entry`, with no `first_reachable` for PE. Truth accepts only the user `main`, so `entry` is an honest FAIL. Tests assert the planted address and the `puts` anchor. Cut line: if step 2 can't be proved, it moves to SP-03 and becomes a strict xfail. |
+| N5-2 HIGH, `backend_base` undefined | Each backend reports its base: Ghidra `getImageBase()`, angr `main_object.mapped_base`. The file base is `min(PT_LOAD.p_vaddr)` for ELF and `ImageBase` for PE. The inverse mapping applies to `-f 0x…`. Independent-oracle tests cover PIE, ET_EXEC, PE32+ and, if buildable, PE32. |
+| N5-3 refusal documents | Exact JSON is pinned per command. `offset` keeps `OffsetResult` with `error_code`; `pwn`/`template` emit `{error, error_code}`. Human mode: a stderr diagnostic and exit 2. Detection runs before `Binary.load` and before template output is written. |
+| N5-4 PE magic | Strict 5-step PE detection; anything else is `unknown`. Malformed-input tests added. |
+| N5-5 V-11 masked by fallback | Structured Ghidra runner result. The diagnostic is preserved through fallbacks. There is a seam-level test, and a CLI test with the fallbacks forced off. |
+| N5-6 control oracle | Pinned: source, a committed non-PIE binary with its SHA-256, `-f ghidra_control`, `nm` address, backend `ghidra`, a `puts` anchor, rc 0 and one document. It is a precondition outside every denominator. |
+| N5-7 core consumer | Named `test_guided_fallback_resumes_to_success_with_supplied_offset`. Its child runs in `tmp_path` and the core is deleted afterwards. pwntools already raises the child's soft limit. A focused limit test is added. |
+| N5-8 PE denominators | New V-15: the S0-PE fixtures and truth (`metrics: [decomp, robust]`), built in SP-01a and scored in a separate S0-PE table (2 DECOMP, 8 ROBUST). The 7-ELF S0 matrix and the mutant self-test are unchanged. |
+| N5-9 §1 scope | §1 now names V-8 as the one change to `pwn`/`template`. |
