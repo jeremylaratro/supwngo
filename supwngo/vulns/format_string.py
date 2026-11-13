@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from supwngo.core.binary import Binary
+from supwngo.core.relro import Relro
 from supwngo.fuzzing.crash_triage import CrashCase
 from supwngo.vulns.detector import (
     ExploitPrimitive,
@@ -594,7 +595,7 @@ class FormatStringDetector(VulnerabilityDetector):
                 if self.binary.protections.canary:
                     confidence -= 0.05
                     mitigations.append("canary")
-                if self.binary.protections.relro == "Full RELRO":
+                if self.binary.protections.relro_kind is Relro.FULL:
                     confidence -= 0.1
                     mitigations.append("Full RELRO")
 
@@ -637,7 +638,7 @@ class FormatStringDetector(VulnerabilityDetector):
             mitigations.append("PIE")
         if self.binary.protections.canary:
             mitigations.append("canary")
-        if self.binary.protections.relro == "Full RELRO":
+        if self.binary.protections.relro_kind is Relro.FULL:
             mitigations.append("Full RELRO")
 
         # Only report if no protections (likely CTF/test binary)

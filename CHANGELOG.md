@@ -242,6 +242,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was reported as Partial RELRO. `core/relro.py` adds the `Relro` level type and
   `normalize_relro()`, and `Protections.relro_kind` exposes the typed level while
   `relro` and the `to_dict()` JSON keep the display strings unchanged.
+- A Full RELRO binary no longer gets RET2DLRESOLVE from `StrategySuggester`, and
+  the Full RELRO warning now fires. The consumers of `Protections.relro` compared
+  the display string (`"Full RELRO"`) against other spellings (`"full"`,
+  `"Full"`, `"none"`), so the Full branch never ran in `StrategySuggester`, the
+  import analyzer's lazy-binding pass, the PIE leak and bypass finders, or the
+  exploit chainer's `partial_relro_or_none` capability (which was never set, even
+  for a No RELRO binary). They now decide on `Protections.relro_kind`. A lint
+  (`tests/test_relro_lint.py`) rejects any new read of `.relro` outside
+  `supwngo/core` that is not display-only or allowlisted by receiver type.
 
 ## [2.1.0] - 2026-09-28
 
