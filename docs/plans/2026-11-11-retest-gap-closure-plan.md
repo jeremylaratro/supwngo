@@ -151,7 +151,39 @@ decided in **S7** with the spike evidence.
   (8 blocking items, all resolved). Plans:
   `2026-11-12-s5-ghidra-decompile-plan.md` +
   `2026-11-12-s5-ghidra-decompile-review-daybreak-blue.md`.
-- Next: **S6** (detector depth — RT-10/08/09), then S7 (cleanup + 2.2.0).
+- ~~Next: **S6** (detector depth — RT-10/08/09), then S7 (cleanup + 2.2.0).~~
+- **2026-11-12 — re-scoped by the owner PASS criteria + Mythos 5-2 review.**
+  - **New PASS bar (owner).** The tool must output the right method, plus either (a) work given a supplied
+    component (`--winfun`/`--eip`-style overrides) or (b) emit a template that works with manual inputs.
+    Decompile must work on ELF and PE, and the offset must be visible on every target.
+  - **Baseline at 1741b34.** `docs/reviews/2026-11-12-mythos-roadmap/inputs/SCORECARD.md` scores:
+    - method 2/7;
+    - `template -t auto` a constant `ret2system` 7/7;
+    - offset 0/7, with one crash;
+    - decompile 3/7, with two angr failure sentinels reported as success.
+  - **Solve at HEAD** was re-measured the same day: `htb_rescore --reps 3` gives 7/7, 21/21 reps
+    `shell_proven`.
+  - **Review.** A five-dimension Mythos 5-2 review produced a synthesis roadmap. Daybreak Blue reviewed it
+    adversarially and Mythos folded in the changes. Records are in `docs/reviews/2026-11-12-mythos-roadmap/`
+    and the result is `docs/roadmaps/2026-11-12-mythos-roadmap.md`.
+  - **S6 is superseded.** RT-08 moves into **SP-02b**, re-scoped: SROP is gated on `rax`-control evidence
+    (`supwngo/analysis/rax_control.py`), not on the syscall-return gadget substring, and comes with role
+    tiering. RT-09 and RT-10 are dropped as drafted; their intent moves to **SP-05** and **SP-09**
+    (evidence-graded detectors over the facts KB, with name-free allocator roles).
+  - **S7 is split.**
+    - The **I-45** in-place redaction of three corpus YAML flag comments goes into SP-01a.
+    - The **HO-01** `pie_base_offset()` deletion goes into SP-01b.
+    - The **HO-02** 2.2.0 tag moves to the end of SP-02.
+    - **S-libc-binding** is placed by the roadmap: CG-04 loader threading becomes patchelf-run targets in
+      SP-02c/SP-06; the CG-01b mismatch detector goes with the local libc-database in SP-07.
+    - Broader dead-code removal and packaging go to **SP-12a/b/c**, staged behind deprecation.
+  - **Verify pass.** A single-thread Mythos 5-2 pass, with execution allowed, re-reviewed the final roadmap on
+    a scratch copy of the repo. It is recorded at
+    `docs/reviews/2026-11-12-mythos-roadmap/verify-mythos-execution.md`, and its amendments are in §14 of the
+    roadmap.
+  - **Next: SP-01** (passcard v0 and the honesty fixes):
+    `docs/plans/2026-11-12-sp01-passcard-and-honesty-plan.md`. Plan v3 is under Daybreak Blue review; rounds 1
+    and 2 were REJECT, and both are recorded beside the plan.
 
 ## Phase 4 — Research (reproduced this session)
 
