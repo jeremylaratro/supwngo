@@ -323,3 +323,11 @@ corpus_fsop/*/*
 !corpus_fsop/*/*.c
 !corpus_fsop/*/cflags
 !corpus_fsop/corpus_fsop.yaml
+
+# gen/payoff/ -- the payoff corpus v0 generator. The generator and its modules are
+# tracked; the corpus it builds (binaries, per-binary truth, sources, index) is
+# produced, never committed. The truth files are the answer key, so a committed
+# build would let a component read the answer. The default dev output is build/;
+# the held set is only ever built to a caller-chosen directory outside the repo,
+# from a seed the caller supplies (SUPWNGO_PAYOFF_HELD_SEED), and never in-tree.
+gen/payoff/build/
