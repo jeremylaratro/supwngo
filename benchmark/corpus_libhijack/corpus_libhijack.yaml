@@ -257,7 +257,7 @@
 #
 #   POSITIVES -- 5 targets x 2 reps = 10 wins. Every rep produced BOTH the
 #     computed shell marker SH42OK and the flag. The flag was the per-run secret
-#     FLAG{libhj_perrun_uqp70r}, installed by rebuilding with SUPWNGO_BENCH_FLAG,
+#     FLAG{REDACTED}, installed by rebuilding with SUPWNGO_BENCH_FLAG,
 #     so it could not have been guessed from the sources.
 #
 #   NEGATIVE CONTROL -- libhj_90 attacked with ALL FIVE mechanisms: cwd, env_dir,

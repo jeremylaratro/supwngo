@@ -459,7 +459,7 @@ targets:
 #       $ PYTHONPATH=<repo> python3 -m supwngo.cli autopwn ./off_by_one \
 #             --json --no-legacy --timeout 300 --strategy off_by_one_guard
 #       success=True  technique=off_by_one_guard  legacy_fallback=not_reached
-#       flag=FLAG{edb90cfb2503255f16a5b386aa7428b7}
+#       flag=FLAG{REDACTED}
 #       attempts: off_by_one_guard SUCCESS stage=DONE
 #
 #     It went RED first, and the red is worth keeping: on the first run the probe
@@ -474,7 +474,7 @@ targets:
 #     whether this executor should sit where it sits in FIRST_TECHNIQUES):
 #       $ PYTHONPATH=<repo> python3 -m supwngo.cli autopwn ./off_by_one \
 #             --json --no-legacy --timeout 300          # no --strategy
-#       success=True  technique=ret2win  flag=FLAG{edb90...}
+#       success=True  technique=ret2win  flag=FLAG{REDACTED}
 #       attempts: ... scanf_scalar_overwrite SKIPPED, ret2win SUCCESS
 #
 #     `ret2win` still wins this target, because it sits ONE LINE EARLIER in
