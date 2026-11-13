@@ -54,6 +54,8 @@ needs_targets = pytest.mark.skipif(
     reason="S0 binaries absent (gitignored); set PASSCARD_TARGETS_ROOT to a checkout "
     "that has tests/htb-targets/organized",
 )
+
+
 def have_bwrap() -> bool:
     """True when ``bwrap`` can build a PID-namespace sandbox here."""
     if shutil.which("bwrap") is None:
@@ -180,6 +182,97 @@ def verdicts(report: Dict[str, Any], table: str = "s0") -> Dict[Tuple[str, str],
         for cell in entry["cells"]:
             out.setdefault((slug, cell["metric"]), []).append(cell["verdict"])
     return out
+
+
+# --- S0 truth, as the mutant shims receive it -------------------------------------
+
+
+def load_truth(slug: str) -> Dict[str, Any]:
+    return yaml.safe_load((BENCHMARK / "truth" / "s0" / ("%s.yaml" % slug)).read_text())
+
+
+def s0_binary_name(slug: str, targets_root: Optional[Path] = None) -> str:
+    """The shipped file's name (``snowscan`` for ``snow_scan``): the realpath's basename."""
+    return os.path.realpath((targets_root or TARGETS_ROOT) / slug).rsplit("/", 1)[-1]
+
+
+def truth_bundle(slugs: Sequence[str] = tuple(S0_SLUGS)) -> Dict[str, Dict[str, Any]]:
+    """The ``--truth-json`` bundle for the mutant shims, keyed by the binary's file name.
+
+    This is the only way a shim learns the right answer: the test hands it over
+    explicitly, because the sandbox hides ``benchmark/truth`` from the command.
+    """
+    bundle: Dict[str, Dict[str, Any]] = {}
+    for slug in slugs:
+        truth = load_truth(slug)
+        known = {
+            d["kind"]: d["value"] for d in truth["distance"] if d.get("state") == "known_value"
+        }
+        accept = truth["method_accept"][0]
+        bundle[s0_binary_name(slug)] = {
+            "approach": accept,
+            "technique": accept,
+            "offset": known.get("buf_to_ret"),
+            "canary_offset": known.get("buf_to_canary"),
+            "function": "f",
+            "address": hex(truth["decompile"]["default_function_any_of"][0]),
+            "calls": list(truth["decompile"]["anchors"]["calls"]),
+        }
+    return bundle
+
+
+@dataclass
+class Mirror:
+    """A copy of the S0 binaries (and their loader closure) outside the real tree.
+
+    Tests that plant answer-key files plant them here, never in the real source
+    directories. ``keys[slug]`` lists the four planted-or-real key paths for a target.
+    """
+
+    root: Path
+    targets_root: Path
+    gen_dir: Path
+    keys: Dict[str, List[str]]
+
+    def all_keys(self) -> List[str]:
+        return [path for paths in self.keys.values() for path in paths]
+
+
+def build_mirror(slugs: Sequence[str] = tuple(S0_SLUGS)) -> Mirror:
+    """Build the mirror under /var/tmp (the caller removes ``mirror.root``).
+
+    Per target the keys are: its truth file, a challenge source file, a ``.debug``
+    sibling of the binary, and a generator-source file under ``gen/`` (the stand-in
+    for ``benchmark/gen``, passed to the runner as ``--extra-hide``).
+    """
+    sys.path.insert(0, str(BENCHMARK))
+    import passcard_stage as stage
+
+    root = Path(tempfile.mkdtemp(prefix="passcard-mirror-", dir="/var/tmp"))
+    organized, gen_dir = root / "organized", root / "gen"
+    organized.mkdir()
+    gen_dir.mkdir()
+    keys: Dict[str, List[str]] = {}
+    for slug in slugs:
+        real = Path(os.path.realpath(TARGETS_ROOT / slug))
+        copy_dir = root / "src" / slug
+        for rel in [real.name, *stage.compute_closure(real.parent, [real.name])]:
+            (copy_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(real.parent / rel, copy_dir / rel)
+        source = copy_dir / ("%s.c" % real.name)
+        source.write_text("/* challenge source: the answer key for %s */\n" % slug)
+        debug = copy_dir / ("%s.debug" % real.name)
+        debug.write_bytes(b"planted debug sibling for " + slug.encode())
+        generator = gen_dir / ("%s_gen.py" % slug)
+        generator.write_text("# generator source with the truth for %s\n" % slug)
+        (organized / slug).symlink_to("../src/%s/%s" % (slug, real.name))
+        keys[slug] = [
+            str(BENCHMARK / "truth" / "s0" / ("%s.yaml" % slug)),
+            str(source),
+            str(debug),
+            str(generator),
+        ]
+    return Mirror(root, organized, gen_dir, keys)
 
 
 # --- a synthetic world the runner can score ---------------------------------------
