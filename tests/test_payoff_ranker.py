@@ -10,6 +10,7 @@ run; a corpus cross-check runs only when the dev corpus has been built.
 from __future__ import annotations
 
 import json
+import sys
 import types
 from pathlib import Path
 
@@ -19,6 +20,9 @@ import supwngo.analysis.decompile as decompile_mod
 from supwngo.analysis import payoff
 from supwngo.analysis.decompile import Decompiler
 from supwngo.core.proc import ProcState
+
+sys.path.insert(0, str(Path(__file__).parent))
+from ghidra_support import need_ghidra  # noqa: E402
 
 # (format, backend_base/image_base, backend_addr/vaddr, expected truth rva)
 # PIE: image base 0 -> vaddr == rva. ET_EXEC: 0x400000. PE: 0x140000000.
@@ -483,3 +487,145 @@ def test_run_ghidra_headless_env_defaults_to_none_unchanged(monkeypatch):
     _spy_decompiler()._run_ghidra_headless(["analyzeHeadless"], timeout=1)
 
     assert seen["env"] is None
+
+
+# =========================================================================== #
+# Commit 5 — corpus tests (real Ghidra). Each names its binary id. Gated by
+# need_ghidra(): a gate run sets SUPWNGO_REQUIRE_GHIDRA=1, otherwise they skip
+# (each costs a JVM start). A shared module cache DB means a binary tested by
+# more than one case runs Ghidra once; most run exactly once.
+# =========================================================================== #
+
+
+def _index_entries():
+    idx = _BUILD / "index.json"
+    if not idx.is_file():
+        return []
+    return json.loads(idx.read_text()).get("entries", [])
+
+
+def _entries_of(*kinds):
+    return [e for e in _index_entries() if e["kind"] in kinds]
+
+
+def _truth_for(entry):
+    return json.loads((_BUILD / entry["truth"]).read_text())
+
+
+def _bin_for(entry):
+    return _BUILD / entry["binary"]
+
+
+def _ids(entries):
+    return [e["id"] for e in entries]
+
+
+_PAYOFF_ENTRIES = _entries_of("positive", "rename_twin", "strip_twin", "pe")
+_NEGATIVE_ENTRIES = _entries_of("negative")
+
+
+@pytest.fixture(scope="module")
+def corpus_db(tmp_path_factory):
+    """One cache DB shared by every corpus test in this module, so a binary
+    referenced by more than one test spawns Ghidra at most once."""
+    from supwngo.core.database import Database
+
+    return Database(db_path=str(tmp_path_factory.mktemp("payoff_cache") / "c.db"))
+
+
+@pytest.mark.skipif(not _PAYOFF_ENTRIES, reason="dev payoff corpus not built")
+@pytest.mark.parametrize("entry", _PAYOFF_ENTRIES, ids=_ids(_PAYOFF_ENTRIES))
+def test_payoff_corpus_top1_is_truth_and_no_decoy(entry, corpus_db):
+    """Positives, rename/strip twins and PE: a COMPLETE pass with a non-empty
+    candidate list whose top-1 RVA equals the truth payoff_rva, and whose top-1
+    is never one of the three decoy RVAs (Done-when: 32 + 16 + 16 + 8)."""
+    need_ghidra()
+    truth = _truth_for(entry)
+    report = payoff.rank_payoffs(str(_bin_for(entry)), db=corpus_db)
+
+    assert report.status is payoff.PayoffStatus.COMPLETE, (entry["id"], report.attempts)
+    assert report.backend == "ghidra"
+    assert report.candidates, f"{entry['id']}: abstained on a payoff-bearing binary"
+    top1 = report.candidates[0].rva
+    assert top1 == truth["payoff_rva"], (entry["id"], top1, truth["payoff_rva"])
+    decoy_rvas = set((truth.get("decoys") or {}).values())
+    assert top1 not in decoy_rvas, (entry["id"], "top-1 is a decoy", top1, decoy_rvas)
+
+
+@pytest.mark.skipif(not _NEGATIVE_ENTRIES, reason="dev payoff corpus not built")
+@pytest.mark.parametrize("entry", _NEGATIVE_ENTRIES, ids=_ids(_NEGATIVE_ENTRIES))
+def test_payoff_corpus_negative_is_complete_and_empty(entry, corpus_db):
+    """A negative is a *successful complete* empty pass, not a failure in
+    disguise: COMPLETE, empty candidates, ghidra backend, and the completion
+    invariant on the counts (failed == 0, analyzed == enumerated)."""
+    need_ghidra()
+    report = payoff.rank_payoffs(str(_bin_for(entry)), db=corpus_db)
+
+    assert report.status is payoff.PayoffStatus.COMPLETE, (entry["id"], report.attempts)
+    assert report.candidates == ()
+    assert report.backend == "ghidra"
+    assert report.counts["failed"] == 0
+    assert report.counts["analyzed"] == report.counts["enumerated"]
+    assert report.counts["enumerated"] > 0
+
+
+def _extract_envelope(bin_path):
+    """Run the real extractor and return its parsed envelope, reusing the
+    driver's own JVM-home and envelope-reading helpers (only the command list is
+    assembled here). Used by the real-param test to inspect raw evidence."""
+    import tempfile
+
+    d = Decompiler(types.SimpleNamespace(path=Path(bin_path)))
+    file_format, entry_rva = d._entry_info()
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = Path(tmp) / "project"
+        proj.mkdir()
+        out = Path(tmp) / "payoff.json"
+        home = Path(tmp) / "home"
+        home.mkdir()
+        cmd = [
+            str(d._ghidra_path),
+            str(proj),
+            "T",
+            "-import",
+            str(bin_path),
+            "-scriptPath",
+            str(d._ghidra_scripts_dir()),
+            "-postScript",
+            payoff.GHIDRA_PAYOFF_SCRIPT,
+            str(out),
+            "none" if entry_rva is None else hex(entry_rva),
+            file_format,
+            "-deleteProject",
+        ]
+        d._run_ghidra_headless(cmd, 180, env=payoff._merged_jvm_env(str(home)))
+        return payoff._read_payoff_envelope(out)
+
+
+@pytest.mark.skipif(not _PAYOFF_ENTRIES, reason="dev payoff corpus not built")
+def test_real_param_atom_derived_for_decoy_filecopy():
+    """The extractor derives TARGET_IS_PARAM from a real binary (not hand-fed):
+    on a positive whose truth lists a filecopy decoy, the evidence at that decoy
+    RVA carries the param disqualifier, which is why the decoy is never a
+    candidate even though its body mirrors a file-reading payoff (plan R2)."""
+    need_ghidra()
+    entry = next(
+        (
+            e
+            for e in _entries_of("positive")
+            if (_truth_for(e).get("decoys") or {}).get("filecopy")
+        ),
+        None,
+    )
+    assert entry is not None, "no positive with a filecopy decoy in the corpus"
+    truth = _truth_for(entry)
+    decoy_rva = truth["decoys"]["filecopy"]
+
+    envelope = _extract_envelope(str(_bin_for(entry)))
+    assert envelope is not None, entry["id"]
+    fes = payoff._evidence_from_envelope(envelope)
+    by_rva = {fe.rva: fe for fe in fes}
+    assert decoy_rva in by_rva, (entry["id"], "decoy not enumerated", decoy_rva)
+    ev = payoff.score_function(by_rva[decoy_rva])
+    assert payoff.ATOM_TARGET_IS_PARAM in ev.atoms, (entry["id"], ev.atoms)
+    assert payoff.ATOM_FILE_FIXED not in ev.atoms  # param target is not a candidate
