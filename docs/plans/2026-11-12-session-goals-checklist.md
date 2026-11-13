@@ -41,6 +41,14 @@ Legend: `[x]` done and verified · `[ ]` open · **Done when** = the completion 
     re-run alone;
   - Conventional Commits, and CHANGELOG `[Unreleased]` or an honest `changelog: none`;
   - every commit goes through a PR and is merged to main.
+- [ ] **G-7 No hardcoded target values** (owner directive, 2026-11-13). Product code holds no value that only
+  applies to an evaluation platform: no payoff-function name lists, no guessed comparison constants, no
+  platform-specific flag patterns. Payoff functions are identified per binary by analysis (Ghidra static
+  evidence plus sandboxed gdb confirmation). Plan: `docs/plans/2026-11-13-retire-hardcoded-target-values-plan.md`.
+  **Done when:**
+  - the plan's W-0..W-6 are merged;
+  - `git grep` finds no payoff-name list;
+  - the rename/strip twin test is green for every command that picks a payoff.
 - [ ] **G-6 Docs current.**
   **Done when:** at every sprint boundary, the gap-closure status log, roadmap §14 (if amended) and this
   checklist reflect the merged state.
@@ -205,8 +213,13 @@ Each sub-sprint gets its own plan in `docs/plans/`, reviewed by Daybreak Blue be
     - every unsupported shape abstains with a reason;
     - breakpoint truth agrees with DWARF truth on ≥ 98% of runnable ELF;
     - the F.offset row (§6) holds.
-- [ ] **SP-04b Payoff tiers**, for win-function detection (F-1) only.
-  - **Done when:** payoff top-1 is ≥ 90%, identical after a rename, with 0 file-copy decoys ranked top-1.
+- [ ] **SP-04b Payoff tiers**, for win-function detection (F-1). **Pulled forward by G-7.**
+  - It runs immediately after SP-01b, before SP-02, and is no longer in the cut order.
+  - Names are never consulted, not even as a tie-break.
+  - It absorbs the sandboxed dynamic confirmation for payoff functions.
+  - Plan: `docs/plans/2026-11-13-retire-hardcoded-target-values-plan.md`.
+  - **Done when:** that plan's W-0..W-6 table holds. This includes top-1 identical across rename and strip twins,
+    and 0 decoys ranked top-1.
 - [ ] **SP-05 Plan v1 and honest templates** for the three focus strategies.
   - **Done when:**
     - every recommendation cites a function and a site;
