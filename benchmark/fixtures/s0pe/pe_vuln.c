@@ -10,6 +10,11 @@
  * inlined. The truth accepts only the user `main` as the default function
  * (plan V-9): on the stripped build the PE entry point is the CRT start, not
  * `main`, so falling back to it is an honest DECOMP FAIL.
+ *
+ * `main` calls `puts` itself, before it calls `pe_vuln`. The DECOMP anchor is
+ * the call `puts`, a name that survives stripping (it is an import), and the
+ * scored default function is `main`: the anchor must be a call `main` makes, or
+ * a correct decompile of `main` could never contain it.
  */
 #include <stdio.h>
 
@@ -21,5 +26,6 @@ int pe_vuln(void)
 
 int main(void)
 {
+    puts("pe main");
     return pe_vuln();
 }

@@ -18,6 +18,12 @@
 #   x86_64-w64-mingw32-nm pe_sym.exe | grep -E ' T (main|pe_vuln)$'
 #   x86_64-w64-mingw32-objdump -d -M intel pe_sym.exe
 #   x86_64-w64-mingw32-objdump -p pe_sym.exe | grep -E 'ImageBase|AddressOfEntryPoint'
+# Measured: ImageBase 0x140000000, AddressOfEntryPoint 0x14f0 (mainCRTStartup,
+# 0x1400014f0), pe_vuln 0x140001550, main 0x14000156f, __main 0x140001650, the
+# `puts` thunk 0x1400026a0.
+# main calls puts itself (pe_vuln.c: `puts("pe main"); return pe_vuln();`), so the
+# anchor is a call the scored function really makes. main's calls, in order:
+#   call 140001650 <__main>, call 1400026a0 <puts>, call 140001550 <pe_vuln>
 # Rebuilding does not reproduce these bytes (the PE TimeDateStamp is the build
 # time); the committed binary and its pinned SHA-256 are the reference.
 slug: pe_sym
@@ -26,7 +32,7 @@ arch: amd64
 metrics: [decomp, robust]
 binary:
   path: benchmark/fixtures/s0pe/pe_sym.exe
-  sha256: ca0b14c20be2b09e0ddaed908605c1ab9e6959c4bc91750abd1c8a6c08d0b75e
+  sha256: c66385cb2d284bf4e181c5b745bd4011428c66919d433153b49138fe26d27b3e
 vuln_family: null
 method_accept: []
 method_basis: null
@@ -35,9 +41,10 @@ distance: []
 decompile:
   vuln_function:
     addr: 0x140001550
-    provenance: "nm: T pe_vuln; objdump -d: <pe_vuln> at 140001550, call 140002690 <puts>"
+    provenance: "nm: T pe_vuln; objdump -d: <pe_vuln> at 140001550, call 1400026a0 <puts>"
   # User main only (V-9). The PE entry is the CRT start (mainCRTStartup,
-  # 0x1400014f0), so a result of `entry` is an honest DECOMP FAIL.
+  # 0x1400014f0), so a result of `entry` is an honest DECOMP FAIL. main (nm: T main,
+  # 14000156f) calls puts directly, which is what the `puts` anchor below relies on.
   default_function_any_of: [0x14000156f]
   anchors: {calls: [puts], min_calls: 1}
 stage:

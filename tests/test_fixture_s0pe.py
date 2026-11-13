@@ -2,10 +2,12 @@
 
 Pins the committed PE bytes and checks each truth file against them: SHA-256,
 PE32+ x86-64, symbol table present only in ``pe_sym.exe``, the user ``main`` and
-``pe_vuln`` addresses, and that the stripped file shares ``pe_sym.exe``'s VMA
-layout and ``.text`` bytes (which is why one set of addresses serves both). The
-PE is parsed with ``struct``; ``nm`` is used only as an independent cross-check
-when a mingw ``nm`` is installed. Ghidra is never invoked.
+``pe_vuln`` addresses, that ``main`` calls ``puts`` itself (the DECOMP anchor is
+a call the scored function makes), and that the stripped file shares
+``pe_sym.exe``'s VMA layout and ``.text`` bytes (which is why one set of
+addresses serves both). The PE is parsed with ``struct``; ``nm`` is used only as
+an independent cross-check when a mingw ``nm`` is installed. Ghidra is never
+invoked.
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_DIR = ROOT / "benchmark" / "fixtures" / "s0pe"
 TRUTH_DIR = ROOT / "benchmark" / "truth" / "s0pe"
 SLUGS = ["pe_sym", "pe_strip"]
+# main is 0x24 bytes (0x14000156f..0x140001592, `ret`) in the committed builds.
+MAIN_SIZE = 0x24
 
 
 def _truth(slug: str) -> dict:
@@ -152,17 +156,21 @@ def test_default_function_truth_is_user_main_and_never_the_crt_entry(slug):
 
 @pytest.mark.parametrize("slug", SLUGS)
 def test_pinned_addresses_agree_with_the_committed_bytes(slug):
-    # main calls pe_vuln, and pe_vuln calls one target (the `puts` thunk), both
-    # read straight from the bytes at the pinned addresses.
+    # pe_vuln runs from its pinned address up to main, and calls exactly one
+    # target (the `puts` thunk). main, the scored function, calls `puts` itself
+    # (the thunk pe_vuln calls), then pe_vuln, plus the CRT's `__main` init: its
+    # three call targets, read straight from the bytes at the pinned addresses.
     truth = _truth(slug)["decompile"]
     pe = _pe(slug)
     (main,) = truth["default_function_any_of"]
     vuln = truth["vuln_function"]["addr"]
-    assert vuln in pe.call_targets(main, 0x20)
-    puts_thunks = pe.call_targets(vuln, 0x20)
-    assert len(puts_thunks) == 1
+    (puts_thunk,) = pe.call_targets(vuln, main - vuln)
     # The thunk is `jmp qword ptr [rip+disp32]` through the import table.
-    assert pe.read_va(puts_thunks[0], 2) == b"\xff\x25"
+    assert pe.read_va(puts_thunk, 2) == b"\xff\x25"
+    main_calls = pe.call_targets(main, MAIN_SIZE)
+    assert puts_thunk in main_calls, "main must call puts directly: the DECOMP anchor"
+    assert vuln in main_calls
+    assert len(main_calls) == 3  # __main, puts, pe_vuln
 
 
 def test_both_truth_files_share_one_set_of_addresses():
@@ -187,7 +195,14 @@ def test_nm_agrees_with_the_pinned_addresses_in_pe_sym():
     truth = _truth("pe_sym")["decompile"]
     assert symbols["main"] == truth["default_function_any_of"][0]
     assert symbols["pe_vuln"] == truth["vuln_function"]["addr"]
-    # The call pe_vuln makes goes to the symbol `puts`.
+    # The call pe_vuln makes goes to the symbol `puts`, and so does one of main's;
+    # main's others go to pe_vuln and the CRT's `__main`.
     pe = _pe("pe_sym")
-    (puts_thunk,) = pe.call_targets(truth["vuln_function"]["addr"], 0x20)
+    vuln, main = truth["vuln_function"]["addr"], symbols["main"]
+    (puts_thunk,) = pe.call_targets(vuln, main - vuln)
     assert symbols["puts"] == puts_thunk
+    assert set(pe.call_targets(main, MAIN_SIZE)) == {
+        symbols["__main"],
+        symbols["puts"],
+        symbols["pe_vuln"],
+    }
