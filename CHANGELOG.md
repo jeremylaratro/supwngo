@@ -95,6 +95,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `offset --json` now exits 2 when `success` is false (human mode is unchanged).
   A binary whose directory the sandbox cannot use (a `.`-prefixed component,
   `/dev`, `/proc`) runs unsandboxed and reports `isolation: none`.
+- `offset` no longer silently drops gdb under load. The `gdb --version` probe
+  at construction gave up after a hard-coded 5 s and read that as "gdb is not
+  installed", so the search fell back to core dumps and the less exact bisect
+  with nothing said. It now checks `shutil.which("gdb")` first (a missing gdb is
+  quiet), allows `GDB_PROBE_TIMEOUT_S` (30 s), and when gdb is found but the
+  probe times out, cannot run or exits non-zero it logs a warning that names the
+  reason. The fallback is unchanged.
 - `pwn`, `template` and `offset` now refuse a target that is not a native ELF
   (a PE, a script, an empty or truncated file) before loading it. `pwn` used to
   half-parse a mingw PE into a fabricated analysis (SHELLCODE at 0.9, exit 0),

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import errno
 import inspect
+import logging
 import os
 import re
 import resource
@@ -717,3 +718,114 @@ def test_result_carries_kind_error_code_and_isolation():
     assert as_dict["isolation"] == ""
     ok = OffsetResult(offset=8, success=True, isolation="bwrap").to_dict()
     assert ok["error_code"] == "" and ok["isolation"] == "bwrap"
+
+
+# --- the gdb probe ---------------------------------------------------------
+
+LOGGER = "supwngo.exploit.offset_finder"
+
+
+def probe_gdb(monkeypatch, tmp_path, *, installed=True, run=None):
+    """Build a finder with ``shutil.which("gdb")`` and the ``gdb --version`` probe
+    scripted. Returns ``(finder, probes)``; ``probes`` holds the keyword arguments
+    of each probe call. ``run(argv, **kwargs)`` stands in for ``subprocess.run``.
+    """
+    real_which = shutil.which
+    real_run = subprocess.run
+    probes = []
+
+    def which(name, *args, **kwargs):
+        if name == "gdb":
+            return "/usr/bin/gdb" if installed else None
+        return real_which(name, *args, **kwargs)
+
+    def scripted(argv, *args, **kwargs):
+        if argv[0] == "gdb" and argv[1:2] == ["--version"]:
+            probes.append(kwargs)
+            return run(argv, **kwargs)
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "which", which)
+    monkeypatch.setattr(subprocess, "run", scripted)
+    return unsandboxed_finder(tmp_path / "target"), probes
+
+
+def answered(returncode=0, stderr=b""):
+    return lambda argv, **kwargs: subprocess.CompletedProcess(
+        argv, returncode, b"GNU gdb\n", stderr
+    )
+
+
+def raising(exc):
+    def run(argv, **kwargs):
+        raise exc
+
+    return run
+
+
+def warnings_of(caplog):
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == LOGGER and r.levelno == logging.WARNING
+    ]
+
+
+def test_gdb_probe_budget_is_a_named_constant_of_at_least_30_seconds():
+    """RED on the base: a hard-coded 5 s, with no constant to read."""
+    assert getattr(offset_finder, "GDB_PROBE_TIMEOUT_S", 0) >= 30
+
+
+def test_the_probe_is_given_the_named_budget(monkeypatch, tmp_path):
+    """RED on the base: it passes a literal 5, whatever the constant says."""
+    monkeypatch.setattr(offset_finder, "GDB_PROBE_TIMEOUT_S", 7.0, raising=False)
+    finder, probes = probe_gdb(monkeypatch, tmp_path, run=answered())
+    assert finder._gdb_available is True
+    assert [p.get("timeout") for p in probes] == [7.0]
+
+
+@pytest.mark.parametrize(
+    "run, reason",
+    [
+        (
+            raising(subprocess.TimeoutExpired(["gdb", "--version"], 30)),
+            "timed out",
+        ),
+        (raising(OSError(8, "Exec format error")), "Exec format error"),
+        (answered(returncode=3, stderr=b"gdb: broken install\n"), "broken install"),
+    ],
+    ids=["timeout", "oserror", "nonzero"],
+)
+def test_a_gdb_that_is_found_but_will_not_answer_is_warned_about(
+    monkeypatch, tmp_path, caplog, run, reason
+):
+    """RED on the base: the failure is swallowed, so gdb is silently off and the
+    search falls back to the less exact bisect with nothing said."""
+    caplog.set_level(logging.WARNING, logger=LOGGER)
+    finder, _ = probe_gdb(monkeypatch, tmp_path, run=run)
+    assert finder._gdb_available is False
+    messages = warnings_of(caplog)
+    assert len(messages) == 1, messages
+    assert "gdb" in messages[0]
+    assert reason in messages[0], messages[0]
+
+
+def test_a_gdb_that_is_not_installed_is_off_without_a_warning(
+    monkeypatch, tmp_path, caplog
+):
+    """RED on the base: it runs the version probe anyway instead of checking
+    ``shutil.which`` first."""
+    caplog.set_level(logging.WARNING, logger=LOGGER)
+    finder, probes = probe_gdb(monkeypatch, tmp_path, installed=False, run=answered())
+    assert finder._gdb_available is False
+    assert probes == []
+    assert warnings_of(caplog) == []
+
+
+def test_a_gdb_that_answers_is_on_without_a_warning(monkeypatch, tmp_path, caplog):
+    """A control: the healthy path is unchanged and quiet."""
+    caplog.set_level(logging.WARNING, logger=LOGGER)
+    finder, probes = probe_gdb(monkeypatch, tmp_path, run=answered())
+    assert finder._gdb_available is True
+    assert len(probes) == 1
+    assert warnings_of(caplog) == []
