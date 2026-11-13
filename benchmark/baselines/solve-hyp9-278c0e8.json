@@ -1,0 +1,347 @@
+{
+  "run": "20261113-091704Z",
+  "reps": 3,
+  "timeout": 300,
+  "targets": {
+    "ancient_interface": {
+      "verdict": "SOLVED",
+      "reps": [
+        {
+          "slug": "ancient_interface",
+          "elapsed_sec": 119.5,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "eintr_accumulator_rop",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        },
+        {
+          "slug": "ancient_interface",
+          "elapsed_sec": 27.8,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "eintr_accumulator_rop",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        },
+        {
+          "slug": "ancient_interface",
+          "elapsed_sec": 27.5,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "eintr_accumulator_rop",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        }
+      ]
+    },
+    "auth-or-out": {
+      "verdict": "SOLVED",
+      "reps": [
+        {
+          "slug": "auth-or-out",
+          "elapsed_sec": 23.9,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "objptr_hijack",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        },
+        {
+          "slug": "auth-or-out",
+          "elapsed_sec": 23.8,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "objptr_hijack",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        },
+        {
+          "slug": "auth-or-out",
+          "elapsed_sec": 25.0,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "objptr_hijack",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        }
+      ]
+    },
+    "bon-nie-appetit": {
+      "verdict": "SOLVED",
+      "reps": [
+        {
+          "slug": "bon-nie-appetit",
+          "elapsed_sec": 26.3,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "heap_strlen_ofb1",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        },
+        {
+          "slug": "bon-nie-appetit",
+          "elapsed_sec": 22.2,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "heap_strlen_ofb1",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        },
+        {
+          "slug": "bon-nie-appetit",
+          "elapsed_sec": 22.7,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "heap_strlen_ofb1",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        }
+      ]
+    },
+    "rocket_blaster_xxx": {
+      "verdict": "SOLVED",
+      "reps": [
+        {
+          "slug": "rocket_blaster_xxx",
+          "elapsed_sec": 65.9,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "ret2libc_leak",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        },
+        {
+          "slug": "rocket_blaster_xxx",
+          "elapsed_sec": 79.2,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "ret2libc_leak",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        },
+        {
+          "slug": "rocket_blaster_xxx",
+          "elapsed_sec": 68.3,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "ret2libc_leak",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        }
+      ]
+    },
+    "sabotage": {
+      "verdict": "SOLVED",
+      "reps": [
+        {
+          "slug": "sabotage",
+          "elapsed_sec": 12.8,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "env_path_hijack",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        },
+        {
+          "slug": "sabotage",
+          "elapsed_sec": 11.9,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "env_path_hijack",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        },
+        {
+          "slug": "sabotage",
+          "elapsed_sec": 11.5,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "env_path_hijack",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        }
+      ]
+    },
+    "sick_rop": {
+      "verdict": "SOLVED",
+      "reps": [
+        {
+          "slug": "sick_rop",
+          "elapsed_sec": 18.0,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "srop_symtab_pivot",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        },
+        {
+          "slug": "sick_rop",
+          "elapsed_sec": 23.0,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "srop_symtab_pivot",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        },
+        {
+          "slug": "sick_rop",
+          "elapsed_sec": 16.3,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "srop_symtab_pivot",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        }
+      ]
+    },
+    "snow_scan": {
+      "verdict": "SOLVED",
+      "reps": [
+        {
+          "slug": "snow_scan",
+          "elapsed_sec": 82.6,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "container_file_rop",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        },
+        {
+          "slug": "snow_scan",
+          "elapsed_sec": 70.8,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "container_file_rop",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        },
+        {
+          "slug": "snow_scan",
+          "elapsed_sec": 79.5,
+          "timed_out": false,
+          "returncode": 0,
+          "level": "SHELL_ACCESS",
+          "technique": "container_file_rop",
+          "secret_reproduced": false,
+          "shell_confirmed": true,
+          "shell_proven": true,
+          "echo_ambiguous": false,
+          "parse_error": null,
+          "hard_error": null
+        }
+      ]
+    }
+  },
+  "solved": [
+    "ancient_interface",
+    "auth-or-out",
+    "bon-nie-appetit",
+    "rocket_blaster_xxx",
+    "sabotage",
+    "sick_rop",
+    "snow_scan"
+  ],
+  "score": "7/7",
+  "hard_errors": []
+}

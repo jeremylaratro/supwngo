@@ -205,6 +205,23 @@ decided in **S7** with the spike evidence.
     flakes that pass alone (8/8). Result: 0 genuine failures.
   - **Next:** the SP-01a harness (staging, preflight, `passcard.py`, mutants, self-test), then the pre-fix
     baseline. The live checklist is `docs/plans/2026-11-12-session-goals-checklist.md`.
+- **2026-11-13 — SP-01a: DONE (PR #34, `992986e`, plus the baseline PR).**
+  - PR #34 merged the passcard harness: staging, preflight, `benchmark/passcard.py` under `bwrap`, the mutant
+    self-test and mapping coverage. Full suite on `c2f2bc4`: 2686 passed, 19 skipped, 1 load flake.
+  - **Pre-fix baseline** `benchmark/baselines/passcard-s0-pre-sp01.{json,md}` on `992986e`: VALID and
+    ACCEPTED, control PASS, isolation `bwrap`, solve 7/7 (21/21 `shell_proven`).
+    - S0: METHOD-R0 2/7, TEMPLATE 2/7, OFF 2 PASS + 2 ABSTAIN + 4 VOID, DECOMP 2/7, ROBUST 22/28.
+    - S0-PE: DECOMP 1/2, ROBUST 5/8.
+    - The first attempt was INVALID: Ghidra timed out on the control cell at load up to about 70.
+    - Report, including each failure's owning SP-01b item:
+      `docs/reports/2026-11-13-sp01a-pre-fix-baseline.md`.
+  - **Owner directive W (2026-11-13): no hardcoded target values.** Product code must not keep
+    evaluation-platform payoff-name lists, guessed constants or flag patterns.
+    - The plan was approved after 4 Daybreak Blue rounds and merged in PR #35 (`6baeedf`):
+      `docs/plans/2026-11-13-retire-hardcoded-target-values-plan.md`.
+    - Roadmap §14 AMD-19..22 pull SP-04b forward to run right after SP-01b. Checklist goal G-7.
+  - **Next:** SP-01b (`fix/sp01b-honesty`). The offset, RELRO and hygiene lanes are reviewed; the
+    decompile lane is in progress. Then directive W (W-0..W-6), then the focus path to gate F.
 
 ## Phase 4 — Research (reproduced this session)
 
