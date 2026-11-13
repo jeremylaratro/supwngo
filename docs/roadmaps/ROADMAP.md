@@ -1,5 +1,10 @@
 # supwngo Framework - Next Generation Roadmap
 
+> **Superseded for sequencing (2026-11-12).** The active roadmap, sprint map and plan are in
+> [`docs/roadmaps/2026-11-12-mythos-roadmap.md`](2026-11-12-mythos-roadmap.md), from the Mythos 5-2 review in
+> `docs/reviews/2026-11-12-mythos-roadmap/`. This file is kept as the historical vision document; where the two
+> disagree, the dated roadmap wins.
+
 > **Scope note (2026-09-23).** Most of what this document describes — AI/LLM integration,
 > CFI/CET/MTE/PAC bypass, distributed/cloud fuzzing, Windows/macOS/embedded/containers expansion,
 > and the enterprise API — is speculative-breadth work that is explicitly **parked** under the
