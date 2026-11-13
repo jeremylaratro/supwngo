@@ -303,3 +303,127 @@ def test_marker_is_complete_enforces_the_invariant():
     assert not marker_is_complete(
         CompletionMarker(enumerated=-1, analyzed=-1, failed=0)
     )  # malformed
+
+
+# =========================================================================== #
+# Commit 3 — cache: serialization envelope, versioned table, clear_cache
+# =========================================================================== #
+from supwngo.analysis.payoff import (  # noqa: E402
+    CACHE_ENVELOPE_VERSION,
+    PayoffCandidate,
+    PayoffEvidence,
+    PayoffReport,
+    PayoffStatus,
+    SCRIPT_VERSION,
+    angr_version,
+    backend_version,
+    ghidra_version,
+    report_from_json,
+    report_to_json,
+)
+from supwngo.core.database import Database  # noqa: E402
+
+
+def _sample_report(status=PayoffStatus.COMPLETE):
+    ev = PayoffEvidence(
+        atoms=(ATOM_FILE_FIXED, ATOM_UNREFERENCED),
+        sink_api="fopen",
+        target=TargetTrace(
+            TargetTrace.CONST_STRING, address=0x402051, value="/etc/hosts"
+        ),
+        rank_key=(1, 1),
+        score=110,
+    )
+    cand = PayoffCandidate(rva=5049, name=None, evidence=ev)
+    return PayoffReport(
+        status=status,
+        candidates=(cand,),
+        backend="ghidra",
+        attempts=({"backend": "ghidra", "outcome": "complete"},),
+        counts={"enumerated": 13, "analyzed": 13, "failed": 0},
+        elapsed_s=4.2,
+        budget_s=180.0,
+        from_cache=False,
+    )
+
+
+def test_report_json_roundtrip_preserves_everything():
+    report = _sample_report()
+    back = report_from_json(report_to_json(report))
+    assert back is not None
+    assert back.status is PayoffStatus.COMPLETE
+    assert back.backend == "ghidra"
+    assert back.counts == {"enumerated": 13, "analyzed": 13, "failed": 0}
+    assert back.elapsed_s == 4.2 and back.budget_s == 180.0
+    assert len(back.candidates) == 1
+    c = back.candidates[0]
+    assert c.rva == 5049 and c.name is None
+    assert c.evidence.atoms == (ATOM_FILE_FIXED, ATOM_UNREFERENCED)
+    assert c.evidence.target.value == "/etc/hosts"
+    assert c.evidence.rank_key == (1, 1)
+    assert back.from_cache is True  # set on read
+
+
+def test_report_from_json_rejects_corrupt_and_wrong_version():
+    assert report_from_json(None) is None
+    assert report_from_json("") is None
+    assert report_from_json("{not json") is None
+    assert report_from_json(json.dumps({"envelope_version": 999, "report": {}})) is None
+    assert report_from_json(json.dumps({"report": {"status": "complete"}})) is None
+    # right envelope, structurally broken body -> miss, never a half-built report
+    assert (
+        report_from_json(
+            json.dumps({"envelope_version": CACHE_ENVELOPE_VERSION, "report": {"x": 1}})
+        )
+        is None
+    )
+
+
+def test_payoff_cache_table_roundtrip_and_version_key(tmp_path):
+    db = Database(db_path=str(tmp_path / "t.db"))
+    sha = "a" * 64
+    db.save_payoff_analysis(
+        sha, SCRIPT_VERSION, "ghidra-11.0", report_to_json(_sample_report())
+    )
+    # exact key hits
+    hit = report_from_json(db.get_payoff_analysis(sha, SCRIPT_VERSION, "ghidra-11.0"))
+    assert hit is not None and hit.candidates[0].rva == 5049
+    # a different script/backend version is a miss (invalidation by key)
+    assert db.get_payoff_analysis(sha, "w0.9", "ghidra-11.0") is None
+    assert db.get_payoff_analysis(sha, SCRIPT_VERSION, "ghidra-10.0") is None
+
+
+def test_payoff_cache_coexists_and_clear_cache_covers_it(tmp_path):
+    db = Database(db_path=str(tmp_path / "t.db"))
+    sha = "b" * 64
+    db.save_binary_analysis("/bin/x", sha, "amd64", 64, {"nx": True}, {"foo": 1})
+    db.save_payoff_analysis(
+        sha, SCRIPT_VERSION, "ghidra-11.0", report_to_json(_sample_report())
+    )
+    # writing payoff did not disturb the binaries row
+    assert db.get_binary_analysis(sha)["analysis_data"] == {"foo": 1}
+    assert db.get_payoff_analysis(sha, SCRIPT_VERSION, "ghidra-11.0") is not None
+    # scoped payoff-only invalidation leaves the binaries row intact
+    db.clear_payoff_analysis(sha)
+    assert db.get_payoff_analysis(sha, SCRIPT_VERSION, "ghidra-11.0") is None
+    assert db.get_binary_analysis(sha) is not None
+
+
+def test_clear_cache_both_branches_drop_payoff(tmp_path):
+    for scoped in (True, False):
+        db = Database(db_path=str(tmp_path / f"c{scoped}.db"))
+        sha = "c" * 64
+        db.save_payoff_analysis(
+            sha, SCRIPT_VERSION, "gv", report_to_json(_sample_report())
+        )
+        db.clear_cache(sha if scoped else None)
+        assert db.get_payoff_analysis(sha, SCRIPT_VERSION, "gv") is None
+
+
+def test_version_discovery_is_stringy_and_processfree():
+    assert isinstance(ghidra_version(), str)
+    assert isinstance(angr_version(), str)
+    assert backend_version("ghidra") == ghidra_version()
+    assert backend_version("angr") == angr_version()
+    assert backend_version("bogus") == "unknown"
+    assert isinstance(SCRIPT_VERSION, str) and SCRIPT_VERSION

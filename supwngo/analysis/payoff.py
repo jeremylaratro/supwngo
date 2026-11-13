@@ -23,9 +23,13 @@ image_base`` (``benchmark/gen/payoff/generate.py``) by ``image_base``.
 from __future__ import annotations
 
 import enum
+import json
+import os
 import re
+import shutil
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from pathlib import Path
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 __all__ = [
     "to_corpus_rva",
@@ -35,6 +39,7 @@ __all__ = [
     "FunctionEvidence",
     "PayoffEvidence",
     "PayoffCandidate",
+    "PayoffReport",
     "CompletionMarker",
     "EXEC_FAMILY",
     "FILE_OPEN_FAMILY",
@@ -44,11 +49,18 @@ __all__ = [
     "ATOM_TARGET_IS_PARAM",
     "ATOM_NO_SINK",
     "ATOM_UNREFERENCED",
+    "SCRIPT_VERSION",
+    "CACHE_ENVELOPE_VERSION",
     "canonical_import",
     "display_name",
     "score_function",
     "rank_candidates",
     "marker_is_complete",
+    "report_to_json",
+    "report_from_json",
+    "ghidra_version",
+    "angr_version",
+    "backend_version",
 ]
 
 
@@ -314,3 +326,170 @@ def marker_is_complete(marker: Optional[CompletionMarker]) -> bool:
     if marker.enumerated < 0 or marker.analyzed < 0 or marker.failed < 0:
         return False
     return marker.failed == 0 and marker.analyzed == marker.enumerated
+
+
+# --------------------------------------------------------------------------- #
+# Commit 3 — report, cache serialization, process-free version discovery
+# --------------------------------------------------------------------------- #
+
+# Bump SCRIPT_VERSION when the Ghidra extractor's output contract changes; bump
+# CACHE_ENVELOPE_VERSION when this serialization changes. Either invalidates cache
+# entries (the former via the key, the latter via from_json returning None).
+SCRIPT_VERSION = "w1.1"
+CACHE_ENVELOPE_VERSION = 1
+
+
+@dataclass(frozen=True)
+class PayoffReport:
+    """Result of a ranking pass. ``candidates`` is authoritative-empty (a true
+    negative) only when ``status is PayoffStatus.COMPLETE``."""
+
+    status: PayoffStatus
+    candidates: Tuple[PayoffCandidate, ...]
+    backend: str
+    attempts: Tuple[Dict[str, Any], ...] = ()
+    counts: Dict[str, int] = None  # type: ignore[assignment]
+    elapsed_s: float = 0.0
+    budget_s: float = 0.0
+    from_cache: bool = False
+
+
+def report_to_json(report: PayoffReport) -> str:
+    """Serialize a report to the versioned cache envelope string.
+
+    ``from_cache`` is not persisted (it is set True on read). The version key
+    ``(sha256, script_version, backend_version)`` lives in the DB columns, not the
+    envelope."""
+    body = {
+        "status": report.status.value,
+        "backend": report.backend,
+        "attempts": list(report.attempts),
+        "counts": dict(report.counts or {}),
+        "elapsed_s": report.elapsed_s,
+        "budget_s": report.budget_s,
+        "candidates": [
+            {
+                "rva": c.rva,
+                "name": c.name,
+                "evidence": {
+                    "atoms": list(c.evidence.atoms),
+                    "sink_api": c.evidence.sink_api,
+                    "target": (
+                        None
+                        if c.evidence.target is None
+                        else {
+                            "kind": c.evidence.target.kind,
+                            "address": c.evidence.target.address,
+                            "value": c.evidence.target.value,
+                        }
+                    ),
+                    "rank_key": list(c.evidence.rank_key),
+                    "score": c.evidence.score,
+                },
+            }
+            for c in report.candidates
+        ],
+    }
+    return json.dumps({"envelope_version": CACHE_ENVELOPE_VERSION, "report": body})
+
+
+def report_from_json(text: Optional[str]) -> Optional[PayoffReport]:
+    """Deserialize a cache envelope, or return ``None`` for anything malformed,
+    stale or the wrong envelope version — a bad row is a miss, never trusted."""
+    if not text:
+        return None
+    try:
+        env = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    if (
+        not isinstance(env, dict)
+        or env.get("envelope_version") != CACHE_ENVELOPE_VERSION
+    ):
+        return None
+    body = env.get("report")
+    if not isinstance(body, dict):
+        return None
+    try:
+        status = PayoffStatus(body["status"])
+        candidates = []
+        for c in body["candidates"]:
+            ct = c["evidence"]["target"]
+            target = (
+                None
+                if ct is None
+                else TargetTrace(ct["kind"], ct.get("address"), ct.get("value"))
+            )
+            evidence = PayoffEvidence(
+                atoms=tuple(c["evidence"]["atoms"]),
+                sink_api=c["evidence"]["sink_api"],
+                target=target,
+                rank_key=tuple(c["evidence"]["rank_key"]),
+                score=c["evidence"]["score"],
+            )
+            candidates.append(
+                PayoffCandidate(rva=c["rva"], name=c["name"], evidence=evidence)
+            )
+        return PayoffReport(
+            status=status,
+            candidates=tuple(candidates),
+            backend=body["backend"],
+            attempts=tuple(body.get("attempts", ())),
+            counts=dict(body.get("counts", {})),
+            elapsed_s=body["elapsed_s"],
+            budget_s=body["budget_s"],
+            from_cache=True,
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _ghidra_roots() -> list:
+    """Candidate Ghidra install roots, from env and the ``analyzeHeadless`` path —
+    no process is launched."""
+    roots = []
+    for var in ("GHIDRA_HOME", "GHIDRA_INSTALL_DIR"):
+        val = os.environ.get(var)
+        if val:
+            roots.append(Path(val))
+    for exe in (shutil.which("analyzeHeadless"), "/opt/ghidra/support/analyzeHeadless"):
+        if exe and os.path.exists(exe):
+            roots.append(Path(os.path.realpath(exe)).parent.parent)
+    return roots
+
+
+def ghidra_version() -> str:
+    """Read Ghidra's ``application.version`` from ``application.properties`` without
+    launching Ghidra (round-2 MAJOR 6 — launching it would break the Ghidra-spawn
+    counts). Returns ``"unknown"`` if it cannot be found."""
+    for root in _ghidra_roots():
+        for props in (
+            root / "Ghidra" / "application.properties",
+            root / "application.properties",
+        ):
+            try:
+                for line in props.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("application.version="):
+                        return line.split("=", 1)[1].strip()
+            except OSError:
+                continue
+    return "unknown"
+
+
+def angr_version() -> str:
+    """angr's version via in-process metadata (no subprocess)."""
+    try:
+        from importlib import metadata
+
+        return metadata.version("angr")
+    except Exception:
+        return "unknown"
+
+
+def backend_version(backend: str) -> str:
+    """Process-free backend version for the cache key."""
+    if backend == "ghidra":
+        return ghidra_version()
+    if backend == "angr":
+        return angr_version()
+    return "unknown"
