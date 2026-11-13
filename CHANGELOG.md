@@ -153,6 +153,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recovery, and takes the entry for a stripped PE.
 - RetDec is no longer asked to decompile when no function was named, because
   it invents a `main` for a binary that has none. It is unchanged with `-f`.
+- `decompile` now reports the real Ghidra failure, not a benign analyzer line.
+  The error shown was the first `ERROR` line of Ghidra's output, which for a
+  stripped PE is the MinGW analyzer's harmless "pseudo-relocation list not
+  found" complaint, so it stood in for the actual cause. The line reported is
+  now, in order, one our own script emitted (the script now says when no
+  function matched or a function failed to decompile), else the first error
+  that is not an analyzer message, else the first error, as before.
 - `cfg` no longer hangs on a large statically linked binary (RT-05). The angr
   `CFGFast` build runs uninterruptible C-level work that no in-process watchdog
   can cancel; on a target like snow_scan it never returned and the command was

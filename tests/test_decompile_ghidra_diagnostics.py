@@ -45,6 +45,13 @@ DOT_ERROR = (
     "Path element starting with '.' is not permitted"
 )
 NEEDLE = "Path element starting with '.'"
+MINGW_ANALYZER = (
+    "ERROR MinGW pseudo-relocation list not found (MingwRelocationAnalyzer)"
+)
+SCRIPT_ERROR = (
+    "ERROR SupwngoDecompile.java> no function matched the selector 'name:main' "
+    "(GhidraScript)"
+)
 
 
 def _script(path: Path, body: str) -> Path:
@@ -98,6 +105,58 @@ def test_seam_first_error_comes_from_all_of_stdout_not_just_the_tail(tmp_path):
     assert NEEDLE in run.first_error
     assert NEEDLE not in run.stdout_tail  # the tail is bounded
     assert len(run.stdout_tail) <= decompile_mod.GHIDRA_TAIL_CHARS
+
+
+def test_seam_reports_the_real_failure_not_a_benign_analyzer_line(tmp_path):
+    """RED on b12a615: the first ``ERROR`` line was reported even when it was the
+    MinGW analyzer's benign complaint and a real failure line followed."""
+    fake = _fake_ghidra(
+        tmp_path, f'echo "{MINGW_ANALYZER}"\necho "{DOT_ERROR}"\nexit 1\n'
+    )
+
+    run = _decompiler()._run_ghidra_headless([str(fake)], timeout=30)
+
+    assert NEEDLE in run.first_error
+    assert "MingwRelocationAnalyzer" not in run.first_error
+    assert NEEDLE in run.error
+
+
+def test_seam_an_analyzer_line_is_still_reported_when_it_is_the_only_error(tmp_path):
+    fake = _fake_ghidra(tmp_path, f'echo "{MINGW_ANALYZER}"\nexit 1\n')
+
+    run = _decompiler()._run_ghidra_headless([str(fake)], timeout=30)
+
+    assert run.first_error == MINGW_ANALYZER
+    assert run.error == MINGW_ANALYZER
+
+
+def test_seam_the_scripts_own_error_line_wins(tmp_path):
+    """RED on b12a615: the analyzer line came first and was reported. The script's
+    own line (Ghidra prefixes a script's ``printerr`` with its file name) wins
+    over every other ``ERROR`` line, analyzer or not, whatever the order."""
+    fake = _fake_ghidra(
+        tmp_path,
+        f'echo "{MINGW_ANALYZER}"\necho "{DOT_ERROR}"\necho "{SCRIPT_ERROR}"\nexit 1\n',
+    )
+
+    run = _decompiler()._run_ghidra_headless([str(fake)], timeout=30)
+
+    assert run.first_error == SCRIPT_ERROR
+
+
+def test_seam_an_analyzer_line_is_recognised_past_the_length_bound(tmp_path):
+    """The bound applies to what is kept, not to what is matched: a long analyzer
+    line is still an analyzer line, and the kept real line is still bounded."""
+    long_analyzer = "ERROR " + "x" * 600 + " (SomeAnalyzer)"
+    long_real = "ERROR real failure " + "y" * 600
+    fake = _fake_ghidra(
+        tmp_path, f'echo "{long_analyzer}"\necho "{long_real}"\nexit 1\n'
+    )
+
+    run = _decompiler()._run_ghidra_headless([str(fake)], timeout=30)
+
+    assert run.first_error.startswith("ERROR real failure")
+    assert len(run.first_error) == decompile_mod.GHIDRA_ERROR_MAX_CHARS
 
 
 def test_seam_clean_exit_has_no_error(tmp_path):
@@ -358,3 +417,31 @@ def test_real_ghidra_cli_failure_surfaces_the_dot_path_error(tmp_path, monkeypat
     doc = json.loads(result.stdout)
     assert NEEDLE in doc["error"], doc
     assert doc["angr_status"] == "decompiler_failed"
+
+
+@pytest.mark.timeout(900)
+def test_real_ghidra_pe_failure_names_the_script_not_the_mingw_analyzer(monkeypatch):
+    """RED on b12a615: a stripped PE logs a benign MinGW analyzer ``ERROR`` line
+    before the script runs, and that line was reported as the cause of a missing
+    function. With no fallback able to succeed, the only place the cause can
+    come from is the Ghidra error, which must now be the script's own."""
+    need_ghidra()
+    monkeypatch.setattr(Decompiler, "_find_retdec", lambda self: None)
+    monkeypatch.setattr(decompile_mod, "DEFAULT_GHIDRA_TIMEOUT", 600.0)
+    monkeypatch.setattr(
+        sub,
+        "run_angr_op",
+        lambda *a, **k: {"status": "decompiler_failed", "error": "forced"},
+    )
+
+    from supwngo.cli import cli
+
+    pe = REPO / "benchmark" / "fixtures" / "s0pe" / "pe_strip.exe"
+    result = CliRunner(mix_stderr=False).invoke(
+        cli, ["decompile", str(pe), "-f", "no_such_function_xyz", "--json"]
+    )
+
+    assert result.exit_code == 2, result.stdout + result.stderr
+    doc = json.loads(result.stdout)
+    assert "MingwRelocationAnalyzer" not in doc["error"], doc
+    assert "no function matched" in doc["error"], doc

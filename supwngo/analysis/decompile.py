@@ -76,6 +76,31 @@ GHIDRA_TAIL_CHARS = 2000
 GHIDRA_ERROR_MAX_CHARS = 400
 
 _GHIDRA_ERROR_LINE = re.compile(r"^\s*ERROR\b")
+#: Ghidra prefixes a script's own ``printerr`` with its file name.
+_GHIDRA_SCRIPT_ERROR_LINE = re.compile(r"^\s*ERROR\s+SupwngoDecompile\.java>")
+#: A benign analyzer complaint (e.g. MinGW's pseudo-relocation list) ends with
+#: ``(<Name>Analyzer)``. ``(HeadlessAnalyzer)`` is the headless runner, not an
+#: analyzer, and is a real failure.
+_GHIDRA_ANALYZER_LINE = re.compile(r"\((?!Headless)\w*Analyzer\)\s*$")
+
+
+def _ghidra_error_line(stdout: str) -> str:
+    """The ``ERROR`` line of a Ghidra run that explains a failure, bounded.
+
+    In order of preference: a line our own script emitted; the first line that
+    is not an analyzer message; the first ``ERROR`` line. The length bound
+    applies to what is kept, not to what is matched.
+    """
+    errors = [ln.strip() for ln in stdout.splitlines() if _GHIDRA_ERROR_LINE.match(ln)]
+    for keep in (
+        lambda ln: _GHIDRA_SCRIPT_ERROR_LINE.match(ln),
+        lambda ln: not _GHIDRA_ANALYZER_LINE.search(ln),
+        lambda ln: True,
+    ):
+        for ln in errors:
+            if keep(ln):
+                return ln[:GHIDRA_ERROR_MAX_CHARS]
+    return ""
 
 
 def _is_int(value: Any) -> bool:
@@ -89,9 +114,10 @@ class GhidraRun:
 
     ``state`` is the :class:`~supwngo.core.proc.ProcState` of the process;
     ``rc``/``signal``/``errno`` are set as ``ProcResult`` sets them. The tails
-    are bounded to :data:`GHIDRA_TAIL_CHARS`; ``first_error`` is the first
-    ``ERROR`` line of the *whole* stdout (not just the tail), which is where
-    Ghidra reports why it refused to run.
+    are bounded to :data:`GHIDRA_TAIL_CHARS`; ``first_error`` is the
+    ``ERROR`` line of the *whole* stdout (not just the tail) that best explains
+    the failure, which is where Ghidra reports why it refused to run: our own
+    script's line, else the first non-analyzer line, else the first one.
     """
 
     state: ProcState
@@ -413,11 +439,7 @@ class Decompiler:
 
         stdout = result.stdout.decode("utf-8", errors="replace")
         stderr = result.stderr.decode("utf-8", errors="replace")
-        first_error = next(
-            (ln.strip()[:GHIDRA_ERROR_MAX_CHARS] for ln in stdout.splitlines()
-             if _GHIDRA_ERROR_LINE.match(ln)),
-            "",
-        )
+        first_error = _ghidra_error_line(stdout)
         return GhidraRun(
             state=result.state,
             rc=result.rc,

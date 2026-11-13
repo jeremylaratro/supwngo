@@ -477,7 +477,12 @@ public class SupwngoDecompile extends GhidraScript {
         try {
             decomp.openProgram(currentProgram);
             Pick pick = resolve(selector, fileBase, backendBase, entryRva, format);
-            if (pick != null) {
+            if (pick == null) {
+                // Ghidra logs a script's printerr as "ERROR <script>.java> ...";
+                // the Python side reports that line ahead of any other.
+                printerr("no function matched the selector '"
+                        + (selector.isEmpty() ? "default" : selector) + "'");
+            } else {
                 Function f = pick.f;
                 DecompileResults res =
                         decomp.decompileFunction(f, 60, new ConsoleTaskMonitor());
@@ -495,6 +500,9 @@ public class SupwngoDecompile extends GhidraScript {
                       .append("\",\"return_type\":\"")
                       .append(esc(String.valueOf(f.getReturnType())))
                       .append("\",\"code\":\"").append(esc(code)).append("\"}");
+                } else {
+                    printerr("decompiling " + f.getName() + " failed: "
+                            + (res == null ? "no result" : res.getErrorMessage()));
                 }
             }
         } finally {
