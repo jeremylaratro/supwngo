@@ -350,7 +350,7 @@ targets:
 #   ABL-B  `report()`'s calloc -> malloc, and drop
 #          its memset-before-free                     -> NOT solved  (expected)
 #   ABL-C  both of the above                          -> **SOLVED**, flag
-#                                                        FLAG{supwngo_ablation_abl_c}
+#                                                        FLAG{REDACTED}
 #
 # HONEST READING OF THAT TABLE, since it is weaker than "five independently
 # load-bearing repairs": on the `report()` route the control's repairs are
@@ -393,7 +393,7 @@ targets:
 #       ./heap_uaf_leak --json --no-legacy --timeout 400
 #
 #   success=true  technique=heap_uaf_read  verified=FLAG_CAPTURED
-#   flag=FLAG{4086eb8b4306db9ae0ce1be24ec476bc}  legacy_fallback=not_reached
+#   flag=FLAG{REDACTED}  legacy_fallback=not_reached
 #   22 attempts; a timed re-run took 30 s wall.
 #
 # `legacy_fallback=not_reached` matters: the solve is the canonical pipeline's,
