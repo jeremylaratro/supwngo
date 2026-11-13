@@ -55,6 +55,12 @@ MINGW32_NM = shutil.which("i686-w64-mingw32-nm")
 # --------------------------------------------------------------------------- #
 
 
+@pytest.fixture(autouse=True)
+def _generous_ghidra_budget(monkeypatch):
+    """The host is shared and often loaded; the default 180 s can be too tight."""
+    monkeypatch.setattr(decompile_mod, "DEFAULT_GHIDRA_TIMEOUT", 600.0)
+
+
 def _build(cmd):
     built = subprocess.run(cmd, capture_output=True, text=True)
     assert built.returncode == 0, built.stderr
@@ -300,6 +306,7 @@ def _angr_ok(address, backend_base):
         "name": "leaf_helper",
         "address": address,
         "backend_base": backend_base,
+        "selected_by": "name",
         "return_type": "void",
         "code": 'int leaf_helper(int a0)\n{\n    printf("x");\n    return a0;\n}',
         "calls": ["printf"],

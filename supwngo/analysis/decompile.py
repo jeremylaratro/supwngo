@@ -159,6 +159,10 @@ class DecompiledFunction:
     calls: List[str] = field(default_factory=list)
     strings_used: List[str] = field(default_factory=list)
     complexity_hints: Dict[str, Any] = field(default_factory=dict)
+    #: How the function was chosen: ``name``/``addr`` for an explicit request, or
+    #: the default-selection step that matched (``symbol``, ``libc_start_main_arg``,
+    #: ``mingw_crt_main_arg``, ``entry``, ``first_reachable``). ``""`` if unknown.
+    selected_by: str = ""
 
 
 class Decompiler:
@@ -212,6 +216,9 @@ class Decompiler:
         #: later backend also fails.
         self.ghidra_run: Optional[GhidraRun] = None
         self.ghidra_error: str = ""
+        #: The loader's verdict on the entry point the default selection used
+        #: (``"ok"``, a mismatch note, or ``""`` when no default was selected).
+        self.ghidra_entry_check: str = ""
 
     def _find_ghidra(self) -> Optional[Path]:
         """Find Ghidra installation."""
@@ -295,7 +302,10 @@ class Decompiler:
             if result:
                 return result
 
-        if self._retdec_path:
+        # RetDec has no default-function search: for an empty selector it would
+        # fabricate ``main``, so it only runs when a function was asked for.
+        explicit = bool(func_name) or func_addr is not None
+        if self._retdec_path and explicit:
             result = self._decompile_retdec(func_name, func_addr)
             if result:
                 return result
@@ -319,6 +329,33 @@ class Decompiler:
             pe = fileformat.pe_info(path)
             return pe.image_base if pe else None
         return None
+
+    def _entry_info(self) -> Tuple[str, Optional[int]]:
+        """``(format, entry offset from the file base)`` for the default search.
+
+        The offset is ``e_entry - min(PT_LOAD.p_vaddr)`` for an ELF and
+        ``AddressOfEntryPoint`` for a PE, so a backend can add it to its own
+        image base. ``None`` when the file has no usable entry point.
+        """
+        path = self.binary.path
+        kind = fileformat.detect_format(path)
+        if kind == fileformat.ELF:
+            elf = fileformat.elf_info(path)
+            if elf and elf.e_entry and elf.min_load_vaddr is not None:
+                return kind, elf.e_entry - elf.min_load_vaddr
+        elif kind == fileformat.PE:
+            pe = fileformat.pe_info(path)
+            if pe and pe.entry_rva:
+                return kind, pe.entry_rva
+        return (kind if kind in (fileformat.ELF, fileformat.PE) else "unknown"), None
+
+    @staticmethod
+    def _explicit_selected_by(func_name: Optional[str],
+                              func_addr: Optional[int]) -> str:
+        """``selected_by`` of an explicit request: the name wins, as in the selector."""
+        if func_name:
+            return "name"
+        return "addr" if func_addr is not None else ""
 
     @staticmethod
     def _to_file_address(address: int, backend_base: int,
@@ -447,8 +484,12 @@ class Decompiler:
         logger.info("Decompiling with Ghidra...")
         selector = self._ghidra_selector(func_name, func_addr)
         file_base = self._file_base()
-        # The script maps an explicit address into Ghidra's own base with this.
+        # The script maps an explicit address into Ghidra's own base with the file
+        # base, and adds the entry offset to that base to find the entry function.
         file_base_arg = "none" if file_base is None else hex(file_base)
+        file_format, entry_rva = self._entry_info()
+        entry_arg = "none" if entry_rva is None else hex(entry_rva)
+        self.ghidra_entry_check = ""
 
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -463,7 +504,7 @@ class Decompiler:
                     "-import", str(self.binary.path),
                     "-scriptPath", str(script_path.parent),
                     "-postScript", GHIDRA_SCRIPT_NAME, selector, str(output_file),
-                    file_base_arg,
+                    file_base_arg, entry_arg, file_format,
                     "-deleteProject",
                 ]
 
@@ -498,6 +539,11 @@ class Decompiler:
                     result.address, backend_base, file_base
                 )
 
+                self.ghidra_entry_check = str(data[0].get("entry_check") or "")
+                if self.ghidra_entry_check not in ("", "ok"):
+                    logger.warning(
+                        "Ghidra entry point check: %s", self.ghidra_entry_check
+                    )
                 self.analysis_backend = "ghidra"
                 return result
         except Exception as exc:
@@ -525,6 +571,7 @@ class Decompiler:
             code=code,
             calls=calls,
             strings_used=strings,
+            selected_by=str(func_data.get("selected_by") or ""),
         )
 
     def _decompile_retdec(self, func_name: Optional[str],
@@ -584,6 +631,7 @@ class Decompiler:
             code=code,
             calls=calls,
             strings_used=strings,
+            selected_by=self._explicit_selected_by(func_name, func_addr),
         )
 
     def _decompile_angr(self, func_name: Optional[str],
@@ -609,10 +657,11 @@ class Decompiler:
 
         self.angr_status, self.angr_error = "", ""
         file_base = self._file_base()
+        file_format, _entry = self._entry_info()
         try:
             data = run_angr_op(str(self.binary.path), "decompile", self._angr_timeout,
                                func_name=func_name, func_addr=func_addr,
-                               file_base=file_base)
+                               file_base=file_base, file_format=file_format)
         except AnalysisBudgetExceeded as e:
             logger.warning(
                 f"angr decompilation exceeded its {self._angr_timeout:g}s budget "
@@ -645,6 +694,7 @@ class Decompiler:
             return_type=data["return_type"],
             code=data["code"],
             calls=list(data["calls"]),
+            selected_by=data["selected_by"],
         )
 
     @staticmethod
@@ -671,6 +721,8 @@ class Decompiler:
             not isinstance(name, str)
             or not _is_int(address)
             or not _is_int(data.get("backend_base"))
+            or not isinstance(data.get("selected_by"), str)
+            or not data.get("selected_by")
             or not isinstance(data.get("return_type"), str)
             or not isinstance(code, str)
             or not isinstance(calls, list)

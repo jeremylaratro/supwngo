@@ -2125,10 +2125,10 @@ def decompile(ctx, binary, function, ghidra, output, angr_timeout, json_output):
                     func_addr = sym.address
                     break
 
-    if not func_addr and not func_name:
-        func_name = "main"
-
-    console.print(f"[cyan]Decompiling: {func_name or hex(func_addr)}[/cyan]")
+    # No -f: send the empty selector, so the backend picks the default function
+    # and reports how (``selected_by``). It used to be forced to ``main``.
+    target = func_name or (hex(func_addr) if func_addr is not None else "default")
+    console.print(f"[cyan]Decompiling: {target}[/cyan]")
 
     with console.status("Decompiling..."):
         result = decomp.decompile(func_name=func_name, func_addr=func_addr, use_ghidra=ghidra)
@@ -2152,12 +2152,15 @@ def decompile(ctx, binary, function, ghidra, output, angr_timeout, json_output):
                 "calls": result.calls[:20] if result.calls else [],
                 "code": result.code,
                 "vulnerabilities": vulns or [],
+                "selected_by": result.selected_by,
                 "analysis_backend": decomp.analysis_backend,
                 "angr_budget_exceeded": decomp.angr_budget_exceeded,
             })
         else:
             console.print(f"\n[bold green]Decompiled: {result.name}[/bold green]")
             console.print(f"Address: 0x{result.address:x}")
+            if result.selected_by:
+                console.print(f"Selected by: {result.selected_by}")
             console.print(f"Return type: {result.return_type}")
 
             if result.parameters:

@@ -139,6 +139,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a PE. An explicit `-f 0x...` address is read in that same convention and
   mapped into each backend with its own base, and a backend reply that does not
   report its base is rejected.
+- `decompile` without `-f` now picks a default function and says how it chose
+  it. The command forced `main`, which a stripped binary does not have, so it
+  returned nothing. The result (and `decompile --json`) now carries
+  `selected_by`: `symbol`, `libc_start_main_arg`, `mingw_crt_main_arg`, `entry`,
+  `first_reachable`, or `name`/`addr` for an explicit `-f`. For an ELF the
+  order is the `main` symbol, then the constant first argument of the entry
+  function's call to `__libc_start_main`, then the entry function itself, then
+  the first function reached from the entry. For a PE it is the `main` symbol,
+  then the function whose result the CRT start passes to `exit`
+  (`mingw_crt_main_arg`), then the entry; a PE is never given a guessed
+  `first_reachable`. angr follows the same ELF order on its own function
+  recovery, and takes the entry for a stripped PE.
+- RetDec is no longer asked to decompile when no function was named, because
+  it invents a `main` for a binary that has none. It is unchanged with `-f`.
 - `cfg` no longer hangs on a large statically linked binary (RT-05). The angr
   `CFGFast` build runs uninterruptible C-level work that no in-process watchdog
   can cancel; on a target like snow_scan it never returned and the command was

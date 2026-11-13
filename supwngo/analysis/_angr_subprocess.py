@@ -202,8 +202,46 @@ def _op_strings_xrefs(binary_path: str, **_kwargs):
     return records
 
 
+def _select_default_function(proj, funcs, file_format: str):
+    """Pick the function to decompile when none was asked for (SP-01b 4.4).
+
+    Returns ``(function, selected_by)`` or ``(None, "")``. First match wins:
+
+    1. a function named ``main`` -- ``symbol`` when the binary has a ``main``
+       symbol, ``libc_start_main_arg`` when it is angr's own CFG recovery (the
+       symbol is stripped);
+    2. the function at exactly the entry point -- ``entry``;
+    3. the first function by address that is not a PLT stub, a SimProcedure or
+       an alignment pad -- ``first_reachable``. Not used for a PE: a walk
+       through CRT initialisation is not a main detector.
+    """
+    for _addr, func in sorted(funcs.items()):
+        if func.name == "main":
+            try:
+                has_symbol = proj.loader.main_object.get_symbol("main") is not None
+            except Exception:  # noqa: BLE001 - a loader without get_symbol
+                has_symbol = False
+            return func, ("symbol" if has_symbol else "libc_start_main_arg")
+
+    entry = funcs.get(proj.entry)
+    if entry is not None:
+        return entry, "entry"
+
+    if file_format != "pe":
+        for _addr, func in sorted(funcs.items()):
+            if (
+                getattr(func, "is_plt", False)
+                or getattr(func, "is_simprocedure", False)
+                or getattr(func, "is_alignment", False)
+            ):
+                continue
+            return func, "first_reachable"
+    return None, ""
+
+
 def _op_decompile(binary_path: str, func_name: str = None, func_addr: int = None,
-                  file_base: int = None, **_kwargs) -> Dict[str, Any]:
+                  file_base: int = None, file_format: str = "unknown",
+                  **_kwargs) -> Dict[str, Any]:
     """Whole-function angr decompilation (``Decompiler._decompile_angr``).
 
     Runs both heavy angr passes -- ``CFGFast`` *and* the ``Decompiler`` analysis
@@ -214,8 +252,9 @@ def _op_decompile(binary_path: str, func_name: str = None, func_addr: int = None
     The reply is a tagged union, ``{"status": ...}``; only ``ok`` carries
     ``code``:
 
-    * ``ok`` -- real pseudo-C plus ``name``, ``address``, ``return_type`` and
-      ``calls``;
+    * ``ok`` -- real pseudo-C plus ``name``, ``address``, ``return_type``,
+      ``calls`` and ``selected_by`` (``name``/``addr`` for an explicit request,
+      else the default-selection step, see ``_select_default_function``);
     * ``missing_function`` -- the requested function is not in the CFG;
     * ``decompiler_failed`` -- angr's decompiler ran but produced no code;
     * ``exception`` -- the decompiler (or the callee listing) raised.
@@ -242,15 +281,22 @@ def _op_decompile(binary_path: str, func_name: str = None, func_addr: int = None
     cfg = proj.analyses.CFGFast(normalize=True)
 
     func = None
+    selected_by = ""
     if func_addr is not None:
         if file_base is not None:
             func_addr = backend_base + (func_addr - file_base)
         func = cfg.kb.functions.get(func_addr)
+        selected_by = "name" if func_name else "addr"
     elif func_name:
         for f in cfg.kb.functions.values():
             if f.name == func_name:
                 func = f
                 break
+        selected_by = "name"
+    else:
+        func, selected_by = _select_default_function(
+            proj, cfg.kb.functions, file_format
+        )
     if not func:
         return {"status": "missing_function", "backend_base": backend_base}
 
@@ -272,6 +318,7 @@ def _op_decompile(binary_path: str, func_name: str = None, func_addr: int = None
         "name": func.name,
         "address": func.addr,
         "backend_base": backend_base,
+        "selected_by": selected_by,
         "return_type": "void",
         "code": code,
         "calls": calls,

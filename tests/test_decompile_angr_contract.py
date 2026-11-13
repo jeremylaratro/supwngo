@@ -173,6 +173,7 @@ OK_REPLY = {
     "name": "leaf_helper",
     "address": 0x401136,
     "backend_base": 0x400000,
+    "selected_by": "name",
     "return_type": "void",
     "code": 'int leaf_helper(int a0)\n{\n    printf("leaf:%d\\n", a0);\n    return a0 + 1;\n}',
     "calls": ["printf"],
