@@ -1,4 +1,4 @@
-> **Canonical roadmap.** This file is the Mythos 5-2 final roadmap (`docs/reviews/2026-11-12-mythos-roadmap/roadmap-final-mythos.md`, Status: FINAL) as adopted by the project. Amendments from the execution-enabled verify pass are appended in §14 once that pass completes. It supersedes `docs/roadmaps/ROADMAP.md` for sequencing.
+> **Canonical roadmap.** This file is the Mythos 5-2 final roadmap (`docs/reviews/2026-11-12-mythos-roadmap/roadmap-final-mythos.md`, Status: FINAL) as adopted by the project. Amendments are appended in §14: orchestrator amendments from the SP-01 plan review, and those from the execution-enabled verify pass. It supersedes `docs/roadmaps/ROADMAP.md` for sequencing.
 
 Status: FINAL (folded Daybreak Blue review), 2026-11-12
 
@@ -416,7 +416,7 @@ A harness that scored "parses as JSON" (the `retest_matrix.py` failure, D5-F1) f
    - `proc.run_target(argv, input, timeout) -> RunResult{rc, out, err, timed_out}` uses `Popen(start_new_session=True)`. On timeout it calls `os.killpg(SIGKILL)` and reaps.
    - Correction to the draft: `test_crash` is not a model to copy. It swallows the timeout with `except Exception` and has no process group (`offset_finder.py:502-520`).
    - Every `subprocess.run` of the target in `offset_finder.py` moves to the helper. The refine loop is the confirmed unguarded site (`:541-556`); audit the gdb and core-dump paths in the same commit.
-2. **Offset result.** Add `confidence`, `kind` and `error_code` to `OffsetResult`. `find_offset` first checks the interpreter and returns `error_code="target_not_executable"`. `offset --json` exits 2 on a negative result (`cli.py:934-935`).
+2. **Offset result.** Add `confidence`, `kind` and `error_code` to `OffsetResult`. *(Amended by AMD-O1, §14: `confidence` is deferred to SP-04; SP-01 adds `kind`, `error_code` and `isolation`.)* `find_offset` first checks the interpreter and returns `error_code="target_not_executable"`. `offset --json` exits 2 on a negative result (`cli.py:934-935`).
 3. **angr contract.** The subprocess response becomes a total tagged union validated at the parent: `{"status": "ok"|"missing_function"|"decompiler_failed"|"exception"|"timeout", …}`. Only `ok` carries `code`. `_decompile_angr` returns `None` otherwise. `decompile --json` failure exits 2 (`cli.py:2129-2134`).
 4. **RELRO.** Add `Protections.relro_kind: Relro` (`NONE|PARTIAL|FULL`); `relro` stays as the display string. Replace the semantic string comparisons, re-grepping first:
    - `strategy.py:454, 976`; `leak_finder.py:329`; `imports.py:400, 499`; `pie_bypass.py:191`; `chainer.py:299`; `got_plt.py:106, 259, 310`.
@@ -942,3 +942,86 @@ Only questions that block or reorder sprints are listed. The team proceeds on th
 - LLM plan: local-only gates, opaque `reasoning`, a separate `UntrustedInput` type, dynamic-only promotion for hook 1, oracle soundness suites.
 - 2.2.0 stays at the end of SP-02 as a scoped baseline release; PE claims are labelled mingw; "best in existence" is replaced by a comparative table.
 - Commitment horizon is M1 (DEC-26); S7 leftovers (I-45, HO-01, HO-02, CG-04, CG-01b) are placed in the sprint map.
+
+### 14. Amendments
+
+Amendments are appended here instead of being edited into the text above. Each records its source. An inline
+*(Amended by …)* marker is left where the original text would mislead.
+
+#### Owner directive F (2026-11-12): focus on three strategies until they are bulletproof
+
+> Owner, verbatim: "If the scope becomes too large, pick 2-3 strategies and focus heavily on just those. Do not
+> move on until those are bulletproof."
+
+The roadmap's scope is too large (16 sprints), so the directive applies now. **This directive overrides the
+sequencing in §5–§7.** Where the two conflict, this section wins.
+
+**Focus strategies.** These are exploit strategies, the `StrategySuggester` method families.
+
+| # | Strategy (method family) | Why this one | S0 coverage |
+|---|---|---|---|
+| F-1 | `ret2win`, including the supplied-component path `--win/--winfun/--ret2/--eip` | The most common CTF stack win. It is the owner's PASS path (a) as worded. | rocket_blaster_xxx |
+| F-2 | `ret2libc`: leak, then libc base, then `system("/bin/sh")`, including a supplied libc and manual addresses | The owner's PASS path (b), a template with manual memory addresses. It is the default when no win function exists. | rocket_blaster_xxx, ancient_interface |
+| F-3 | Syscall ROP: `srop` and `rop_syscall` | Both rest on one piece of evidence: a `syscall` gadget plus proven `rax` control (SP-02b `rax_control.py`). Together they cover the two stack targets that F-1 and F-2 cannot solve. | sick_rop, snow_scan (and ancient_interface via `rop_syscall`) |
+
+F-1 to F-3 cover all four stack-return S0 targets. `auth-or-out`, `sabotage` and `bon-nie-appetit` (heap,
+environment and off-by-one) are still measured by the passcard, but they get **no fixes** until gate F is met.
+
+**Gate F: bulletproof.** All of the following must hold for each focus strategy, on a strategy-specific
+generated suite.
+
+The **suite**, per strategy:
+- at least 40 dev positives and 20 sealed held-out positives;
+- at least 20 negative controls: near-misses where the strategy does not apply, plus patched twins with no
+  overflow.
+
+The **axes**:
+- amd64 ELF, PIE on and off, `-O0` and `-O2`, stripped and unstripped;
+- randomized function and buffer names and sizes, so no name hints;
+- `read`, `gets`, `fgets` and `scanf` sinks;
+- mingw PE builds of the same sources, for the static rows.
+
+| Row | Requirement |
+|---|---|
+| F.method | Top-1 `recommended` is in the accept set: 100% of dev, ≥ 95% of held-out. On negative controls, the strategy is never top-1 (0 false positives). |
+| F.offset | ELF OFF exact on 100% of known-value cells. PE static offset exact on ≥ 95%, and every other PE cell abstains with a reason (0 wrong numbers). |
+| F.decompile | DECOMP PASS on 100% of ELF and ≥ 95% of PE. |
+| F.component | PASS path (a): with the supplied component, `pwn`/`solve` reaches `shell_proven` on 100% of dev and ≥ 95% of held-out ELF positives. |
+| F.template | PASS path (b): `template -t <strategy>` plus scripted manual inputs reaches `shell_proven` on 100% of dev and ≥ 95% of held-out ELF positives. An unfilled template exits 2 and never runs. |
+| F.robust | ROBUST 100%, no false success, and 0 flakes across 3 reps. Every held-out miss is listed and explained. |
+| F.smoke | The four stack S0 targets PASS end to end: method, offset, decompile, and path (a) or (b). |
+
+Once met, the gate-F suite becomes a **pre-merge regression gate**. A later PR that drops any row is blocked.
+
+**The focus path.** These are the only sprint slices allowed before gate F. Each slice is scoped to F-1 to F-3.
+
+| Sprint | Scope under directive F |
+|---|---|
+| SP-01 | Unchanged. It is the measurement instrument and the honesty fixes that gate F needs. |
+| SP-02a | Overrides and `KnownFacts`: only the F-1 and F-2 components (win, return target, libc, leak addresses). |
+| SP-02b | SROP and `rop_syscall` evidence (`rax_control.py`), role tiering, and an honest non-executing `template` for the three focus builders only. |
+| SP-02c | Generated suite and tiered truth, restricted to the three focus strategies, their negatives and their held-out split. The release tag (HO-02) stays here. |
+| SP-03A, SP-03 | Ghidra spike and minimal facts, only as far as F.decompile and the PE load need. |
+| SP-04a, SP-04b | Static distance and static-first `offset` (F.offset, PE). Payoff tiers only for win-function detection (F-1). |
+| SP-05 | Plan v1 and honest templates for the three focus strategies only. |
+| SP-06 | Generator v1 and the held-out report for the focus suite only. The public tier, comparative table and nightly lane are deferred. |
+
+**Frozen until gate F.**
+- Every other strategy: heap, format string, integer, environment, `ret2dlresolve`, stack pivot, shellcode,
+  `one_gadget` and FSOP. These must still abstain or decline honestly, but are not improved.
+- SP-07 to SP-16, including the LLM hooks and the deletion sprints.
+- Any detector work outside the stack-return class.
+
+If a frozen item turns out to block a gate-F row, it is pulled in as the smallest slice that unblocks the row,
+and recorded here as an amendment.
+
+#### Orchestrator amendments (from the SP-01 plan review)
+
+| ID | Amendment | Source |
+|---|---|---|
+| AMD-O1 | SP-01 does not add `OffsetResult.confidence`. It is deferred to SP-04, which has its first consumer. SP-01 adds `kind`, `error_code` and `isolation`. | SP-01 plan §4.1. Daybreak Blue rounds 2–4 judged the deferral sound (N3-1). |
+| AMD-O2 | The approved SP-01 plan governs SP-01's detail wherever it differs from §6 above. Where it differs: <ul><li>`supwngo/core/sandbox.py` lands in SP-01a, and product `offset` runs through it in SP-01b;</li><li>the process-runner interface is `proc.run -> ProcResult` with four states;</li><li>the RELRO inventory is the plan's measured 39-read table;</li><li>the passcard self-test pins are those in plan §3.7.</li></ul> | `docs/plans/2026-11-12-sp01-passcard-and-honesty-plan.md` v4.1, approved with changes in Daybreak Blue round 4. |
+
+#### Verify-pass amendments (Mythos 5-2, execution allowed)
+
+Pending: `docs/reviews/2026-11-12-mythos-roadmap/verify-mythos-execution.md`.
