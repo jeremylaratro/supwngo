@@ -91,6 +91,7 @@ RAW_STDERR_CAP = 8_000
 # Parent environment variables a cell may inherit (everything else is dropped).
 ENV_PASSTHROUGH = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "JAVA_HOME", "VIRTUAL_ENV")
 ENV_PASSTHROUGH_PREFIXES = ("SUPWNGO_", "GHIDRA_")
+DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin"
 
 V0_LIMITS = (
     "TEMPLATE trusts the `technique` field.",
@@ -432,19 +433,31 @@ class Harness:
         }
         if self.user_base:
             env["PYTHONUSERBASE"] = self.user_base
-        # A JVM takes user.home from the passwd entry, not $HOME, so Ghidra's launcher would
-        # write ~/.config/ghidra under the read-only real home and the product `decompile`
-        # would silently fall back to angr. Point it at the cell home. An operator's own
-        # options follow ours, so their -D flags still win.
+        for key, value in self.passthrough(inside).items():
+            env.setdefault(key, value)
+        return env
+
+    def passthrough(self, inside: str) -> Dict[str, str]:
+        """The operator variables a cell sees, and the JAVA_TOOL_OPTIONS it is given.
+
+        The report header records exactly this, so a run under a non-default
+        ``SUPWNGO_GHIDRA_TIMEOUT`` describes itself.
+        """
+        seen = {
+            key: value
+            for key, value in os.environ.items()
+            if key in ENV_PASSTHROUGH or key.startswith(ENV_PASSTHROUGH_PREFIXES)
+        }
+        seen.setdefault("PATH", DEFAULT_PATH)
+        # A JVM takes user.home from the passwd entry, not $HOME, so Ghidra's launcher
+        # would write ~/.config/ghidra under the read-only real home and the product
+        # `decompile` would silently fall back to angr. Point it at the cell home. An
+        # operator's own options follow ours, so their -D flags still win.
         options = ["-Duser.home=%s/home" % inside]
         if os.environ.get("JAVA_TOOL_OPTIONS"):
             options.append(os.environ["JAVA_TOOL_OPTIONS"])
-        env["JAVA_TOOL_OPTIONS"] = " ".join(options)
-        for key, value in os.environ.items():
-            if key in ENV_PASSTHROUGH or key.startswith(ENV_PASSTHROUGH_PREFIXES):
-                env.setdefault(key, value)
-        env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
-        return env
+        seen["JAVA_TOOL_OPTIONS"] = " ".join(options)
+        return dict(sorted(seen.items()))
 
     def command_argv(self, cli: Sequence[str], command: str, target: str, inside: str, extra=()):
         binary = inside + "/" + target
@@ -708,8 +721,14 @@ def build_header(
         "core_sha256": {name: stage.sha256_file(path) for name, path in core.items()},
         "core_paths": {name: str(path) for name, path in core.items()},
         "hide": harness.hide,
+        # With backend none the cell path differs per cell, so it is a placeholder there.
+        "env_passthrough": harness.passthrough(harness.inside(Path("<cell>"))),
         "v0_limits": list(V0_LIMITS),
     }
+
+
+def _env_text(env: Dict[str, str]) -> str:
+    return " ".join("`%s=%s`" % item for item in env.items()) or "none"
 
 
 def _finite(value: float) -> Optional[float]:
@@ -949,6 +968,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         ["core/sandbox.py sha256", head["core_sha256"]["sandbox.py"]],
         ["argv", "`%s`" % " ".join(head["argv"])],
         ["cli", "`%s`" % " ".join(head["cli"])],
+        ["cell env passthrough", _env_text(head["env_passthrough"])],
     ]
     lines += _md_table(["field", "value"], rows)
     lines += ["", "v0 limits: " + " ".join(head["v0_limits"]), ""]

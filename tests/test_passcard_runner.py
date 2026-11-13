@@ -13,6 +13,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -391,6 +392,9 @@ def test_the_header_records_provenance(baseline, world):
         assert head["core_sha256"][name] == hashlib.sha256(path.read_bytes()).hexdigest()
     assert head["load_max"] is None and head["reps"] == 1 and head["timeout_s"] == 30.0
     assert head["v0_limits"] and head["isolation"]["self_check"]
+    assert head["env_passthrough"]["JAVA_TOOL_OPTIONS"].startswith(
+        "-Duser.home=/tmp/cell/home"
+    )
     assert head["cli"] == [sys.executable, str(world.shim("decline.py"))]
     for hidden in (world.truth_dir, world.targets_root, world.source_dir):
         assert str(hidden) in head["hide"]
@@ -403,10 +407,48 @@ def test_the_markdown_report_sits_next_to_the_json(baseline):
     _, report, out = baseline
     text = Path(str(out) + ".md").read_text()
     assert text.startswith("# Passcard report")
+    assert "| cell env passthrough |" in text
+    assert "`JAVA_TOOL_OPTIONS=-Duser.home=/tmp/cell/home" in text
     assert "## Ghidra control cell (V-2)" in text and "Skipped (`--no-control`)" in text
     assert "## S0 matrix (7 ELF targets, smoke, never a gate)" in text
     assert "| ROBUST | 4 | 4 | 0 | 0 | 0 | 0 |" in text
     assert pc.render_markdown(report) == text
+
+
+def _harness(backend):
+    args = SimpleNamespace(cli=[], control_cli=[], backend=backend, scratch_root=None)
+    return pc.Harness(args, proc=None, sandbox=None)
+
+
+def test_passthrough_records_the_operator_knobs_a_cell_inherits(monkeypatch):
+    for key in list(os.environ):
+        if key.startswith(("SUPWNGO_", "GHIDRA_")):
+            monkeypatch.delenv(key)
+    for key in ("JAVA_HOME", "JAVA_TOOL_OPTIONS", "VIRTUAL_ENV", "LANG", "LC_ALL"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("SUPWNGO_GHIDRA_TIMEOUT", "600")
+    monkeypatch.setenv("GHIDRA_INSTALL_DIR", "/opt/ghidra")
+    monkeypatch.setenv("JAVA_HOME", "/opt/jdk")
+    monkeypatch.setenv("JAVA_TOOL_OPTIONS", "-Xmx2g")
+    monkeypatch.setenv("PASSCARD_NOT_PASSED", "1")
+    seen = _harness("bwrap").passthrough(pc.INSIDE)
+    assert seen["SUPWNGO_GHIDRA_TIMEOUT"] == "600"
+    assert seen["GHIDRA_INSTALL_DIR"] == "/opt/ghidra"
+    assert seen["JAVA_HOME"] == "/opt/jdk"
+    assert seen["JAVA_TOOL_OPTIONS"] == "-Duser.home=/tmp/cell/home -Xmx2g"
+    assert "PASSCARD_NOT_PASSED" not in seen
+    assert list(seen) == sorted(seen)  # a stable order, so two reports diff cleanly
+    # The env a cell is given carries every one of them.
+    env = _harness("bwrap").env(pc.INSIDE)
+    assert all(env[key] == value for key, value in seen.items())
+
+
+def test_passthrough_without_a_bwrap_cell_path_and_without_operator_options(monkeypatch):
+    monkeypatch.delenv("JAVA_TOOL_OPTIONS", raising=False)
+    monkeypatch.delenv("PATH", raising=False)
+    seen = _harness("none").passthrough("/var/tmp/passcard-x/cell")
+    assert seen["JAVA_TOOL_OPTIONS"] == "-Duser.home=/var/tmp/passcard-x/cell/home"
+    assert seen["PATH"] == pc.DEFAULT_PATH
 
 
 @needs_bwrap
@@ -441,6 +483,12 @@ def test_a_command_sees_only_its_cell_and_a_scrubbed_environment(world, tmp_path
     assert env["PYTHONPATH"] == str(REPO_ROOT) and env["PWNLIB_NOTERM"] == "1"
     assert "PASSCARD_LEAK_PROBE" not in env  # the parent environment is not inherited
     assert env["SUPWNGO_PASSCARD_PROBE"] == "kept"  # except the declared passthrough
+    # The header records the same knobs, so a run describes the environment it ran in.
+    recorded = report["header"]["env_passthrough"]
+    assert recorded["SUPWNGO_PASSCARD_PROBE"] == "kept"
+    assert recorded["JAVA_TOOL_OPTIONS"] == env["JAVA_TOOL_OPTIONS"]
+    assert "PASSCARD_LEAK_PROBE" not in recorded
+    assert all(env[key] == value for key, value in recorded.items())
     # The answer keys are hidden; the shim, which lives outside every hidden path, is not.
     assert seen["exists"] == {
         str(world.source_dir / "mini_a"): False,
