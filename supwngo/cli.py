@@ -2185,8 +2185,11 @@ def decompile(ctx, binary, function, ghidra, output, angr_timeout, json_output):
                 for v in vulns:
                     console.print(f"  [{v['severity']}] {v['description']}")
     elif json_output:
+        message = "Decompilation failed"
+        if decomp.ghidra_error:
+            message += f" (ghidra: {decomp.ghidra_error})"
         _emit_json({
-            "error": "Decompilation failed",
+            "error": message,
             "analysis_backend": decomp.analysis_backend,
             "angr_budget_exceeded": decomp.angr_budget_exceeded,
             "angr_status": decomp.angr_status or None,
@@ -2194,6 +2197,8 @@ def decompile(ctx, binary, function, ghidra, output, angr_timeout, json_output):
         ctx.exit(2)
     else:
         console.print("[red]Decompilation failed[/red]")
+        if decomp.ghidra_error:
+            console.print(f"[yellow]ghidra: {decomp.ghidra_error}[/yellow]")
 
 
 @cli.command()

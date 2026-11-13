@@ -122,6 +122,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `timeout`) and only `ok` carries code. A placeholder, an empty body or a
   reply that is not that union is never a function, and `decompile --json`
   failures now exit 2 with `angr_status` in the JSON (human mode still exits 0).
+- `decompile` no longer hides why Ghidra failed. The Ghidra runner discarded
+  stdout and returned a bare yes/no, so a Ghidra run that refused to start (for
+  example "Path element starting with '.' is not permitted") looked the same as
+  "Ghidra is not installed" and the command quietly fell back to angr. The
+  runner now returns its process state, bounded stdout and stderr tails and the
+  first `ERROR` line; the cause is logged, survives the RetDec and angr
+  fallbacks, and is added to the JSON `error` (and the human failure message)
+  only when every backend failed.
 - `cfg` no longer hangs on a large statically linked binary (RT-05). The angr
   `CFGFast` build runs uninterruptible C-level work that no in-process watchdog
   can cancel; on a target like snow_scan it never returned and the command was

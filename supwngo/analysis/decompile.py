@@ -12,14 +12,15 @@ import json
 import math
 import os
 import re
-import signal
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from supwngo.core import proc
 from supwngo.core.binary import Binary
+from supwngo.core.proc import ProcState
 from supwngo.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -68,29 +69,65 @@ DEFAULT_GHIDRA_TIMEOUT = _resolve_ghidra_timeout(
 )
 
 
-def _kill_process_group(proc: "subprocess.Popen") -> None:
-    """SIGKILL a Popen's whole process group, then reap it.
+#: Longest stdout/stderr tail (characters) a :class:`GhidraRun` keeps.
+GHIDRA_TAIL_CHARS = 2000
 
-    ``analyzeHeadless`` spawns a JVM (and the JVM a native decompiler), so
-    killing only the launcher leaves those descendants alive. The process is
-    started with ``start_new_session=True`` (pgid == pid), so ``killpg`` takes
-    the whole tree; fall back to a plain kill if the group is already gone, then
-    drain and reap so no zombie or dangling pipe is left.
+#: Longest ``ERROR`` line (characters) a :class:`GhidraRun` keeps.
+GHIDRA_ERROR_MAX_CHARS = 400
+
+_GHIDRA_ERROR_LINE = re.compile(r"^\s*ERROR\b")
+
+
+@dataclass
+class GhidraRun:
+    """Structured outcome of one ``analyzeHeadless`` run (SP-01b V-11).
+
+    ``state`` is the :class:`~supwngo.core.proc.ProcState` of the process;
+    ``rc``/``signal``/``errno`` are set as ``ProcResult`` sets them. The tails
+    are bounded to :data:`GHIDRA_TAIL_CHARS`; ``first_error`` is the first
+    ``ERROR`` line of the *whole* stdout (not just the tail), which is where
+    Ghidra reports why it refused to run.
     """
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        try:
-            proc.kill()
-        except Exception:
-            pass
-    try:
-        proc.communicate(timeout=5)
-    except Exception:
-        try:
-            proc.wait(timeout=5)
-        except Exception:
-            pass
+
+    state: ProcState
+    rc: Optional[int] = None
+    signal: Optional[int] = None
+    errno: Optional[int] = None
+    stdout_tail: str = ""
+    stderr_tail: str = ""
+    first_error: str = ""
+    wall_s: float = 0.0
+    timeout_s: float = 0.0
+
+    @property
+    def finished(self) -> bool:
+        """True when the process ran to an end the output file can be read after.
+
+        Ghidra's return code is unreliable (the postScript may have written its
+        output before a non-zero exit), so any ended process counts; only a
+        timeout kill or a failed launch does not.
+        """
+        return self.state in (ProcState.EXITED, ProcState.SIGNALED)
+
+    @property
+    def error(self) -> str:
+        """Why the run failed, or ``""`` for a clean exit with no ``ERROR`` line."""
+        if self.state is ProcState.SPAWN_ERROR:
+            return f"could not launch Ghidra (errno {self.errno})"
+        if self.state is ProcState.TIMEOUT:
+            return f"Ghidra timed out after {self.timeout_s:g}s and was killed"
+        if self.first_error:
+            return self.first_error
+        if self.state is ProcState.SIGNALED:
+            return f"Ghidra was killed by signal {self.signal}"
+        if self.rc:
+            last = next(
+                (ln.strip() for ln in reversed(self.stderr_tail.splitlines())
+                 if ln.strip()),
+                "",
+            )
+            return f"Ghidra exited {self.rc}" + (f": {last}" if last else "")
+        return ""
 
 
 @dataclass
@@ -164,6 +201,12 @@ class Decompiler:
         #: the worker's diagnostic for a failure. Empty until angr has run.
         self.angr_status: str = ""
         self.angr_error: str = ""
+        #: The last Ghidra run (``None`` until Ghidra has been launched) and why
+        #: the last Ghidra attempt produced nothing (``""`` after a success). Kept
+        #: through the RetDec and angr fallbacks so the cause is not lost when a
+        #: later backend also fails.
+        self.ghidra_run: Optional[GhidraRun] = None
+        self.ghidra_error: str = ""
 
     def _find_ghidra(self) -> Optional[Path]:
         """Find Ghidra installation."""
@@ -279,45 +322,40 @@ class Decompiler:
             return f"addr:{hex(func_addr)}"
         return ""
 
-    def _run_ghidra_headless(self, cmd: List[str], timeout: float) -> bool:
+    def _run_ghidra_headless(self, cmd: List[str], timeout: float) -> GhidraRun:
         """Run ``analyzeHeadless`` in its own process group, killable on timeout.
 
-        Returns ``True`` if the process finished within ``timeout`` (the caller
-        then inspects the output file — Ghidra's returncode is unreliable), or
-        ``False`` if it could not be launched or was force-killed on timeout.
-        The whole process group is SIGKILLed and reaped on timeout so no JVM or
-        native-decompiler descendant is left behind.
+        Returns a :class:`GhidraRun` carrying the process state, bounded
+        stdout/stderr tails and the first ``ERROR`` line of stdout. A caller
+        reads the output file after any run that ``finished`` (Ghidra's return
+        code is unreliable); a timeout or a failed launch did not. The runner
+        (``supwngo.core.proc.run``) SIGKILLs and reaps the whole process group on
+        timeout, so no JVM or native-decompiler descendant is left behind.
         """
         try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-            )
-        except (OSError, ValueError) as exc:
-            logger.warning(f"Could not launch Ghidra: {exc}")
-            return False
+            cwd = os.getcwd()
+        except OSError:
+            cwd = tempfile.gettempdir()
+        result = proc.run(cmd, cwd=cwd, timeout=timeout)
 
-        try:
-            _out, err = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            logger.warning("Ghidra decompilation timed out after %ss; killing", timeout)
-            _kill_process_group(proc)
-            return False
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning(f"Ghidra decompilation errored: {exc}")
-            _kill_process_group(proc)
-            return False
-
-        if proc.returncode not in (0, None):
-            # A non-zero rc may still have run the postScript (which writes the
-            # output file), so do not hard-fail here; just record a bounded tail.
-            logger.warning(
-                "Ghidra exited %s: %s", proc.returncode, (err or "")[-300:]
-            )
-        return True
+        stdout = result.stdout.decode("utf-8", errors="replace")
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        first_error = next(
+            (ln.strip()[:GHIDRA_ERROR_MAX_CHARS] for ln in stdout.splitlines()
+             if _GHIDRA_ERROR_LINE.match(ln)),
+            "",
+        )
+        return GhidraRun(
+            state=result.state,
+            rc=result.rc,
+            signal=result.signal,
+            errno=result.errno,
+            stdout_tail=stdout[-GHIDRA_TAIL_CHARS:],
+            stderr_tail=stderr[-GHIDRA_TAIL_CHARS:],
+            first_error=first_error,
+            wall_s=result.wall_s,
+            timeout_s=float(timeout),
+        )
 
     @staticmethod
     def _read_ghidra_output(output_file: Path) -> Optional[List[Dict]]:
@@ -344,6 +382,12 @@ class Decompiler:
             return None
         return data
 
+    def _ghidra_failed(self, reason: str) -> None:
+        """Record why Ghidra produced nothing and log it; always returns ``None``."""
+        self.ghidra_error = reason
+        logger.warning("Ghidra produced no pseudo-C: %s", reason)
+        return None
+
     def _decompile_ghidra(self, func_name: Optional[str],
                           func_addr: Optional[int]) -> Optional[DecompiledFunction]:
         """Decompile using Ghidra headless.
@@ -353,15 +397,16 @@ class Decompiler:
         ``analysis_backend = "ghidra"`` and returns the function; on any failure
         mode (missing script, launch failure, timeout, no/empty/malformed output,
         or output with no usable pseudo-C) returns ``None`` so the caller degrades
-        to RetDec/angr.
+        to RetDec/angr. The structured run and the reason are kept in
+        ``ghidra_run`` / ``ghidra_error`` for the caller to report.
         """
         if not self._ghidra_path:
             return None
 
+        self.ghidra_run, self.ghidra_error = None, ""
         script_path = self._ghidra_scripts_dir() / GHIDRA_SCRIPT_NAME
         if not script_path.is_file():
-            logger.warning("Ghidra decompile script missing: %s", script_path)
-            return None
+            return self._ghidra_failed(f"decompile script missing: {script_path}")
 
         logger.info("Decompiling with Ghidra...")
         selector = self._ghidra_selector(func_name, func_addr)
@@ -382,28 +427,31 @@ class Decompiler:
                     "-deleteProject",
                 ]
 
-                if not self._run_ghidra_headless(cmd, self._ghidra_timeout):
-                    return None
+                run = self._run_ghidra_headless(cmd, self._ghidra_timeout)
+                self.ghidra_run = run
+                if not run.finished:
+                    return self._ghidra_failed(run.error)
 
                 data = self._read_ghidra_output(output_file)
                 if data is None:
-                    return None
+                    return self._ghidra_failed(
+                        run.error or "Ghidra wrote no usable output file"
+                    )
                 if not data:
                     # Script ran cleanly but selected/decompiled nothing.
                     logger.info("Ghidra ran but produced no decompiled function")
-                    return None
+                    return self._ghidra_failed(
+                        run.first_error or "Ghidra selected no function to decompile"
+                    )
 
                 result = self._parse_ghidra_output(data)
                 if result is None or not (result.code and result.code.strip()):
-                    logger.warning("Ghidra output had no usable pseudo-C")
-                    return None
+                    return self._ghidra_failed("Ghidra output had no usable pseudo-C")
 
                 self.analysis_backend = "ghidra"
                 return result
         except Exception as exc:
-            logger.warning(f"Ghidra decompilation failed: {exc}")
-
-        return None
+            return self._ghidra_failed(f"{type(exc).__name__}: {exc}")
 
     def _parse_ghidra_output(self, data: List[Dict]) -> Optional[DecompiledFunction]:
         """Parse Ghidra JSON output."""

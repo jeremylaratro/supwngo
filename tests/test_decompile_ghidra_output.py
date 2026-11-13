@@ -29,7 +29,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import types
@@ -39,6 +38,7 @@ import pytest
 
 import supwngo.analysis.decompile as decompile_mod
 from supwngo.analysis.decompile import Decompiler
+from supwngo.core.proc import ProcState
 
 
 # --------------------------------------------------------------------------- #
@@ -55,6 +55,16 @@ def _make_decompiler(tmp_path):
     d = Decompiler(stub_binary)
     d._ghidra_path = Path("/opt/ghidra/support/analyzeHeadless")
     return d
+
+
+def _ran_ok():
+    """A GhidraRun for a process that ran to an end (the seam's old ``True``)."""
+    return decompile_mod.GhidraRun(state=ProcState.EXITED, rc=0)
+
+
+def _killed_on_timeout():
+    """A GhidraRun for a timeout kill (the seam's old ``False``)."""
+    return decompile_mod.GhidraRun(state=ProcState.TIMEOUT, timeout_s=0.01)
 
 
 GHIDRA_BIN = (
@@ -171,7 +181,7 @@ def test_ghidra_happy_path_sets_backend_and_returns_code(tmp_path, monkeypatch):
         "name": "main", "address": 0x401187, "return_type": "undefined",
         "code": "\nvoid main(void)\n\n{\n  entry_main();\n  return;\n}\n",
     }]
-    monkeypatch.setattr(d, "_run_ghidra_headless", lambda cmd, timeout: True)
+    monkeypatch.setattr(d, "_run_ghidra_headless", lambda cmd, timeout: _ran_ok())
     monkeypatch.setattr(d, "_read_ghidra_output", lambda path: canned)
 
     result = d._decompile_ghidra("main", None)
@@ -184,7 +194,7 @@ def test_ghidra_happy_path_sets_backend_and_returns_code(tmp_path, monkeypatch):
 
 def test_ghidra_empty_list_degrades_to_fallback(tmp_path, monkeypatch):
     d = _make_decompiler(tmp_path)
-    monkeypatch.setattr(d, "_run_ghidra_headless", lambda cmd, timeout: True)
+    monkeypatch.setattr(d, "_run_ghidra_headless", lambda cmd, timeout: _ran_ok())
     monkeypatch.setattr(d, "_read_ghidra_output", lambda path: [])
 
     assert d._decompile_ghidra("main", None) is None
@@ -195,7 +205,7 @@ def test_ghidra_empty_object_without_code_degrades(tmp_path, monkeypatch):
     """`[{}]` parses to a function with empty pseudo-C -> must NOT be reported as
     a Ghidra success (B2)."""
     d = _make_decompiler(tmp_path)
-    monkeypatch.setattr(d, "_run_ghidra_headless", lambda cmd, timeout: True)
+    monkeypatch.setattr(d, "_run_ghidra_headless", lambda cmd, timeout: _ran_ok())
     monkeypatch.setattr(d, "_read_ghidra_output", lambda path: [{}])
 
     assert d._decompile_ghidra("main", None) is None
@@ -205,7 +215,7 @@ def test_ghidra_empty_object_without_code_degrades(tmp_path, monkeypatch):
 def test_ghidra_whitespace_only_code_degrades(tmp_path, monkeypatch):
     d = _make_decompiler(tmp_path)
     canned = [{"name": "f", "address": 1, "return_type": "int", "code": "  \n\t "}]
-    monkeypatch.setattr(d, "_run_ghidra_headless", lambda cmd, timeout: True)
+    monkeypatch.setattr(d, "_run_ghidra_headless", lambda cmd, timeout: _ran_ok())
     monkeypatch.setattr(d, "_read_ghidra_output", lambda path: canned)
 
     assert d._decompile_ghidra("f", None) is None
@@ -214,7 +224,7 @@ def test_ghidra_whitespace_only_code_degrades(tmp_path, monkeypatch):
 
 def test_ghidra_malformed_output_returns_none(tmp_path, monkeypatch):
     d = _make_decompiler(tmp_path)
-    monkeypatch.setattr(d, "_run_ghidra_headless", lambda cmd, timeout: True)
+    monkeypatch.setattr(d, "_run_ghidra_headless", lambda cmd, timeout: _ran_ok())
     monkeypatch.setattr(d, "_read_ghidra_output", lambda path: None)
 
     assert d._decompile_ghidra("main", None) is None
@@ -223,8 +233,9 @@ def test_ghidra_malformed_output_returns_none(tmp_path, monkeypatch):
 
 def test_ghidra_timeout_returns_none(tmp_path, monkeypatch):
     d = _make_decompiler(tmp_path)
-    # _run_ghidra_headless returns False on timeout/launch failure.
-    monkeypatch.setattr(d, "_run_ghidra_headless", lambda cmd, timeout: False)
+    # _run_ghidra_headless reports a timeout/launch failure as a run that did not
+    # finish.
+    monkeypatch.setattr(d, "_run_ghidra_headless", lambda cmd, timeout: _killed_on_timeout())
     called = {"read": False}
 
     def _spy_read(path):
@@ -250,7 +261,7 @@ def test_ghidra_missing_script_returns_none_without_launch(tmp_path, monkeypatch
 
     def _spy_run(cmd, timeout):
         launched["ran"] = True
-        return True
+        return _ran_ok()
 
     monkeypatch.setattr(d, "_run_ghidra_headless", _spy_run)
 
@@ -268,84 +279,30 @@ def test_ghidra_no_path_returns_none(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# Process-group kill / reap lifecycle (B1)
+# Process lifecycle (B1): the seam reports how the run ended. The structured
+# result, the bounded tails and the group kill are in
+# tests/test_decompile_ghidra_diagnostics.py and tests/test_proc.py.
 # --------------------------------------------------------------------------- #
 
-class _FakePopen:
-    """Minimal Popen stand-in whose first communicate() times out."""
-
-    def __init__(self, cmd, stdout=None, stderr=None, text=None,
-                 start_new_session=None):
-        self.cmd = cmd
-        self.pid = 4242
-        self.returncode = None
-        self._communications = 0
-        self.killed = False
-        self.waited = False
-
-    def communicate(self, timeout=None):
-        self._communications += 1
-        if self._communications == 1:
-            raise subprocess.TimeoutExpired(self.cmd, timeout)
-        return ("", "")  # reap drain after kill
-
-    def kill(self):
-        self.killed = True
-
-    def wait(self, timeout=None):
-        self.waited = True
-        self.returncode = -9
-        return self.returncode
-
-
-def test_run_ghidra_headless_timeout_kills_process_group(tmp_path, monkeypatch):
+def test_run_ghidra_headless_timeout_is_a_run_that_did_not_finish(tmp_path):
     d = _make_decompiler(tmp_path)
-    fake = {}
+    script = tmp_path / "analyzeHeadless"
+    script.write_text("#!/bin/sh\nsleep 300\n")
+    script.chmod(0o755)
 
-    def _factory(cmd, **kw):
-        p = _FakePopen(cmd, **kw)
-        fake["proc"] = p
-        return p
+    run = d._run_ghidra_headless([str(script)], timeout=0.5)
 
-    killpg_calls = []
-    monkeypatch.setattr(decompile_mod.subprocess, "Popen", _factory)
-    monkeypatch.setattr(decompile_mod.os, "getpgid", lambda pid: pid)
-    monkeypatch.setattr(decompile_mod.os, "killpg",
-                        lambda pgid, sig: killpg_calls.append((pgid, sig)))
-
-    ok = d._run_ghidra_headless(["analyzeHeadless", "x"], timeout=0.01)
-
-    assert ok is False
-    assert killpg_calls == [(4242, signal.SIGKILL)]
-    # the group was reaped (second communicate drained the pipes)
-    assert fake["proc"]._communications == 2
+    assert run.state is ProcState.TIMEOUT
+    assert run.finished is False
 
 
-def test_run_ghidra_headless_kill_falls_back_when_group_gone(tmp_path, monkeypatch):
+def test_run_ghidra_headless_launch_failure_is_a_run_that_did_not_finish(tmp_path):
     d = _make_decompiler(tmp_path)
 
-    def _factory(cmd, **kw):
-        return _FakePopen(cmd, **kw)
+    run = d._run_ghidra_headless([str(tmp_path / "missing")], timeout=5)
 
-    def _boom(pgid, sig):
-        raise ProcessLookupError
-
-    monkeypatch.setattr(decompile_mod.subprocess, "Popen", _factory)
-    monkeypatch.setattr(decompile_mod.os, "getpgid", lambda pid: pid)
-    monkeypatch.setattr(decompile_mod.os, "killpg", _boom)
-
-    # Must not raise: _kill_process_group falls back to proc.kill() + reap.
-    assert d._run_ghidra_headless(["analyzeHeadless", "x"], timeout=0.01) is False
-
-
-def test_run_ghidra_headless_launch_failure_returns_false(tmp_path, monkeypatch):
-    d = _make_decompiler(tmp_path)
-
-    def _boom(cmd, **kw):
-        raise OSError("boom")
-
-    monkeypatch.setattr(decompile_mod.subprocess, "Popen", _boom)
-    assert d._run_ghidra_headless(["analyzeHeadless", "x"], timeout=5) is False
+    assert run.state is ProcState.SPAWN_ERROR
+    assert run.finished is False
 
 
 # --------------------------------------------------------------------------- #
