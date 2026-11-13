@@ -114,6 +114,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `none` (nothing ran, so no sandbox applied). Without `--json` a diagnostic
   goes to stderr and stdout stays empty. `decompile` is not gated and still
   decompiles a PE.
+- The angr fallback of `decompile` now produces code. Its control-flow graph
+  was built without `normalize=True`, so angr's decompiler returned no code
+  generator and the command printed a `// Decompilation failed` placeholder as
+  if it were pseudo-C. The worker now answers with a tagged status (`ok`,
+  `missing_function`, `decompiler_failed`, `exception`; the parent adds
+  `timeout`) and only `ok` carries code. A placeholder, an empty body or a
+  reply that is not that union is never a function, and `decompile --json`
+  failures now exit 2 with `angr_status` in the JSON (human mode still exits 0).
 - `cfg` no longer hangs on a large statically linked binary (RT-05). The angr
   `CFGFast` build runs uninterruptible C-level work that no in-process watchdog
   can cancel; on a target like snow_scan it never returned and the command was

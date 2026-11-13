@@ -208,11 +208,20 @@ def _op_decompile(binary_path: str, func_name: str = None, func_addr: int = None
 
     Runs both heavy angr passes -- ``CFGFast`` *and* the ``Decompiler`` analysis
     -- in the child, since either can run unbounded C-level work on a large
-    binary, and returns plain-data fields the parent rebuilds into a
-    ``DecompiledFunction``. ``found`` distinguishes "function not in the CFG"
-    (the parent's ``None``) from a successful decompilation. The decompile step's
-    own failures are captured as a ``// Decompilation failed`` comment in
-    ``code``, exactly as the in-process path did.
+    binary, and returns plain data the parent rebuilds into a
+    ``DecompiledFunction``.
+
+    The reply is a tagged union, ``{"status": ...}``; only ``ok`` carries
+    ``code``:
+
+    * ``ok`` -- real pseudo-C plus ``name``, ``address``, ``return_type`` and
+      ``calls``;
+    * ``missing_function`` -- the requested function is not in the CFG;
+    * ``decompiler_failed`` -- angr's decompiler ran but produced no code;
+    * ``exception`` -- the decompiler (or the callee listing) raised.
+
+    ``CFGFast`` is built with ``normalize=True``: without it angr's decompiler
+    gets a non-normalised function and returns no code generator at all.
     """
     # Kept (unused) to preserve the in-process import semantics: if angr's
     # decompiler backend is unavailable this import raises and the op fails,
@@ -223,7 +232,7 @@ def _op_decompile(binary_path: str, func_name: str = None, func_addr: int = None
     from supwngo.analysis._angr_callgraph import iter_callees
 
     proj = _load_project(binary_path)
-    cfg = proj.analyses.CFGFast()
+    cfg = proj.analyses.CFGFast(normalize=True)
 
     func = None
     if func_addr is not None:
@@ -234,24 +243,28 @@ def _op_decompile(binary_path: str, func_name: str = None, func_addr: int = None
                 func = f
                 break
     if not func:
-        return {"found": False}
+        return {"status": "missing_function"}
 
     try:
         dec = proj.analyses.Decompiler(func, cfg=cfg)
-        if dec.codegen and hasattr(dec.codegen, "text"):
-            code = dec.codegen.text
-        else:
-            code = f"// Decompilation failed for {func.name}"
-    except Exception as e:
-        code = f"// Decompilation failed: {e}"
+        codegen = dec.codegen
+        code = getattr(codegen, "text", None) if codegen is not None else None
+        if not isinstance(code, str) or not code.strip():
+            return {
+                "status": "decompiler_failed",
+                "error": f"angr produced no pseudo-C for {func.name}",
+            }
+        calls = [c.name for c in iter_callees(func, cfg.kb.functions) if c.name]
+    except Exception as e:  # noqa: BLE001 - reported to the parent as a status
+        return {"status": "exception", "error": f"{type(e).__name__}: {e}"}
 
     return {
-        "found": True,
+        "status": "ok",
         "name": func.name,
         "address": func.addr,
         "return_type": "void",
         "code": code,
-        "calls": [c.name for c in iter_callees(func, cfg.kb.functions) if c.name],
+        "calls": calls,
     }
 
 

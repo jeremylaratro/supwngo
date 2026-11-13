@@ -18,9 +18,10 @@ RED proof (base tree ``b77870f``): ``decompile`` has no ``--angr-timeout`` optio
 provenance assertions fail. Post-fix: the angr fallback is budgeted, the backend
 switches to ``none`` on timeout, and ``angr_budget_exceeded`` is true.
 
-The angr ``Decompiler`` backend may emit only a ``// Decompilation failed``
-sentinel for a tiny ``-O0`` function (version-dependent), so the happy-path test
-asserts on provenance and function identity, not on exact pseudo-C text.
+SP-01b 4.2 / V-7: the worker builds ``CFGFast(normalize=True)`` and returns a
+tagged union, so the happy-path test asserts real pseudo-C naming the fixture's
+call (it used to pass on the ``// Decompilation failed`` sentinel). A budgeted
+failure is a failure envelope: ``decompile --json`` exits 2 (human mode stays 0).
 """
 
 from __future__ import annotations
@@ -99,6 +100,11 @@ def test_decompile_angr_happy_path_uses_subprocess_and_returns_function(tiny_bin
     assert result.name == "leaf_helper"
     assert decomp.analysis_backend == "angr"
     assert decomp.angr_budget_exceeded is False
+    # Real code, not the sentinel (V-7): a non-sentinel body that names the call
+    # the fixture's function makes.
+    assert "Decompilation failed" not in result.code
+    assert "printf" in result.code, result.code
+    assert "printf" in result.calls
 
 
 # --- Forced-timeout degradation via the real CLI ------------------------------
@@ -113,10 +119,12 @@ def test_decompile_forced_timeout_degrades_to_none_json(tiny_binary):
                        "--angr-timeout", "0.001", "--json"],
         capture_output=True, text=True, timeout=30,
     )
-    assert proc.returncode == 0, f"decompile exited {proc.returncode}\nstderr:\n{proc.stderr[-2000:]}"
+    # A failure envelope exits 2 (SP-01b 4.2); the JSON still carries the markers.
+    assert proc.returncode == 2, f"decompile exited {proc.returncode}\nstderr:\n{proc.stderr[-2000:]}"
     data = json.loads(proc.stdout)
     assert data["angr_budget_exceeded"] is True
     assert data["analysis_backend"] == "none"
+    assert data["angr_status"] == "timeout"
     assert data.get("error") == "Decompilation failed"
 
 
@@ -155,7 +163,7 @@ def test_decompile_snow_scan_returns_instead_of_hanging():
         capture_output=True, text=True, timeout=90,
     )
     elapsed = time.monotonic() - start
-    assert proc.returncode == 0, f"decompile exited {proc.returncode}\nstderr:\n{proc.stderr[-2000:]}"
+    assert proc.returncode == 2, f"decompile exited {proc.returncode}\nstderr:\n{proc.stderr[-2000:]}"
     data = json.loads(proc.stdout)
     assert data["angr_budget_exceeded"] is True
     assert data["analysis_backend"] == "none"

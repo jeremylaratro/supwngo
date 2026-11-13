@@ -2189,7 +2189,9 @@ def decompile(ctx, binary, function, ghidra, output, angr_timeout, json_output):
             "error": "Decompilation failed",
             "analysis_backend": decomp.analysis_backend,
             "angr_budget_exceeded": decomp.angr_budget_exceeded,
+            "angr_status": decomp.angr_status or None,
         })
+        ctx.exit(2)
     else:
         console.print("[red]Decompilation failed[/red]")
 

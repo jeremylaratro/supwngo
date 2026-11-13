@@ -33,6 +33,14 @@ GHIDRA_SCRIPT_NAME = "SupwngoDecompile.java"
 #: ``SUPWNGO_GHIDRA_TIMEOUT`` override, so "bounded" stays true.
 GHIDRA_TIMEOUT_HARD_MAX = 900.0
 
+#: Statuses of the angr decompile op: the worker's tagged union plus the
+#: parent-only ``timeout``. Only ``ok`` carries pseudo-C.
+ANGR_STATUSES = ("ok", "missing_function", "decompiler_failed", "exception", "timeout")
+
+#: Prefix of the placeholder angr used to emit in place of code. It is never a
+#: decompilation, whatever status accompanies it.
+ANGR_SENTINEL_PREFIX = "// Decompilation failed"
+
 
 def _resolve_ghidra_timeout(raw: Any, default: float = 180.0) -> float:
     """Return a finite, positive, hard-capped Ghidra budget in seconds.
@@ -152,6 +160,10 @@ class Decompiler:
         #: pseudo-C.
         self.analysis_backend: str = "angr"
         self.angr_budget_exceeded: bool = False
+        #: Outcome of the last angr decompile (one of :data:`ANGR_STATUSES`), and
+        #: the worker's diagnostic for a failure. Empty until angr has run.
+        self.angr_status: str = ""
+        self.angr_error: str = ""
 
     def _find_ghidra(self) -> Optional[Path]:
         """Find Ghidra installation."""
@@ -485,12 +497,19 @@ class Decompiler:
         on a budget blow-out the child's process group is killed and this returns
         ``None`` -- the prior failure behaviour -- while recording that it
         degraded via ``analysis_backend`` / ``angr_budget_exceeded`` (RT-05).
+
+        The child replies with a tagged union (see ``_op_decompile``). The reply
+        is validated here, the outcome is recorded in ``angr_status`` /
+        ``angr_error``, and every status but ``ok`` returns ``None``: a reply
+        that is not the union, or an ``ok`` whose body is empty or the
+        ``// Decompilation failed`` placeholder, is never a function.
         """
         from supwngo.analysis._angr_subprocess import (
             AnalysisBudgetExceeded,
             run_angr_op,
         )
 
+        self.angr_status, self.angr_error = "", ""
         try:
             data = run_angr_op(str(self.binary.path), "decompile", self._angr_timeout,
                                func_name=func_name, func_addr=func_addr)
@@ -501,13 +520,20 @@ class Decompiler:
             )
             self.angr_budget_exceeded = True
             self.analysis_backend = "none"
+            self.angr_status, self.angr_error = "timeout", str(e)
             return None
         except Exception as e:
             logger.warning(f"angr decompilation failed: {e}")
             self.analysis_backend = "none"
+            self.angr_status, self.angr_error = "exception", str(e)
             return None
 
-        if not data.get("found"):
+        status, error = self._check_angr_reply(data)
+        self.angr_status, self.angr_error = status, error
+        if status != "ok":
+            if status == "exception":
+                self.analysis_backend = "none"
+            logger.warning(f"angr decompilation produced no pseudo-C: {status}: {error}")
             return None
 
         self.analysis_backend = "angr"
@@ -518,6 +544,39 @@ class Decompiler:
             code=data["code"],
             calls=list(data["calls"]),
         )
+
+    @staticmethod
+    def _check_angr_reply(data: Any) -> Tuple[str, str]:
+        """Classify a worker reply as ``(status, error)``.
+
+        ``("ok", "")`` only for a well-formed ``ok`` reply. A failure status is
+        passed through with the worker's ``error``. Anything that is not the
+        union (a non-dict, an unknown or missing status such as the legacy
+        ``found`` shape, an ``ok`` without its fields) is ``exception``; an
+        ``ok`` whose code is empty or the placeholder is ``decompiler_failed``.
+        """
+        if not isinstance(data, dict):
+            return "exception", f"worker reply is not an object: {type(data).__name__}"
+        status = data.get("status")
+        if status not in ANGR_STATUSES or status == "timeout":
+            return "exception", f"worker reply has no valid status: {status!r}"
+        if status != "ok":
+            return status, str(data.get("error") or "")
+
+        name, address = data.get("name"), data.get("address")
+        code, calls = data.get("code"), data.get("calls")
+        if (
+            not isinstance(name, str)
+            or not isinstance(address, int)
+            or isinstance(address, bool)
+            or not isinstance(data.get("return_type"), str)
+            or not isinstance(code, str)
+            or not isinstance(calls, list)
+        ):
+            return "exception", "ok reply is missing or mistypes its fields"
+        if not code.strip() or code.lstrip().startswith(ANGR_SENTINEL_PREFIX):
+            return "decompiler_failed", "ok reply carries no real pseudo-C"
+        return "ok", ""
 
     def _parse_variables_from_code(self, code: str) -> List[DecompiledVariable]:
         """Parse variable declarations from C code."""
