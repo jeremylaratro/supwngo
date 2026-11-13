@@ -203,7 +203,7 @@ def _op_strings_xrefs(binary_path: str, **_kwargs):
 
 
 def _op_decompile(binary_path: str, func_name: str = None, func_addr: int = None,
-                  **_kwargs) -> Dict[str, Any]:
+                  file_base: int = None, **_kwargs) -> Dict[str, Any]:
     """Whole-function angr decompilation (``Decompiler._decompile_angr``).
 
     Runs both heavy angr passes -- ``CFGFast`` *and* the ``Decompiler`` analysis
@@ -222,6 +222,12 @@ def _op_decompile(binary_path: str, func_name: str = None, func_addr: int = None
 
     ``CFGFast`` is built with ``normalize=True``: without it angr's decompiler
     gets a non-normalised function and returns no code generator at all.
+
+    Addresses (SP-01b V-10): ``address`` is angr's own, and ``backend_base`` is
+    ``main_object.mapped_base``, so the parent can map it to the file's
+    convention. ``func_addr`` arrives in that file convention with its
+    ``file_base`` (``None`` means "already angr's"), and is mapped here with
+    angr's own base -- the only place that base is known.
     """
     # Kept (unused) to preserve the in-process import semantics: if angr's
     # decompiler backend is unavailable this import raises and the op fails,
@@ -232,10 +238,13 @@ def _op_decompile(binary_path: str, func_name: str = None, func_addr: int = None
     from supwngo.analysis._angr_callgraph import iter_callees
 
     proj = _load_project(binary_path)
+    backend_base = int(proj.loader.main_object.mapped_base)
     cfg = proj.analyses.CFGFast(normalize=True)
 
     func = None
     if func_addr is not None:
+        if file_base is not None:
+            func_addr = backend_base + (func_addr - file_base)
         func = cfg.kb.functions.get(func_addr)
     elif func_name:
         for f in cfg.kb.functions.values():
@@ -243,7 +252,7 @@ def _op_decompile(binary_path: str, func_name: str = None, func_addr: int = None
                 func = f
                 break
     if not func:
-        return {"status": "missing_function"}
+        return {"status": "missing_function", "backend_base": backend_base}
 
     try:
         dec = proj.analyses.Decompiler(func, cfg=cfg)
@@ -262,6 +271,7 @@ def _op_decompile(binary_path: str, func_name: str = None, func_addr: int = None
         "status": "ok",
         "name": func.name,
         "address": func.addr,
+        "backend_base": backend_base,
         "return_type": "void",
         "code": code,
         "calls": calls,

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from supwngo.core import proc
+from supwngo.core import fileformat, proc
 from supwngo.core.binary import Binary
 from supwngo.core.proc import ProcState
 from supwngo.utils.logging import get_logger
@@ -76,6 +76,11 @@ GHIDRA_TAIL_CHARS = 2000
 GHIDRA_ERROR_MAX_CHARS = 400
 
 _GHIDRA_ERROR_LINE = re.compile(r"^\s*ERROR\b")
+
+
+def _is_int(value: Any) -> bool:
+    """True for an ``int`` that is not a ``bool``."""
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 @dataclass
@@ -298,6 +303,37 @@ class Decompiler:
         # Fallback to angr decompilation
         return self._decompile_angr(func_name, func_addr)
 
+    def _file_base(self) -> Optional[int]:
+        """The file's link-time base: the address convention ``objdump``/``nm`` use.
+
+        ``min(PT_LOAD.p_vaddr)`` for an ELF, ``ImageBase`` for a PE, ``None`` for
+        anything else (or a truncated file), in which case a backend's address is
+        reported as the backend gave it.
+        """
+        path = self.binary.path
+        kind = fileformat.detect_format(path)
+        if kind == fileformat.ELF:
+            elf = fileformat.elf_info(path)
+            return elf.min_load_vaddr if elf else None
+        if kind == fileformat.PE:
+            pe = fileformat.pe_info(path)
+            return pe.image_base if pe else None
+        return None
+
+    @staticmethod
+    def _to_file_address(address: int, backend_base: int,
+                         file_base: Optional[int]) -> int:
+        """Map a backend address to the file convention (SP-01b V-10).
+
+        ``file_base + (address - backend_base)``: each backend reports its own
+        base (Ghidra's image base, angr's ``mapped_base``), so no constant such
+        as ``0x100000`` or ``0x400000`` is assumed. With no file base the address
+        is returned unchanged.
+        """
+        if file_base is None:
+            return address
+        return file_base + (address - backend_base)
+
     def _ghidra_scripts_dir(self) -> Path:
         """Directory holding the shipped Ghidra GhidraScript(s).
 
@@ -410,6 +446,9 @@ class Decompiler:
 
         logger.info("Decompiling with Ghidra...")
         selector = self._ghidra_selector(func_name, func_addr)
+        file_base = self._file_base()
+        # The script maps an explicit address into Ghidra's own base with this.
+        file_base_arg = "none" if file_base is None else hex(file_base)
 
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -424,6 +463,7 @@ class Decompiler:
                     "-import", str(self.binary.path),
                     "-scriptPath", str(script_path.parent),
                     "-postScript", GHIDRA_SCRIPT_NAME, selector, str(output_file),
+                    file_base_arg,
                     "-deleteProject",
                 ]
 
@@ -447,6 +487,16 @@ class Decompiler:
                 result = self._parse_ghidra_output(data)
                 if result is None or not (result.code and result.code.strip()):
                     return self._ghidra_failed("Ghidra output had no usable pseudo-C")
+
+                backend_base = data[0].get("backend_base")
+                if not _is_int(backend_base) or not _is_int(result.address):
+                    return self._ghidra_failed(
+                        "Ghidra output has no integer address/backend_base, "
+                        "so its address cannot be normalised"
+                    )
+                result.address = self._to_file_address(
+                    result.address, backend_base, file_base
+                )
 
                 self.analysis_backend = "ghidra"
                 return result
@@ -558,9 +608,11 @@ class Decompiler:
         )
 
         self.angr_status, self.angr_error = "", ""
+        file_base = self._file_base()
         try:
             data = run_angr_op(str(self.binary.path), "decompile", self._angr_timeout,
-                               func_name=func_name, func_addr=func_addr)
+                               func_name=func_name, func_addr=func_addr,
+                               file_base=file_base)
         except AnalysisBudgetExceeded as e:
             logger.warning(
                 f"angr decompilation exceeded its {self._angr_timeout:g}s budget "
@@ -587,7 +639,9 @@ class Decompiler:
         self.analysis_backend = "angr"
         return DecompiledFunction(
             name=data["name"],
-            address=data["address"],
+            address=self._to_file_address(
+                data["address"], data["backend_base"], file_base
+            ),
             return_type=data["return_type"],
             code=data["code"],
             calls=list(data["calls"]),
@@ -615,8 +669,8 @@ class Decompiler:
         code, calls = data.get("code"), data.get("calls")
         if (
             not isinstance(name, str)
-            or not isinstance(address, int)
-            or isinstance(address, bool)
+            or not _is_int(address)
+            or not _is_int(data.get("backend_base"))
             or not isinstance(data.get("return_type"), str)
             or not isinstance(code, str)
             or not isinstance(calls, list)

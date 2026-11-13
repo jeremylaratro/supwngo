@@ -130,6 +130,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first `ERROR` line; the cause is logged, survives the RetDec and angr
   fallbacks, and is added to the JSON `error` (and the human failure message)
   only when every backend failed.
+- `decompile` now reports one address convention. Ghidra's address was relative
+  to its own image base (`0x100000` for a PIE) and angr's to another
+  (`0x400000`), so the same function got two different addresses and neither
+  was the one `objdump` and `nm` print. Both backends now return the file's
+  link-time address: the lowest `PT_LOAD` virtual address plus the offset from
+  the backend's own reported base for an ELF, or `ImageBase` plus the offset for
+  a PE. An explicit `-f 0x...` address is read in that same convention and
+  mapped into each backend with its own base, and a backend reply that does not
+  report its base is rejected.
 - `cfg` no longer hangs on a large statically linked binary (RT-05). The angr
   `CFGFast` build runs uninterruptible C-level work that no in-process watchdog
   can cancel; on a target like snow_scan it never returned and the command was

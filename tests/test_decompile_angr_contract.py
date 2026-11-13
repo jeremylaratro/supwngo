@@ -75,7 +75,10 @@ def _fake_project(monkeypatch, *, decompiler, funcs=None, record=None):
         return cfg
 
     analyses = types.SimpleNamespace(CFGFast=cfgfast, Decompiler=decompiler)
-    proj = types.SimpleNamespace(analyses=analyses)
+    loader = types.SimpleNamespace(
+        main_object=types.SimpleNamespace(mapped_base=0x400000)
+    )
+    proj = types.SimpleNamespace(analyses=analyses, loader=loader)
     monkeypatch.setattr(sub, "_load_project", lambda path: proj)
     # The worker lists callees through iter_callees; the fakes have none.
     monkeypatch.setattr(
@@ -169,6 +172,7 @@ OK_REPLY = {
     "status": "ok",
     "name": "leaf_helper",
     "address": 0x401136,
+    "backend_base": 0x400000,
     "return_type": "void",
     "code": 'int leaf_helper(int a0)\n{\n    printf("leaf:%d\\n", a0);\n    return a0 + 1;\n}',
     "calls": ["printf"],

@@ -181,6 +181,7 @@ def test_diagnostic_survives_a_successful_angr_fallback(monkeypatch):
         "status": "ok",
         "name": "main",
         "address": 0x401136,
+        "backend_base": 0x400000,
         "return_type": "void",
         "code": 'int main(void)\n{\n    return puts("x");\n}',
         "calls": ["puts"],
@@ -203,6 +204,7 @@ def test_diagnostic_is_cleared_when_ghidra_later_succeeds(monkeypatch):
         {
             "name": "main",
             "address": 1,
+            "backend_base": 0,
             "return_type": "int",
             "code": "int main(void)\n{\n  return 0;\n}",
         }
@@ -284,6 +286,7 @@ def test_cli_success_through_a_fallback_has_no_error_key(tmp_path, monkeypatch):
         "status": "ok",
         "name": "main",
         "address": 0x401136,
+        "backend_base": 0x400000,
         "return_type": "void",
         "code": 'int main(void)\n{\n    return puts("x");\n}',
         "calls": ["puts"],

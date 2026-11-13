@@ -178,7 +178,8 @@ def test_read_ghidra_output_parses_escaped_control_chars(tmp_path):
 def test_ghidra_happy_path_sets_backend_and_returns_code(tmp_path, monkeypatch):
     d = _make_decompiler(tmp_path)
     canned = [{
-        "name": "main", "address": 0x401187, "return_type": "undefined",
+        "name": "main", "address": 0x401187, "backend_base": 0x400000,
+        "return_type": "undefined",
         "code": "\nvoid main(void)\n\n{\n  entry_main();\n  return;\n}\n",
     }]
     monkeypatch.setattr(d, "_run_ghidra_headless", lambda cmd, timeout: _ran_ok())

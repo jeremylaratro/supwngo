@@ -6,12 +6,19 @@
 // crowded directory (e.g. /tmp) hangs postScript resolution. A .java script is
 // used deliberately -- Ghidra 12.x without PyGhidra cannot run .py scripts.
 //
-// Script args: arg0 = tagged target selector, arg1 = output JSON path.
+// Script args: arg0 = tagged target selector, arg1 = output JSON path,
+// arg2 = the file's link-time base (hex), or "none" when the caller has none.
 //   "name:<fname>"  -> first global function with that name
 //   "addr:<0xNN|NN>" -> function whose entry point is that address
 //   ""/"all"         -> "main", else the first defined function
 // A tagged selector is used so a function literally named "0x..." or "123" is
 // still selectable by name, and so name-vs-address precedence is explicit.
+//
+// Address convention: an "addr:" selector is in the *file's* convention (the
+// one objdump/nm print). Ghidra loads a program at its own image base, so the
+// selector is mapped with  ghidra = image_base + (selector - arg2)  before the
+// lookup. The output reports Ghidra's own address and its image base
+// ("backend_base"); the caller maps the address back with the same two bases.
 // Always writes a UTF-8 JSON array (possibly empty "[]") to arg1 so the caller
 // can distinguish "ran but found nothing" from "never ran".
 //@category Supwngo
@@ -57,16 +64,37 @@ public class SupwngoDecompile extends GhidraScript {
         return b.toString();
     }
 
-    /** Resolve the function to decompile from the tagged arg0 selector. */
-    private Function resolveFunction(String selector) {
+    /** Parse "0x.." hex or decimal; null when absent or unparseable. */
+    private static Long parseOffset(String text) {
+        if (text == null) {
+            return null;
+        }
+        String a = text.trim();
+        try {
+            return a.toLowerCase().startsWith("0x")
+                    ? Long.parseUnsignedLong(a.substring(2), 16)
+                    : Long.parseUnsignedLong(a);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Resolve the function to decompile from the tagged arg0 selector. fileBase
+     * is the file's link-time base (null if unknown); backendBase is Ghidra's
+     * image base for the loaded program.
+     */
+    private Function resolveFunction(String selector, Long fileBase,
+                                     long backendBase) {
         FunctionManager fm = currentProgram.getFunctionManager();
 
         if (selector != null && selector.startsWith("addr:")) {
             String a = selector.substring("addr:".length()).trim();
             try {
-                long off = a.toLowerCase().startsWith("0x")
-                        ? Long.parseUnsignedLong(a.substring(2), 16)
-                        : Long.parseUnsignedLong(a);
+                long off = parseOffset(a);
+                if (fileBase != null) {
+                    off = backendBase + (off - fileBase);
+                }
                 Address addr = currentProgram.getAddressFactory()
                         .getDefaultAddressSpace().getAddress(off);
                 return fm.getFunctionAt(addr);
@@ -102,11 +130,13 @@ public class SupwngoDecompile extends GhidraScript {
         String selector = (args.length > 0 && args[0] != null) ? args[0] : "";
         String outPath = (args.length > 1 && args[1] != null && !args[1].isEmpty())
                 ? args[1] : "supwngo_decompile.json";
+        Long fileBase = args.length > 2 ? parseOffset(args[2]) : null;
+        long backendBase = currentProgram.getImageBase().getOffset();
 
         StringBuilder sb = new StringBuilder("[");
 
         try {
-            Function f = resolveFunction(selector);
+            Function f = resolveFunction(selector, fileBase, backendBase);
             if (f != null) {
                 DecompInterface decomp = new DecompInterface();
                 try {
@@ -117,7 +147,10 @@ public class SupwngoDecompile extends GhidraScript {
                             && res.getDecompiledFunction() != null) {
                         String code = res.getDecompiledFunction().getC();
                         sb.append("{\"name\":\"").append(esc(f.getName()))
-                          .append("\",\"address\":").append(f.getEntryPoint().getOffset())
+                          .append("\",\"address\":")
+                          .append(Long.toUnsignedString(f.getEntryPoint().getOffset()))
+                          .append(",\"backend_base\":")
+                          .append(Long.toUnsignedString(backendBase))
                           .append(",\"return_type\":\"")
                           .append(esc(String.valueOf(f.getReturnType())))
                           .append("\",\"code\":\"").append(esc(code)).append("\"}");
