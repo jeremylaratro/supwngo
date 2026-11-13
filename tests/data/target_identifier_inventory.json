@@ -1,0 +1,26 @@
+{
+  "generated_by": "python3 tests/test_no_target_identifiers.py --regen -- never edit by hand",
+  "entries": [
+    {"path": "supwngo/analysis/_angr_subprocess.py", "token": "snow_scan", "kind": "comment", "count": 1},
+    {"path": "supwngo/exploit/pipeline/executors/env_path_techniques.py", "token": "sabotage", "kind": "comment", "count": 1},
+    {"path": "supwngo/exploit/pipeline/executors/env_path_techniques.py", "token": "sabotage", "kind": "docstring", "count": 3},
+    {"path": "supwngo/exploit/pipeline/executors/heap_strlen_ofb1_techniques.py", "token": "bon_nie_appetit", "kind": "comment", "count": 1},
+    {"path": "supwngo/exploit/pipeline/executors/heap_strlen_ofb1_techniques.py", "token": "bon_nie_appetit", "kind": "docstring", "count": 2},
+    {"path": "supwngo/exploit/pipeline/executors/objptr_hijack_techniques.py", "token": "auth_or_out", "kind": "comment", "count": 5},
+    {"path": "supwngo/exploit/pipeline/executors/objptr_hijack_techniques.py", "token": "auth_or_out", "kind": "docstring", "count": 3},
+    {"path": "supwngo/exploit/pipeline/orchestrator.py", "token": "auth_or_out", "kind": "comment", "count": 1},
+    {"path": "supwngo/exploit/pipeline/verifier.py", "token": "auth_or_out", "kind": "comment", "count": 2},
+    {"path": "supwngo/exploit/pipeline/verifier.py", "token": "auth_or_out", "kind": "docstring", "count": 2},
+    {"path": "supwngo/exploit/pipeline/verifier.py", "token": "bon_nie_appetit", "kind": "docstring", "count": 1},
+    {"path": "supwngo/exploit/pipeline/verifier.py", "token": "sabotage", "kind": "docstring", "count": 1},
+    {"path": "supwngo/exploit/walkthrough/facts.py", "token": "ancient_interface", "kind": "comment", "count": 1},
+    {"path": "supwngo/exploit/walkthrough/facts.py", "token": "auth_or_out", "kind": "comment", "count": 1},
+    {"path": "supwngo/exploit/walkthrough/families/env_path.py", "token": "sabotage", "kind": "comment", "count": 3},
+    {"path": "supwngo/exploit/walkthrough/families/env_path.py", "token": "sabotage", "kind": "docstring", "count": 1},
+    {"path": "supwngo/exploit/walkthrough/families/heap_strlen.py", "token": "bon_nie_appetit", "kind": "comment", "count": 2},
+    {"path": "supwngo/exploit/walkthrough/families/heap_strlen.py", "token": "bon_nie_appetit", "kind": "docstring", "count": 2},
+    {"path": "supwngo/exploit/walkthrough/families/objptr_hijack.py", "token": "auth_or_out", "kind": "comment", "count": 2},
+    {"path": "supwngo/exploit/walkthrough/families/objptr_hijack.py", "token": "auth_or_out", "kind": "docstring", "count": 1},
+    {"path": "supwngo/exploit/walkthrough/fmtstr_probe.py", "token": "sabotage", "kind": "comment", "count": 1}
+  ]
+}

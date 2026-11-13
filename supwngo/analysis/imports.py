@@ -15,6 +15,7 @@ import re
 import struct
 
 from supwngo.core.binary import Binary
+from supwngo.core.relro import Relro
 from supwngo.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -395,9 +396,7 @@ class ImportAnalyzer:
         self.lazy_bindings = []
 
         # Check RELRO status
-        relro = self.binary.protections.relro
-
-        if relro == "Full":
+        if self.binary.protections.relro_kind is Relro.FULL:
             # Full RELRO - GOT is read-only, no lazy binding
             return
 
@@ -496,7 +495,7 @@ class ImportAnalyzer:
             })
 
         # Lazy-bound functions can have GOT overwritten
-        if self.binary.protections.relro != "Full":
+        if self.binary.protections.relro_kind is not Relro.FULL:
             for sym in self.lazy_bindings:
                 if sym.name in DANGEROUS_IMPORTS.get("command_exec", set()):
                     targets.append({

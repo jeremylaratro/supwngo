@@ -202,17 +202,71 @@ def _op_strings_xrefs(binary_path: str, **_kwargs):
     return records
 
 
+def _select_default_function(proj, funcs, file_format: str):
+    """Pick the function to decompile when none was asked for (SP-01b 4.4).
+
+    Returns ``(function, selected_by)`` or ``(None, "")``. First match wins:
+
+    1. a function named ``main`` -- ``symbol`` when the binary has a ``main``
+       symbol, ``libc_start_main_arg`` when it is angr's own CFG recovery (the
+       symbol is stripped);
+    2. the function at exactly the entry point -- ``entry``;
+    3. the first function by address that is not a PLT stub, a SimProcedure or
+       an alignment pad -- ``first_reachable``. Not used for a PE: a walk
+       through CRT initialisation is not a main detector.
+    """
+    for _addr, func in sorted(funcs.items()):
+        if func.name == "main":
+            try:
+                has_symbol = proj.loader.main_object.get_symbol("main") is not None
+            except Exception:  # noqa: BLE001 - a loader without get_symbol
+                has_symbol = False
+            return func, ("symbol" if has_symbol else "libc_start_main_arg")
+
+    entry = funcs.get(proj.entry)
+    if entry is not None:
+        return entry, "entry"
+
+    if file_format != "pe":
+        for _addr, func in sorted(funcs.items()):
+            if (
+                getattr(func, "is_plt", False)
+                or getattr(func, "is_simprocedure", False)
+                or getattr(func, "is_alignment", False)
+            ):
+                continue
+            return func, "first_reachable"
+    return None, ""
+
+
 def _op_decompile(binary_path: str, func_name: str = None, func_addr: int = None,
+                  file_base: int = None, file_format: str = "unknown",
                   **_kwargs) -> Dict[str, Any]:
     """Whole-function angr decompilation (``Decompiler._decompile_angr``).
 
     Runs both heavy angr passes -- ``CFGFast`` *and* the ``Decompiler`` analysis
     -- in the child, since either can run unbounded C-level work on a large
-    binary, and returns plain-data fields the parent rebuilds into a
-    ``DecompiledFunction``. ``found`` distinguishes "function not in the CFG"
-    (the parent's ``None``) from a successful decompilation. The decompile step's
-    own failures are captured as a ``// Decompilation failed`` comment in
-    ``code``, exactly as the in-process path did.
+    binary, and returns plain data the parent rebuilds into a
+    ``DecompiledFunction``.
+
+    The reply is a tagged union, ``{"status": ...}``; only ``ok`` carries
+    ``code``:
+
+    * ``ok`` -- real pseudo-C plus ``name``, ``address``, ``return_type``,
+      ``calls`` and ``selected_by`` (``name``/``addr`` for an explicit request,
+      else the default-selection step, see ``_select_default_function``);
+    * ``missing_function`` -- the requested function is not in the CFG;
+    * ``decompiler_failed`` -- angr's decompiler ran but produced no code;
+    * ``exception`` -- the decompiler (or the callee listing) raised.
+
+    ``CFGFast`` is built with ``normalize=True``: without it angr's decompiler
+    gets a non-normalised function and returns no code generator at all.
+
+    Addresses (SP-01b V-10): ``address`` is angr's own, and ``backend_base`` is
+    ``main_object.mapped_base``, so the parent can map it to the file's
+    convention. ``func_addr`` arrives in that file convention with its
+    ``file_base`` (``None`` means "already angr's"), and is mapped here with
+    angr's own base -- the only place that base is known.
     """
     # Kept (unused) to preserve the in-process import semantics: if angr's
     # decompiler backend is unavailable this import raises and the op fails,
@@ -223,35 +277,51 @@ def _op_decompile(binary_path: str, func_name: str = None, func_addr: int = None
     from supwngo.analysis._angr_callgraph import iter_callees
 
     proj = _load_project(binary_path)
-    cfg = proj.analyses.CFGFast()
+    backend_base = int(proj.loader.main_object.mapped_base)
+    cfg = proj.analyses.CFGFast(normalize=True)
 
     func = None
+    selected_by = ""
     if func_addr is not None:
+        if file_base is not None:
+            func_addr = backend_base + (func_addr - file_base)
         func = cfg.kb.functions.get(func_addr)
+        selected_by = "name" if func_name else "addr"
     elif func_name:
         for f in cfg.kb.functions.values():
             if f.name == func_name:
                 func = f
                 break
+        selected_by = "name"
+    else:
+        func, selected_by = _select_default_function(
+            proj, cfg.kb.functions, file_format
+        )
     if not func:
-        return {"found": False}
+        return {"status": "missing_function", "backend_base": backend_base}
 
     try:
         dec = proj.analyses.Decompiler(func, cfg=cfg)
-        if dec.codegen and hasattr(dec.codegen, "text"):
-            code = dec.codegen.text
-        else:
-            code = f"// Decompilation failed for {func.name}"
-    except Exception as e:
-        code = f"// Decompilation failed: {e}"
+        codegen = dec.codegen
+        code = getattr(codegen, "text", None) if codegen is not None else None
+        if not isinstance(code, str) or not code.strip():
+            return {
+                "status": "decompiler_failed",
+                "error": f"angr produced no pseudo-C for {func.name}",
+            }
+        calls = [c.name for c in iter_callees(func, cfg.kb.functions) if c.name]
+    except Exception as e:  # noqa: BLE001 - reported to the parent as a status
+        return {"status": "exception", "error": f"{type(e).__name__}: {e}"}
 
     return {
-        "found": True,
+        "status": "ok",
         "name": func.name,
         "address": func.addr,
+        "backend_base": backend_base,
+        "selected_by": selected_by,
         "return_type": "void",
         "code": code,
-        "calls": [c.name for c in iter_callees(func, cfg.kb.functions) if c.name],
+        "calls": calls,
     }
 
 

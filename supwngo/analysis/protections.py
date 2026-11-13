@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from supwngo.core.binary import Binary, Protections
+from supwngo.core.relro import normalize_relro
 from supwngo.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -168,42 +169,10 @@ class ProtectionAnalyzer:
         return prots
 
     def _get_relro_type(self) -> str:
-        """Determine RELRO type."""
+        """Determine RELRO type from pwntools' level (GNU_RELRO plus BIND_NOW)."""
         if not self.binary._elf:
             return "No RELRO"
-
-        # Check for GNU_RELRO segment
-        has_relro = False
-        for segment in self.binary.segments:
-            if segment.type == "PT_GNU_RELRO":
-                has_relro = True
-                break
-
-        if not has_relro:
-            return "No RELRO"
-
-        # Check if GOT is read-only (Full RELRO)
-        got_plt = self.binary.sections.get(".got.plt")
-        if got_plt is None:
-            return "Full RELRO"
-
-        # Check BIND_NOW flag
-        try:
-            from elftools.elf.elffile import ELFFile
-            with open(self.binary.path, "rb") as f:
-                elf = ELFFile(f)
-                for segment in elf.iter_segments():
-                    if segment.header.p_type == "PT_DYNAMIC":
-                        for tag in segment.iter_tags():
-                            if tag.entry.d_tag == "DT_FLAGS":
-                                if tag.entry.d_val & 0x8:  # DF_BIND_NOW
-                                    return "Full RELRO"
-                            if tag.entry.d_tag == "DT_BIND_NOW":
-                                return "Full RELRO"
-        except Exception:
-            pass
-
-        return "Partial RELRO"
+        return normalize_relro(self.binary._elf.relro).display
 
     def _check_fortify(self) -> bool:
         """Check for FORTIFY_SOURCE."""

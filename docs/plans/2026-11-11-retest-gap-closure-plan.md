@@ -220,8 +220,21 @@ decided in **S7** with the spike evidence.
     - The plan was approved after 4 Daybreak Blue rounds and merged in PR #35 (`6baeedf`):
       `docs/plans/2026-11-13-retire-hardcoded-target-values-plan.md`.
     - Roadmap §14 AMD-19..22 pull SP-04b forward to run right after SP-01b. Checklist goal G-7.
-  - **Next:** SP-01b (`fix/sp01b-honesty`). The offset, RELRO and hygiene lanes are reviewed; the
-    decompile lane is in progress. Then directive W (W-0..W-6), then the focus path to gate F.
+- **2026-11-13 — SP-01b: DONE (`fix/sp01b-honesty`, `11e80b3`).**
+  - The four lanes (offset, RELRO, decompile, hygiene) are integrated as 15 fix commits plus one
+    test-fake fix (`11e80b3`) that gives the PE decompile control the `selected_by` field the decompile
+    lane added.
+  - **Post-fix baseline** `benchmark/baselines/passcard-s0-post-sp01.{json,md}` on `11e80b3`: VALID and
+    ACCEPTED, control PASS, isolation `bwrap`, solve 7/7 (21/21 `shell_proven`).
+    - S0: DECOMP 2→**7**, ROBUST 22→**28** (both net 1.00). S0-PE: DECOMP 1→**2**, ROBUST 5→**8**.
+    - OFF, METHOD-R0, METHOD-L and TEMPLATE unchanged, by design (METHOD/TEMPLATE owned by SP-02b/SP-04b).
+  - Ghidra-tier decompile suite: 180 passed / 1 skipped under `SUPWNGO_REQUIRE_GHIDRA=1` on a quiet host
+    (the earlier 2-fail was a load flake, not reproduced). Live `htb_rescore --reps 3` on `11e80b3`:
+    7/7, 21/21 `shell_proven`.
+    - Report: `docs/reports/2026-11-13-sp01b-post-fix-baseline.md`.
+  - **Next:** directive W (W-0..W-6) — rebase `feat/w0-payoff-corpus` onto main, then the inventory and
+    runner/checker lanes — then the focus path to gate F (SP-02a/b/c → SP-03A/03 → SP-04a → SP-05 → SP-06,
+    scoped to F-1..F-3).
 
 ## Phase 4 — Research (reproduced this session)
 

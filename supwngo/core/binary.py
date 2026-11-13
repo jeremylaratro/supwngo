@@ -9,6 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from supwngo.core.relro import Relro, normalize_relro
 from supwngo.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -83,6 +84,16 @@ class Protections:
     aslr: bool = True  # System-wide, assumed true
     rpath: Optional[str] = None
     runpath: Optional[str] = None
+
+    @property
+    def relro_kind(self) -> Relro:
+        """The RELRO level as a typed value, derived from ``relro``.
+
+        ``relro`` stays the display string. This is a property, not a field, so
+        it cannot go stale when ``relro`` is assigned after construction and it
+        never reaches :meth:`to_dict` or the dataclass field list.
+        """
+        return normalize_relro(self.relro)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -378,17 +389,15 @@ class Binary:
             logger.warning(f"Failed to detect protections: {e}")
             self.protections_measured = False
 
-    def _relro_str(self, relro: bool) -> str:
-        """Convert relro boolean to string."""
-        if not relro:
-            return "No RELRO"
-        # Check for full vs partial RELRO
-        if ".got.plt" not in self.sections:
-            return "Full RELRO"
-        got_plt = self.sections.get(".got.plt")
-        if got_plt and not got_plt.is_writable:
-            return "Full RELRO"
-        return "Partial RELRO"
+    def _relro_str(self, relro: Any) -> str:
+        """Display string for pwntools' ``ELF.relro`` level.
+
+        pwntools reports the exact level (``None``, ``"Partial"``, ``"Full"``)
+        from ``GNU_RELRO`` plus ``BIND_NOW``. It is not a boolean, and the
+        ``.got.plt`` section flags say nothing about it: gold keeps a writable
+        ``.got.plt`` under ``-z now``.
+        """
+        return normalize_relro(relro).display
 
     def detect_shipped_libc(self) -> Optional[Path]:
         """Find a libc shipped alongside the binary (e.g. HTB challenges).

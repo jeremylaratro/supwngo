@@ -40,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads. It sweeps positive and negative indices in one process, reassembles
   printed integers at 1-, 4-, and 8-byte widths, and verifies at
   `FLAG_CAPTURED` without claiming a shell.
+- Add `offset --no-sandbox`, which runs the target and gdb unsandboxed for
+  debugging. The result JSON (`OffsetResult`) gains `kind` (`buf_to_ret`),
+  `error_code` (`timeout`, `spawn_error`, `target_not_executable`,
+  `unsupported_format`, `no_offset`) and `isolation` (`bwrap`, `outer` or
+  `none`: what actually contained the run).
+- Add `supwngo/core/exec_preflight.py`, which says whether a target can be
+  executed here at all (a regular non-empty native ELF, executable, of a machine
+  the host runs, with a usable `PT_INTERP` loader) and names the failing file.
 
 ### Changed
 
@@ -69,6 +77,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `offset` no longer crashes under load or reports a fabricated result. Every run of the target and of
+  gdb now goes through the bubblewrap sandbox from the binary's own directory,
+  with a private `/tmp/supwngo-offset-*` workspace for the pattern and gdb
+  script, so a descendant that outlives the target dies with it. The binary
+  search is tri-state: a probe that times out or cannot be spawned aborts with
+  `error_code` `timeout` or `spawn_error` instead of raising `TimeoutExpired`
+  out of the refine loop or being read as "no crash" and fabricating a
+  threshold. A target that cannot start (a missing, empty or wrong-class
+  relative loader, a PE) is reported as `target_not_executable` or
+  `unsupported_format` with the file named, not as "Could not determine offset
+  with any method", and a relative binary path no longer breaks a relative
+  loader. The core-dump method no longer analyses any `core*` found in the
+  current directory or global `/tmp`: it is skipped under the sandbox (whose
+  working directory is read-only) and otherwise reads only this run's
+  `core.<pid>` or a `core` that did not exist before, and removes it.
+  `offset --json` now exits 2 when `success` is false (human mode is unchanged).
+  A binary whose directory the sandbox cannot use (a `.`-prefixed component,
+  `/dev`, `/proc`) runs unsandboxed and reports `isolation: none`.
+- `offset` no longer silently drops gdb under load. The `gdb --version` probe
+  at construction gave up after a hard-coded 5 s and read that as "gdb is not
+  installed", so the search fell back to core dumps and the less exact bisect
+  with nothing said. It now checks `shutil.which("gdb")` first (a missing gdb is
+  quiet), allows `GDB_PROBE_TIMEOUT_S` (30 s), and when gdb is found but the
+  probe times out, cannot run or exits non-zero it logs a warning that names the
+  reason. The fallback is unchanged.
+- `pwn`, `template` and `offset` now refuse a target that is not a native ELF
+  (a PE, a script, an empty or truncated file) before loading it. `pwn` used to
+  half-parse a mingw PE into a fabricated analysis (SHELLCODE at 0.9, exit 0),
+  and `template` wrote an exploit script for it. The format is read from the
+  file's headers (`supwngo/core/fileformat.py`) ahead of `Binary.load` and of
+  any output file, and a refusal exits 2. With `--json`, `pwn` and `template`
+  print exactly `{"error": "Unsupported binary format: <pe|unknown>",
+  "error_code": "unsupported_format"}`, and `offset` prints its ordinary
+  failure document with `error_code` `unsupported_format` and `isolation`
+  `none` (nothing ran, so no sandbox applied). Without `--json` a diagnostic
+  goes to stderr and stdout stays empty. `decompile` is not gated and still
+  decompiles a PE.
+- The angr fallback of `decompile` now produces code. Its control-flow graph
+  was built without `normalize=True`, so angr's decompiler returned no code
+  generator and the command printed a `// Decompilation failed` placeholder as
+  if it were pseudo-C. The worker now answers with a tagged status (`ok`,
+  `missing_function`, `decompiler_failed`, `exception`; the parent adds
+  `timeout`) and only `ok` carries code. A placeholder, an empty body or a
+  reply that is not that union is never a function, and `decompile --json`
+  failures now exit 2 with `angr_status` in the JSON (human mode still exits 0).
+- `decompile` no longer hides why Ghidra failed. The Ghidra runner discarded
+  stdout and returned a bare yes/no, so a Ghidra run that refused to start (for
+  example "Path element starting with '.' is not permitted") looked the same as
+  "Ghidra is not installed" and the command quietly fell back to angr. The
+  runner now returns its process state, bounded stdout and stderr tails and the
+  first `ERROR` line; the cause is logged, survives the RetDec and angr
+  fallbacks, and is added to the JSON `error` (and the human failure message)
+  only when every backend failed.
+- `decompile` now reports one address convention. Ghidra's address was relative
+  to its own image base (`0x100000` for a PIE) and angr's to another
+  (`0x400000`), so the same function got two different addresses and neither
+  was the one `objdump` and `nm` print. Both backends now return the file's
+  link-time address: the lowest `PT_LOAD` virtual address plus the offset from
+  the backend's own reported base for an ELF, or `ImageBase` plus the offset for
+  a PE. An explicit `-f 0x...` address is read in that same convention and
+  mapped into each backend with its own base, and a backend reply that does not
+  report its base is rejected.
+- `decompile` without `-f` now picks a default function and says how it chose
+  it. The command forced `main`, which a stripped binary does not have, so it
+  returned nothing. The result (and `decompile --json`) now carries
+  `selected_by`: `symbol`, `libc_start_main_arg`, `mingw_crt_main_arg`, `entry`,
+  `first_reachable`, or `name`/`addr` for an explicit `-f`. For an ELF the
+  order is the `main` symbol, then the constant first argument of the entry
+  function's call to `__libc_start_main`, then the entry function itself, then
+  the first function reached from the entry. For a PE it is the `main` symbol,
+  then the function whose result the CRT start passes to `exit`
+  (`mingw_crt_main_arg`), then the entry; a PE is never given a guessed
+  `first_reachable`. angr follows the same ELF order on its own function
+  recovery, and takes the entry for a stripped PE.
+- RetDec is no longer asked to decompile when no function was named, because
+  it invents a `main` for a binary that has none. It is unchanged with `-f`.
+- `decompile` now reports the real Ghidra failure, not a benign analyzer line.
+  The error shown was the first `ERROR` line of Ghidra's output, which for a
+  stripped PE is the MinGW analyzer's harmless "pseudo-relocation list not
+  found" complaint, so it stood in for the actual cause. The line reported is
+  now, in order, one our own script emitted (the script now says when no
+  function matched or a function failed to decompile), else the first error
+  that is not an analyzer message, else the first error, as before.
 - `cfg` no longer hangs on a large statically linked binary (RT-05). The angr
   `CFGFast` build runs uninterruptible C-level work that no in-process watchdog
   can cancel; on a target like snow_scan it never returned and the command was
@@ -191,6 +282,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   honours a `SUPWNGO_WALKTHROUGH_GDB_TIMEOUT` budget (default 60 s), SIGKILLs the
   whole group on timeout, and reports a graceful failure instead of a stack
   trace.
+- `Protections.relro` now reports the level pwntools measured (`GNU_RELRO` plus
+  `BIND_NOW`) instead of inferring it from the write flag on `.got.plt`. A Full
+  RELRO image linked with gold, which keeps a writable `.got.plt` under `-z now`,
+  was reported as Partial RELRO. `core/relro.py` adds the `Relro` level type and
+  `normalize_relro()`, and `Protections.relro_kind` exposes the typed level while
+  `relro` and the `to_dict()` JSON keep the display strings unchanged.
+- A Full RELRO binary no longer gets RET2DLRESOLVE from `StrategySuggester`, and
+  the Full RELRO warning now fires. The consumers of `Protections.relro` compared
+  the display string (`"Full RELRO"`) against other spellings (`"full"`,
+  `"Full"`, `"none"`), so the Full branch never ran in `StrategySuggester`, the
+  import analyzer's lazy-binding pass, the PIE leak and bypass finders, or the
+  exploit chainer's `partial_relro_or_none` capability (which was never set, even
+  for a No RELRO binary). They now decide on `Protections.relro_kind`. A lint
+  (`tests/test_relro_lint.py`) rejects any new read of `.relro` outside
+  `supwngo/core` that is not display-only or allowlisted by receiver type.
+- `ProtectionAnalyzer` now derives RELRO from the same pwntools level as the
+  core `Binary` instead of probing for `.got.plt` and two dynamic tags. A binary
+  with no `.got.plt` section was reported as Full RELRO even when it was
+  Partial, and one that requests eager binding only through
+  `DT_FLAGS_1 & DF_1_NOW` (or that keeps a writable `.got.plt`, as gold does)
+  was reported as Partial. The walkthrough protection cross-check, which compares
+  this value with the ELF-derived level, no longer emits a spurious "ELF wins"
+  RELRO note for such binaries.
 
 ## [2.1.0] - 2026-09-28
 

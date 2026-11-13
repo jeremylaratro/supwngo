@@ -16,6 +16,7 @@ import re
 import struct
 
 from supwngo.core.binary import Binary
+from supwngo.core.relro import Relro
 from supwngo.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -326,7 +327,7 @@ class LeakFinder:
             return  # No PIE means no need for partial overwrite
 
         # PIE binaries with partial RELRO can use GOT partial overwrite
-        if self.binary.protections.relro != "Full":
+        if self.binary.protections.relro_kind is not Relro.FULL:
             self.leaks.append(LeakOpportunity(
                 leak_type=LeakType.PIE_ADDRESS,
                 primitive=LeakPrimitive.PARTIAL_OVERWRITE,

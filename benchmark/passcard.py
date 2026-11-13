@@ -451,6 +451,15 @@ class Harness:
         }
         if self.user_base:
             env["PYTHONUSERBASE"] = self.user_base
+        if self.backend == "bwrap":
+            # Tells the product's own sandbox that a harness sandbox encloses it,
+            # so `offset` can report isolation "outer" when it cannot nest one.
+            # The host's PID namespace lets it check the claim.
+            try:
+                env["SUPWNGO_HOST_PIDNS"] = os.readlink("/proc/self/ns/pid")
+                env["SUPWNGO_OUTER_SANDBOX"] = "1"
+            except OSError:
+                pass
         for key, value in self.passthrough(inside).items():
             env.setdefault(key, value)
         return env

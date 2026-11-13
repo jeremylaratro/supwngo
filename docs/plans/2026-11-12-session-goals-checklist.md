@@ -122,20 +122,26 @@ Branch: `feat/sp01a-passcard-harness`. Plan: SP-01 §3.3, §3.5–§3.8 and §8.
 
 Branch: `fix/sp01b-honesty`. Plan: SP-01 §4 and §8.2.
 
-- [ ] **1b.1 `offset`** runs through `proc.run`, the sandbox and preflight (§4.1). It reports `isolation`, and gdb
+- [x] **1b.1 `offset`** runs through `proc.run`, the sandbox and preflight (§4.1). It reports `isolation`, and gdb
   works under bwrap.
-- [ ] **1b.2 angr** uses `CFGFast(normalize=True)`. The fallback returns real code on the tiny fixture (V-7).
-- [ ] **1b.3 RELRO**: core reads plus both lints (§4.3). No stale allowlist entries.
-- [ ] **1b.4 Default decompile selection** (§4.4).
+- [x] **1b.2 angr** uses `CFGFast(normalize=True)`. The fallback returns real code on the tiny fixture (V-7).
+- [x] **1b.3 RELRO**: core reads plus both lints (§4.3). No stale allowlist entries.
+- [x] **1b.4 Default decompile selection** (§4.4).
   - The PE order is main → `mingw_crt_main_arg` → entry, and truth is the user `main` (V-9).
-- [ ] **1b.5 PE refusal**: `pwn`, `template` and `offset` return `unsupported_format` with exit 2 and the JSON
+- [x] **1b.5 PE refusal**: `pwn`, `template` and `offset` return `unsupported_format` with exit 2 and the JSON
   error field (V-8, V-13).
-- [ ] **1b.6 Address normalisation**: `rva = addr − backend_base`, then `address = file_base + rva`, and the
+- [x] **1b.6 Address normalisation**: `rva = addr − backend_base`, then `address = file_base + rva`, and the
   inverse for `-f 0x…` (V-10).
-- [ ] **1b.7 Structured Ghidra runner result**, plus a seam test with a forced fallback failure (V-11).
-- [ ] **1b.8 Answer-key leak and identifier lint** (§4.5).
-- [ ] **1b.9 HO-01**: delete the dead `pie_base_offset()` (§4.6). `git grep` shows 0 callers.
-- [ ] **1b.10 Post-fix baseline**: `passcard-s0-post-sp01.{json,md}`, with the per-metric delta in the PR body.
+- [x] **1b.7 Structured Ghidra runner result**, plus a seam test with a forced fallback failure (V-11).
+- [x] **1b.8 Answer-key leak and identifier lint** (§4.5).
+- [x] **1b.9 HO-01**: delete the dead `pie_base_offset()` (§4.6). `git grep` shows 0 callers.
+- [x] **1b.10 Post-fix baseline**: `passcard-s0-post-sp01.{json,md}`, with the per-metric delta in the PR body.
+
+**Status 2026-11-13: met.** Integration branch `fix/sp01b-honesty` at `11e80b3` (15 fix commits + the
+test-fake fix). Post-fix passcard ACCEPTED (control PASS, isolation `bwrap`): S0 DECOMP 2→7, S0 ROBUST
+22→28, S0-PE DECOMP 1→2, S0-PE ROBUST 5→8, all to net 1.00; OFF/METHOD/TEMPLATE unchanged by design.
+Ghidra-tier decompile suite 180 passed / 1 skipped under `SUPWNGO_REQUIRE_GHIDRA=1`. Live `htb_rescore
+--reps 3` on `11e80b3`: 7/7, 21/21 `shell_proven`. Evidence: `docs/reports/2026-11-13-sp01b-post-fix-baseline.md`.
 
 **Done when** (SP-01 §5 and §8.3, SP-01b):
 - **ROBUST** passes on all 14 `offset`/`decompile` S0 cells, and no sentinel scores as success.

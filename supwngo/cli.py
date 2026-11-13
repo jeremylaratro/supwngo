@@ -63,6 +63,48 @@ def _reset_console():
             pass
 
 
+def _require_native_elf(ctx, binary, json_output, *, offset_document=False):
+    """Refuse a target that is not a native ELF, before anything loads it.
+
+    ``pwn``, ``template`` and ``offset`` analyse ELF files; a PE (or anything
+    else) used to be half-parsed into a fabricated analysis with exit 0. This
+    runs first in each, ahead of ``Binary.load`` and of any output file.
+
+    A refusal exits 2. With ``--json`` stdout carries one document:
+    ``{"error": "Unsupported binary format: <pe|unknown>", "error_code":
+    "unsupported_format"}``, or for ``offset`` the ordinary ``OffsetResult``
+    failure document (``offset_document``). Nothing ran, so its ``isolation``
+    is ``none``. Without ``--json`` the diagnostic goes to stderr and stdout
+    stays empty.
+    """
+    from supwngo.core import fileformat
+
+    detected = fileformat.detect_format(binary)
+    if detected == fileformat.ELF:
+        return
+
+    message = f"Unsupported binary format: {detected}"
+    if json_output:
+        if offset_document:
+            from supwngo.exploit.offset_finder import OffsetResult
+
+            _emit_json(
+                OffsetResult(
+                    success=False,
+                    error=f"{message} ({binary} is not a native ELF executable)",
+                    error_code="unsupported_format",
+                    isolation="none",
+                ).to_dict()
+            )
+        else:
+            _emit_json({"error": message, "error_code": "unsupported_format"})
+    else:
+        click.echo(
+            f"Error: {message}: {binary} is not a native ELF executable.", err=True
+        )
+    ctx.exit(2)
+
+
 def target_override_options(func):
     """Attach ``--win`` / ``--ret2`` / ``--rop`` to a command.
 
@@ -748,6 +790,7 @@ def pwn(ctx, binary, libc, no_gadgets, json_output, angr_timeout, analyze_only):
     _reset_console()
     if json_output:
         _json_mode()
+    _require_native_elf(ctx, binary, json_output)
 
     from supwngo.core.binary import Binary
     from supwngo.analysis.protections import ProtectionAnalyzer
@@ -906,17 +949,29 @@ def pwn(ctx, binary, libc, no_gadgets, json_output, angr_timeout, analyze_only):
 @click.option("-m", "--max-length", default=2048, help="Maximum pattern length")
 @click.option("-i", "--input-method", type=click.Choice(["stdin", "argv", "file"]), default="stdin")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.option(
+    "--no-sandbox",
+    "no_sandbox",
+    is_flag=True,
+    help="Run the target and gdb unsandboxed (debugging); reports isolation none",
+)
 @click.pass_context
-def offset(ctx, binary, max_length, input_method, json_output):
+def offset(ctx, binary, max_length, input_method, json_output, no_sandbox):
     """
     Find buffer overflow offset automatically.
 
     Uses cyclic patterns and crash analysis to determine the exact
     offset needed to overwrite the return address.
+
+    The target and gdb run in a bubblewrap sandbox from the binary's own
+    directory (the result's "isolation" field says what actually ran). The
+    sandbox contains writes, IP networking and processes; it is not a
+    host-confidentiality boundary. With --json, a failure exits 2.
     """
     _reset_console()
     if json_output:
         _json_mode()
+    _require_native_elf(ctx, binary, json_output, offset_document=True)
 
     from supwngo.core.binary import Binary
     from supwngo.exploit.offset_finder import OffsetFinder
@@ -926,13 +981,15 @@ def offset(ctx, binary, max_length, input_method, json_output):
     # Load binary to get architecture
     bin_obj = Binary.load(binary)
 
-    finder = OffsetFinder(binary, bits=bin_obj.bits)
+    finder = OffsetFinder(binary, bits=bin_obj.bits, use_sandbox=not no_sandbox)
 
     with console.status(f"Testing with pattern length up to {max_length}..."):
         result = finder.find_offset(max_length, input_method)
 
     if json_output:
         _emit_json(result.to_dict())
+        if not result.success:
+            ctx.exit(2)
     else:
         if result.success:
             console.print(Panel(f"""
@@ -1207,6 +1264,7 @@ def template(ctx, binary, technique, offset, libc, output, json_output):
     _reset_console()
     if json_output:
         _json_mode()
+    _require_native_elf(ctx, binary, json_output)
 
     from supwngo.core.binary import Binary
     from supwngo.exploit.auto import generate_exploit_script
@@ -2067,10 +2125,10 @@ def decompile(ctx, binary, function, ghidra, output, angr_timeout, json_output):
                     func_addr = sym.address
                     break
 
-    if not func_addr and not func_name:
-        func_name = "main"
-
-    console.print(f"[cyan]Decompiling: {func_name or hex(func_addr)}[/cyan]")
+    # No -f: send the empty selector, so the backend picks the default function
+    # and reports how (``selected_by``). It used to be forced to ``main``.
+    target = func_name or (hex(func_addr) if func_addr is not None else "default")
+    console.print(f"[cyan]Decompiling: {target}[/cyan]")
 
     with console.status("Decompiling..."):
         result = decomp.decompile(func_name=func_name, func_addr=func_addr, use_ghidra=ghidra)
@@ -2094,12 +2152,15 @@ def decompile(ctx, binary, function, ghidra, output, angr_timeout, json_output):
                 "calls": result.calls[:20] if result.calls else [],
                 "code": result.code,
                 "vulnerabilities": vulns or [],
+                "selected_by": result.selected_by,
                 "analysis_backend": decomp.analysis_backend,
                 "angr_budget_exceeded": decomp.angr_budget_exceeded,
             })
         else:
             console.print(f"\n[bold green]Decompiled: {result.name}[/bold green]")
             console.print(f"Address: 0x{result.address:x}")
+            if result.selected_by:
+                console.print(f"Selected by: {result.selected_by}")
             console.print(f"Return type: {result.return_type}")
 
             if result.parameters:
@@ -2127,13 +2188,20 @@ def decompile(ctx, binary, function, ghidra, output, angr_timeout, json_output):
                 for v in vulns:
                     console.print(f"  [{v['severity']}] {v['description']}")
     elif json_output:
+        message = "Decompilation failed"
+        if decomp.ghidra_error:
+            message += f" (ghidra: {decomp.ghidra_error})"
         _emit_json({
-            "error": "Decompilation failed",
+            "error": message,
             "analysis_backend": decomp.analysis_backend,
             "angr_budget_exceeded": decomp.angr_budget_exceeded,
+            "angr_status": decomp.angr_status or None,
         })
+        ctx.exit(2)
     else:
         console.print("[red]Decompilation failed[/red]")
+        if decomp.ghidra_error:
+            console.print(f"[yellow]ghidra: {decomp.ghidra_error}[/yellow]")
 
 
 @cli.command()

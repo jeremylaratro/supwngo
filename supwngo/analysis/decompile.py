@@ -12,14 +12,15 @@ import json
 import math
 import os
 import re
-import signal
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from supwngo.core import fileformat, proc
 from supwngo.core.binary import Binary
+from supwngo.core.proc import ProcState
 from supwngo.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -32,6 +33,14 @@ GHIDRA_SCRIPT_NAME = "SupwngoDecompile.java"
 #: Hard ceiling (seconds) for the Ghidra headless budget regardless of the
 #: ``SUPWNGO_GHIDRA_TIMEOUT`` override, so "bounded" stays true.
 GHIDRA_TIMEOUT_HARD_MAX = 900.0
+
+#: Statuses of the angr decompile op: the worker's tagged union plus the
+#: parent-only ``timeout``. Only ``ok`` carries pseudo-C.
+ANGR_STATUSES = ("ok", "missing_function", "decompiler_failed", "exception", "timeout")
+
+#: Prefix of the placeholder angr used to emit in place of code. It is never a
+#: decompilation, whatever status accompanies it.
+ANGR_SENTINEL_PREFIX = "// Decompilation failed"
 
 
 def _resolve_ghidra_timeout(raw: Any, default: float = 180.0) -> float:
@@ -60,29 +69,96 @@ DEFAULT_GHIDRA_TIMEOUT = _resolve_ghidra_timeout(
 )
 
 
-def _kill_process_group(proc: "subprocess.Popen") -> None:
-    """SIGKILL a Popen's whole process group, then reap it.
+#: Longest stdout/stderr tail (characters) a :class:`GhidraRun` keeps.
+GHIDRA_TAIL_CHARS = 2000
 
-    ``analyzeHeadless`` spawns a JVM (and the JVM a native decompiler), so
-    killing only the launcher leaves those descendants alive. The process is
-    started with ``start_new_session=True`` (pgid == pid), so ``killpg`` takes
-    the whole tree; fall back to a plain kill if the group is already gone, then
-    drain and reap so no zombie or dangling pipe is left.
+#: Longest ``ERROR`` line (characters) a :class:`GhidraRun` keeps.
+GHIDRA_ERROR_MAX_CHARS = 400
+
+_GHIDRA_ERROR_LINE = re.compile(r"^\s*ERROR\b")
+#: Ghidra prefixes a script's own ``printerr`` with its file name.
+_GHIDRA_SCRIPT_ERROR_LINE = re.compile(r"^\s*ERROR\s+SupwngoDecompile\.java>")
+#: A benign analyzer complaint (e.g. MinGW's pseudo-relocation list) ends with
+#: ``(<Name>Analyzer)``. ``(HeadlessAnalyzer)`` is the headless runner, not an
+#: analyzer, and is a real failure.
+_GHIDRA_ANALYZER_LINE = re.compile(r"\((?!Headless)\w*Analyzer\)\s*$")
+
+
+def _ghidra_error_line(stdout: str) -> str:
+    """The ``ERROR`` line of a Ghidra run that explains a failure, bounded.
+
+    In order of preference: a line our own script emitted; the first line that
+    is not an analyzer message; the first ``ERROR`` line. The length bound
+    applies to what is kept, not to what is matched.
     """
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        try:
-            proc.kill()
-        except Exception:
-            pass
-    try:
-        proc.communicate(timeout=5)
-    except Exception:
-        try:
-            proc.wait(timeout=5)
-        except Exception:
-            pass
+    errors = [ln.strip() for ln in stdout.splitlines() if _GHIDRA_ERROR_LINE.match(ln)]
+    for keep in (
+        lambda ln: _GHIDRA_SCRIPT_ERROR_LINE.match(ln),
+        lambda ln: not _GHIDRA_ANALYZER_LINE.search(ln),
+        lambda ln: True,
+    ):
+        for ln in errors:
+            if keep(ln):
+                return ln[:GHIDRA_ERROR_MAX_CHARS]
+    return ""
+
+
+def _is_int(value: Any) -> bool:
+    """True for an ``int`` that is not a ``bool``."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+@dataclass
+class GhidraRun:
+    """Structured outcome of one ``analyzeHeadless`` run (SP-01b V-11).
+
+    ``state`` is the :class:`~supwngo.core.proc.ProcState` of the process;
+    ``rc``/``signal``/``errno`` are set as ``ProcResult`` sets them. The tails
+    are bounded to :data:`GHIDRA_TAIL_CHARS`; ``first_error`` is the
+    ``ERROR`` line of the *whole* stdout (not just the tail) that best explains
+    the failure, which is where Ghidra reports why it refused to run: our own
+    script's line, else the first non-analyzer line, else the first one.
+    """
+
+    state: ProcState
+    rc: Optional[int] = None
+    signal: Optional[int] = None
+    errno: Optional[int] = None
+    stdout_tail: str = ""
+    stderr_tail: str = ""
+    first_error: str = ""
+    wall_s: float = 0.0
+    timeout_s: float = 0.0
+
+    @property
+    def finished(self) -> bool:
+        """True when the process ran to an end the output file can be read after.
+
+        Ghidra's return code is unreliable (the postScript may have written its
+        output before a non-zero exit), so any ended process counts; only a
+        timeout kill or a failed launch does not.
+        """
+        return self.state in (ProcState.EXITED, ProcState.SIGNALED)
+
+    @property
+    def error(self) -> str:
+        """Why the run failed, or ``""`` for a clean exit with no ``ERROR`` line."""
+        if self.state is ProcState.SPAWN_ERROR:
+            return f"could not launch Ghidra (errno {self.errno})"
+        if self.state is ProcState.TIMEOUT:
+            return f"Ghidra timed out after {self.timeout_s:g}s and was killed"
+        if self.first_error:
+            return self.first_error
+        if self.state is ProcState.SIGNALED:
+            return f"Ghidra was killed by signal {self.signal}"
+        if self.rc:
+            last = next(
+                (ln.strip() for ln in reversed(self.stderr_tail.splitlines())
+                 if ln.strip()),
+                "",
+            )
+            return f"Ghidra exited {self.rc}" + (f": {last}" if last else "")
+        return ""
 
 
 @dataclass
@@ -109,6 +185,10 @@ class DecompiledFunction:
     calls: List[str] = field(default_factory=list)
     strings_used: List[str] = field(default_factory=list)
     complexity_hints: Dict[str, Any] = field(default_factory=dict)
+    #: How the function was chosen: ``name``/``addr`` for an explicit request, or
+    #: the default-selection step that matched (``symbol``, ``libc_start_main_arg``,
+    #: ``mingw_crt_main_arg``, ``entry``, ``first_reachable``). ``""`` if unknown.
+    selected_by: str = ""
 
 
 class Decompiler:
@@ -152,6 +232,19 @@ class Decompiler:
         #: pseudo-C.
         self.analysis_backend: str = "angr"
         self.angr_budget_exceeded: bool = False
+        #: Outcome of the last angr decompile (one of :data:`ANGR_STATUSES`), and
+        #: the worker's diagnostic for a failure. Empty until angr has run.
+        self.angr_status: str = ""
+        self.angr_error: str = ""
+        #: The last Ghidra run (``None`` until Ghidra has been launched) and why
+        #: the last Ghidra attempt produced nothing (``""`` after a success). Kept
+        #: through the RetDec and angr fallbacks so the cause is not lost when a
+        #: later backend also fails.
+        self.ghidra_run: Optional[GhidraRun] = None
+        self.ghidra_error: str = ""
+        #: The loader's verdict on the entry point the default selection used
+        #: (``"ok"``, a mismatch note, or ``""`` when no default was selected).
+        self.ghidra_entry_check: str = ""
 
     def _find_ghidra(self) -> Optional[Path]:
         """Find Ghidra installation."""
@@ -235,13 +328,74 @@ class Decompiler:
             if result:
                 return result
 
-        if self._retdec_path:
+        # RetDec has no default-function search: for an empty selector it would
+        # fabricate ``main``, so it only runs when a function was asked for.
+        explicit = bool(func_name) or func_addr is not None
+        if self._retdec_path and explicit:
             result = self._decompile_retdec(func_name, func_addr)
             if result:
                 return result
 
         # Fallback to angr decompilation
         return self._decompile_angr(func_name, func_addr)
+
+    def _file_base(self) -> Optional[int]:
+        """The file's link-time base: the address convention ``objdump``/``nm`` use.
+
+        ``min(PT_LOAD.p_vaddr)`` for an ELF, ``ImageBase`` for a PE, ``None`` for
+        anything else (or a truncated file), in which case a backend's address is
+        reported as the backend gave it.
+        """
+        path = self.binary.path
+        kind = fileformat.detect_format(path)
+        if kind == fileformat.ELF:
+            elf = fileformat.elf_info(path)
+            return elf.min_load_vaddr if elf else None
+        if kind == fileformat.PE:
+            pe = fileformat.pe_info(path)
+            return pe.image_base if pe else None
+        return None
+
+    def _entry_info(self) -> Tuple[str, Optional[int]]:
+        """``(format, entry offset from the file base)`` for the default search.
+
+        The offset is ``e_entry - min(PT_LOAD.p_vaddr)`` for an ELF and
+        ``AddressOfEntryPoint`` for a PE, so a backend can add it to its own
+        image base. ``None`` when the file has no usable entry point.
+        """
+        path = self.binary.path
+        kind = fileformat.detect_format(path)
+        if kind == fileformat.ELF:
+            elf = fileformat.elf_info(path)
+            if elf and elf.e_entry and elf.min_load_vaddr is not None:
+                return kind, elf.e_entry - elf.min_load_vaddr
+        elif kind == fileformat.PE:
+            pe = fileformat.pe_info(path)
+            if pe and pe.entry_rva:
+                return kind, pe.entry_rva
+        return (kind if kind in (fileformat.ELF, fileformat.PE) else "unknown"), None
+
+    @staticmethod
+    def _explicit_selected_by(func_name: Optional[str],
+                              func_addr: Optional[int]) -> str:
+        """``selected_by`` of an explicit request: the name wins, as in the selector."""
+        if func_name:
+            return "name"
+        return "addr" if func_addr is not None else ""
+
+    @staticmethod
+    def _to_file_address(address: int, backend_base: int,
+                         file_base: Optional[int]) -> int:
+        """Map a backend address to the file convention (SP-01b V-10).
+
+        ``file_base + (address - backend_base)``: each backend reports its own
+        base (Ghidra's image base, angr's ``mapped_base``), so no constant such
+        as ``0x100000`` or ``0x400000`` is assumed. With no file base the address
+        is returned unchanged.
+        """
+        if file_base is None:
+            return address
+        return file_base + (address - backend_base)
 
     def _ghidra_scripts_dir(self) -> Path:
         """Directory holding the shipped Ghidra GhidraScript(s).
@@ -267,45 +421,36 @@ class Decompiler:
             return f"addr:{hex(func_addr)}"
         return ""
 
-    def _run_ghidra_headless(self, cmd: List[str], timeout: float) -> bool:
+    def _run_ghidra_headless(self, cmd: List[str], timeout: float) -> GhidraRun:
         """Run ``analyzeHeadless`` in its own process group, killable on timeout.
 
-        Returns ``True`` if the process finished within ``timeout`` (the caller
-        then inspects the output file — Ghidra's returncode is unreliable), or
-        ``False`` if it could not be launched or was force-killed on timeout.
-        The whole process group is SIGKILLed and reaped on timeout so no JVM or
-        native-decompiler descendant is left behind.
+        Returns a :class:`GhidraRun` carrying the process state, bounded
+        stdout/stderr tails and the first ``ERROR`` line of stdout. A caller
+        reads the output file after any run that ``finished`` (Ghidra's return
+        code is unreliable); a timeout or a failed launch did not. The runner
+        (``supwngo.core.proc.run``) SIGKILLs and reaps the whole process group on
+        timeout, so no JVM or native-decompiler descendant is left behind.
         """
         try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-            )
-        except (OSError, ValueError) as exc:
-            logger.warning(f"Could not launch Ghidra: {exc}")
-            return False
+            cwd = os.getcwd()
+        except OSError:
+            cwd = tempfile.gettempdir()
+        result = proc.run(cmd, cwd=cwd, timeout=timeout)
 
-        try:
-            _out, err = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            logger.warning("Ghidra decompilation timed out after %ss; killing", timeout)
-            _kill_process_group(proc)
-            return False
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning(f"Ghidra decompilation errored: {exc}")
-            _kill_process_group(proc)
-            return False
-
-        if proc.returncode not in (0, None):
-            # A non-zero rc may still have run the postScript (which writes the
-            # output file), so do not hard-fail here; just record a bounded tail.
-            logger.warning(
-                "Ghidra exited %s: %s", proc.returncode, (err or "")[-300:]
-            )
-        return True
+        stdout = result.stdout.decode("utf-8", errors="replace")
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        first_error = _ghidra_error_line(stdout)
+        return GhidraRun(
+            state=result.state,
+            rc=result.rc,
+            signal=result.signal,
+            errno=result.errno,
+            stdout_tail=stdout[-GHIDRA_TAIL_CHARS:],
+            stderr_tail=stderr[-GHIDRA_TAIL_CHARS:],
+            first_error=first_error,
+            wall_s=result.wall_s,
+            timeout_s=float(timeout),
+        )
 
     @staticmethod
     def _read_ghidra_output(output_file: Path) -> Optional[List[Dict]]:
@@ -332,6 +477,12 @@ class Decompiler:
             return None
         return data
 
+    def _ghidra_failed(self, reason: str) -> None:
+        """Record why Ghidra produced nothing and log it; always returns ``None``."""
+        self.ghidra_error = reason
+        logger.warning("Ghidra produced no pseudo-C: %s", reason)
+        return None
+
     def _decompile_ghidra(self, func_name: Optional[str],
                           func_addr: Optional[int]) -> Optional[DecompiledFunction]:
         """Decompile using Ghidra headless.
@@ -341,18 +492,26 @@ class Decompiler:
         ``analysis_backend = "ghidra"`` and returns the function; on any failure
         mode (missing script, launch failure, timeout, no/empty/malformed output,
         or output with no usable pseudo-C) returns ``None`` so the caller degrades
-        to RetDec/angr.
+        to RetDec/angr. The structured run and the reason are kept in
+        ``ghidra_run`` / ``ghidra_error`` for the caller to report.
         """
         if not self._ghidra_path:
             return None
 
+        self.ghidra_run, self.ghidra_error = None, ""
         script_path = self._ghidra_scripts_dir() / GHIDRA_SCRIPT_NAME
         if not script_path.is_file():
-            logger.warning("Ghidra decompile script missing: %s", script_path)
-            return None
+            return self._ghidra_failed(f"decompile script missing: {script_path}")
 
         logger.info("Decompiling with Ghidra...")
         selector = self._ghidra_selector(func_name, func_addr)
+        file_base = self._file_base()
+        # The script maps an explicit address into Ghidra's own base with the file
+        # base, and adds the entry offset to that base to find the entry function.
+        file_base_arg = "none" if file_base is None else hex(file_base)
+        file_format, entry_rva = self._entry_info()
+        entry_arg = "none" if entry_rva is None else hex(entry_rva)
+        self.ghidra_entry_check = ""
 
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -367,31 +526,50 @@ class Decompiler:
                     "-import", str(self.binary.path),
                     "-scriptPath", str(script_path.parent),
                     "-postScript", GHIDRA_SCRIPT_NAME, selector, str(output_file),
+                    file_base_arg, entry_arg, file_format,
                     "-deleteProject",
                 ]
 
-                if not self._run_ghidra_headless(cmd, self._ghidra_timeout):
-                    return None
+                run = self._run_ghidra_headless(cmd, self._ghidra_timeout)
+                self.ghidra_run = run
+                if not run.finished:
+                    return self._ghidra_failed(run.error)
 
                 data = self._read_ghidra_output(output_file)
                 if data is None:
-                    return None
+                    return self._ghidra_failed(
+                        run.error or "Ghidra wrote no usable output file"
+                    )
                 if not data:
                     # Script ran cleanly but selected/decompiled nothing.
                     logger.info("Ghidra ran but produced no decompiled function")
-                    return None
+                    return self._ghidra_failed(
+                        run.first_error or "Ghidra selected no function to decompile"
+                    )
 
                 result = self._parse_ghidra_output(data)
                 if result is None or not (result.code and result.code.strip()):
-                    logger.warning("Ghidra output had no usable pseudo-C")
-                    return None
+                    return self._ghidra_failed("Ghidra output had no usable pseudo-C")
 
+                backend_base = data[0].get("backend_base")
+                if not _is_int(backend_base) or not _is_int(result.address):
+                    return self._ghidra_failed(
+                        "Ghidra output has no integer address/backend_base, "
+                        "so its address cannot be normalised"
+                    )
+                result.address = self._to_file_address(
+                    result.address, backend_base, file_base
+                )
+
+                self.ghidra_entry_check = str(data[0].get("entry_check") or "")
+                if self.ghidra_entry_check not in ("", "ok"):
+                    logger.warning(
+                        "Ghidra entry point check: %s", self.ghidra_entry_check
+                    )
                 self.analysis_backend = "ghidra"
                 return result
         except Exception as exc:
-            logger.warning(f"Ghidra decompilation failed: {exc}")
-
-        return None
+            return self._ghidra_failed(f"{type(exc).__name__}: {exc}")
 
     def _parse_ghidra_output(self, data: List[Dict]) -> Optional[DecompiledFunction]:
         """Parse Ghidra JSON output."""
@@ -415,6 +593,7 @@ class Decompiler:
             code=code,
             calls=calls,
             strings_used=strings,
+            selected_by=str(func_data.get("selected_by") or ""),
         )
 
     def _decompile_retdec(self, func_name: Optional[str],
@@ -474,6 +653,7 @@ class Decompiler:
             code=code,
             calls=calls,
             strings_used=strings,
+            selected_by=self._explicit_selected_by(func_name, func_addr),
         )
 
     def _decompile_angr(self, func_name: Optional[str],
@@ -485,15 +665,25 @@ class Decompiler:
         on a budget blow-out the child's process group is killed and this returns
         ``None`` -- the prior failure behaviour -- while recording that it
         degraded via ``analysis_backend`` / ``angr_budget_exceeded`` (RT-05).
+
+        The child replies with a tagged union (see ``_op_decompile``). The reply
+        is validated here, the outcome is recorded in ``angr_status`` /
+        ``angr_error``, and every status but ``ok`` returns ``None``: a reply
+        that is not the union, or an ``ok`` whose body is empty or the
+        ``// Decompilation failed`` placeholder, is never a function.
         """
         from supwngo.analysis._angr_subprocess import (
             AnalysisBudgetExceeded,
             run_angr_op,
         )
 
+        self.angr_status, self.angr_error = "", ""
+        file_base = self._file_base()
+        file_format, _entry = self._entry_info()
         try:
             data = run_angr_op(str(self.binary.path), "decompile", self._angr_timeout,
-                               func_name=func_name, func_addr=func_addr)
+                               func_name=func_name, func_addr=func_addr,
+                               file_base=file_base, file_format=file_format)
         except AnalysisBudgetExceeded as e:
             logger.warning(
                 f"angr decompilation exceeded its {self._angr_timeout:g}s budget "
@@ -501,23 +691,68 @@ class Decompiler:
             )
             self.angr_budget_exceeded = True
             self.analysis_backend = "none"
+            self.angr_status, self.angr_error = "timeout", str(e)
             return None
         except Exception as e:
             logger.warning(f"angr decompilation failed: {e}")
             self.analysis_backend = "none"
+            self.angr_status, self.angr_error = "exception", str(e)
             return None
 
-        if not data.get("found"):
+        status, error = self._check_angr_reply(data)
+        self.angr_status, self.angr_error = status, error
+        if status != "ok":
+            if status == "exception":
+                self.analysis_backend = "none"
+            logger.warning(f"angr decompilation produced no pseudo-C: {status}: {error}")
             return None
 
         self.analysis_backend = "angr"
         return DecompiledFunction(
             name=data["name"],
-            address=data["address"],
+            address=self._to_file_address(
+                data["address"], data["backend_base"], file_base
+            ),
             return_type=data["return_type"],
             code=data["code"],
             calls=list(data["calls"]),
+            selected_by=data["selected_by"],
         )
+
+    @staticmethod
+    def _check_angr_reply(data: Any) -> Tuple[str, str]:
+        """Classify a worker reply as ``(status, error)``.
+
+        ``("ok", "")`` only for a well-formed ``ok`` reply. A failure status is
+        passed through with the worker's ``error``. Anything that is not the
+        union (a non-dict, an unknown or missing status such as the legacy
+        ``found`` shape, an ``ok`` without its fields) is ``exception``; an
+        ``ok`` whose code is empty or the placeholder is ``decompiler_failed``.
+        """
+        if not isinstance(data, dict):
+            return "exception", f"worker reply is not an object: {type(data).__name__}"
+        status = data.get("status")
+        if status not in ANGR_STATUSES or status == "timeout":
+            return "exception", f"worker reply has no valid status: {status!r}"
+        if status != "ok":
+            return status, str(data.get("error") or "")
+
+        name, address = data.get("name"), data.get("address")
+        code, calls = data.get("code"), data.get("calls")
+        if (
+            not isinstance(name, str)
+            or not _is_int(address)
+            or not _is_int(data.get("backend_base"))
+            or not isinstance(data.get("selected_by"), str)
+            or not data.get("selected_by")
+            or not isinstance(data.get("return_type"), str)
+            or not isinstance(code, str)
+            or not isinstance(calls, list)
+        ):
+            return "exception", "ok reply is missing or mistypes its fields"
+        if not code.strip() or code.lstrip().startswith(ANGR_SENTINEL_PREFIX):
+            return "decompiler_failed", "ok reply carries no real pseudo-C"
+        return "ok", ""
 
     def _parse_variables_from_code(self, code: str) -> List[DecompiledVariable]:
         """Parse variable declarations from C code."""
