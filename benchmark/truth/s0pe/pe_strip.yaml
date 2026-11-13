@@ -1,0 +1,55 @@
+# S0-PE truth: pe_strip.exe (SP-01 plan section 2 schema; section 8.1 V-15, V-9; N5-8).
+#
+# Scored in the separate S0-PE table only (metrics [decomp, robust]): 2 DECOMP
+# cells and 8 ROBUST cells across pe_sym + pe_strip. These fixtures are not in
+# the 7-ELF S0 matrix and not in the section 3.7 mutant self-test. The fixture
+# has no exploit, so vuln_family / method_* / distance are unscored and null/empty.
+#
+# Addresses are link-time virtual addresses in the objdump convention, i.e.
+# ImageBase 0x140000000 + RVA (V-10).
+#
+# Provenance -- exact commands, run from benchmark/fixtures/s0pe
+# (x86_64-w64-mingw32-gcc (GCC) 10-win32 20220113, mingw-w64 binutils):
+#   x86_64-w64-mingw32-gcc -O0 -o pe_sym.exe pe_vuln.c
+#   x86_64-w64-mingw32-strip -o pe_strip.exe pe_sym.exe
+#   sha256sum pe_strip.exe
+# pe_strip.exe has no symbols (`nm`: "no symbols"), so the addresses below are
+# taken from the symbol-bearing build pe_sym.exe (truth/s0pe/pe_sym.yaml) and
+# CONFIRMED to hold in the stripped file:
+#   - pe_strip.exe is strip(pe_sym.exe), so the two share one VMA layout:
+#     `objdump -h` shows every shared section (.text .data .rdata .pdata .xdata
+#     .bss .idata .CRT .tls .reloc) at the same VMA and size; only the .debug_*
+#     sections are gone, which shifts every file offset by 0x200 (.text is at
+#     file offset 0x600 in pe_sym and 0x400 in pe_strip) but changes no VMA;
+#   - `objdump -s -j .text` of the two files hashes identically
+#     (a99a886c13f380873ad795b55184231e10237d6387570ac62b1a6632f360d332);
+#   - `objdump -d -M intel --start-address=0x140001550 pe_strip.exe` shows the
+#     same instructions at 140001550 (pe_vuln: ... call 0x140002690, the puts
+#     thunk `jmp [__imp_puts]`) and at 14000156f (main: ... call 0x140001550);
+#   - AddressOfEntryPoint is 0x14f0 in both (mainCRTStartup, 0x1400014f0).
+# Rebuilding does not reproduce these bytes (the PE TimeDateStamp is the build
+# time); the committed binary and its pinned SHA-256 are the reference.
+slug: pe_strip
+format: pe
+arch: amd64
+metrics: [decomp, robust]
+binary:
+  path: benchmark/fixtures/s0pe/pe_strip.exe
+  sha256: dea2c60726e111f62fae31c34070e5b7fd69cc517b80fe218fd465e7b63069c0
+vuln_family: null
+method_accept: []
+method_basis: null
+solve_proven: null
+distance: []
+decompile:
+  vuln_function:
+    addr: 0x140001550
+    provenance: "from pe_sym (nm: T pe_vuln); same VMA and bytes in the stripped file, see header"
+  # User main only (V-9). The PE entry is the CRT start (mainCRTStartup,
+  # 0x1400014f0), so a result of `entry` is an honest DECOMP FAIL.
+  default_function_any_of: [0x14000156f]
+  anchors: {calls: [puts], min_calls: 1}
+stage:
+  files: [pe_strip.exe]          # relative to benchmark/fixtures/s0pe
+  placeholders: []
+forbidden_symbols: [pe_vuln]
