@@ -781,6 +781,96 @@ def test_cells_are_staged_fresh_file_by_file_without_dot_components(world, tmp_p
     assert str(scratch) in report["header"]["hide"]
 
 
+# --- hide paths that are symlinks -----------------------------------------------------
+
+
+def _hide_args(tmp_path, *extra):
+    return SimpleNamespace(
+        truth_dir=tmp_path / "truth",
+        targets_root=tmp_path / "targets",
+        extra_hide=[str(p) for p in extra],
+    )
+
+
+def test_hide_paths_collapse_a_symlink_and_its_target(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    harness = SimpleNamespace(scratch=tmp_path / "scratch")
+    hidden = pc._hide_paths(_hide_args(tmp_path, link, real), [], harness)
+    # bwrap cannot mount a tmpfs on a symlink: the target is hidden, once.
+    assert hidden.count(os.path.realpath(real)) == 1
+    assert str(link) not in hidden
+    assert hidden == pc._hide_paths(_hide_args(tmp_path, real, link), [], harness)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [REPO_ROOT, Path(sys.executable).resolve().parent],
+    ids=["checkout", "interpreter"],
+)
+def test_a_symlinked_hide_into_the_checkout_or_interpreter_is_refused(
+    world, tmp_path, target
+):
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    done, report = run_runner(
+        common(world, "--cli", world.cli("decline.py"), "--extra-hide", link),
+        tmp_path / "u",
+    )
+    assert done.returncode == pc.EXIT_USAGE, done.stdout + done.stderr
+    assert "would hide the checkout or interpreter" in done.stderr
+    assert report is None
+
+
+@needs_bwrap
+def test_a_symlinked_hide_path_hides_its_target_by_both_names(world, tmp_path):
+    real = world.root / "hidden_real"
+    real.mkdir()
+    marker = real / "marker.txt"
+    marker.write_text("marker\n")
+    link = world.root / "hidden_link"
+    link.symlink_to(real)
+    # Positive control: outside the sandbox the marker is readable by both names.
+    assert marker.read_text() == "marker\n"
+    assert (link / "marker.txt").read_text() == "marker\n"
+    cli = cli_arg(
+        world.shim("env_dump.py"),
+        "--probe",
+        marker,
+        "--probe",
+        link / "marker.txt",
+        "--probe",
+        world.shim("decline.py"),
+        "--list",
+        real,
+        "--list",
+        link,
+    )
+    done, report = run_runner(
+        common(world, "--no-control", "--cli", cli, "--extra-hide", link),
+        tmp_path / "symlink",
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    # The header records the resolved path, once, and not the symlink.
+    assert report["header"]["hide"].count(str(real)) == 1
+    assert str(link) not in report["header"]["hide"]
+    rec = by_cell(report)["mini_a-pwn-r1"]
+    assert (
+        rec["isolation"] == "bwrap" and rec["rc"] == 2
+    )  # a decline, not a bwrap error
+    seen = json.loads(rec["stdout"])
+    assert seen["exists"] == {
+        str(marker): False,
+        str(link / "marker.txt"): False,
+        str(
+            world.shim("decline.py")
+        ): True,  # the probe can see a path that is not hidden
+    }
+    assert seen["listing"][str(real)] == [] and seen["listing"][str(link)] == []
+
+
 # --- the S0-PE table and the pinned fixture hash (V-15) -------------------------------
 
 

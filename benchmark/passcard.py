@@ -1366,7 +1366,7 @@ def assemble(
 def _hide_paths(
     args: argparse.Namespace, targets: Sequence[Target], harness: Harness
 ) -> List[str]:
-    """The paths hidden from every command (plan 3.3): deduplicated, stably ordered."""
+    """The paths hidden from every command (plan 3.3), resolved and deduplicated."""
     paths = [
         REPO / "benchmark" / "truth",
         Path(args.truth_dir),
@@ -1389,13 +1389,18 @@ def _hide_paths(
     protected = [os.path.realpath(str(REPO)), os.path.realpath(sys.executable)]
     for path in paths:
         text = os.path.abspath(str(path))
+        # bwrap cannot mount a tmpfs on a symlink, so hide what it points at: the
+        # symlink path then reads the hidden target. A symlink and its target
+        # collapse to one entry.
+        resolved = os.path.realpath(text)
         for keep in protected:
-            if _contains(os.path.realpath(text), keep):
+            if _contains(resolved, keep):
                 raise HarnessError(
-                    "hide path %s would hide the checkout or interpreter" % text
+                    "hide path %s (%s) would hide the checkout or interpreter"
+                    % (text, resolved)
                 )
-        if text not in out:
-            out.append(text)
+        if resolved not in out:
+            out.append(resolved)
     return out
 
 
