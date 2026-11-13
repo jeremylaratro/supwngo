@@ -368,7 +368,9 @@ class CellRecord:
     signal: Optional[int] = None
     errno: Optional[int] = None
     survivor_pids: List[int] = field(default_factory=list)
-    sandbox_init_reaped: int = 0  # bwrap's own exited init, reaped and not counted (see _reap_sandbox_init)
+    survivor_info: List[str] = field(default_factory=list)  # "pid:state:comm" of each survivor
+    # bwrap's own exited init, reaped and not counted (see _reap_sandbox_init)
+    sandbox_init_reaped: int = 0
 
     def as_dict(self) -> Dict[str, Any]:
         r = self.run
@@ -384,6 +386,7 @@ class CellRecord:
             "wall_s": round(r.wall_s, 3),
             "load1": r.load1,
             "survivors": r.survivors,
+            "survivor_info": self.survivor_info,
             "sandbox_init_reaped": self.sandbox_init_reaped,
             "argv": self.argv,
             "stdout": clip(r.stdout, RAW_STDOUT_CAP),
@@ -429,6 +432,14 @@ class Harness:
         }
         if self.user_base:
             env["PYTHONUSERBASE"] = self.user_base
+        # A JVM takes user.home from the passwd entry, not $HOME, so Ghidra's launcher would
+        # write ~/.config/ghidra under the read-only real home and the product `decompile`
+        # would silently fall back to angr. Point it at the cell home. An operator's own
+        # options follow ours, so their -D flags still win.
+        options = ["-Duser.home=%s/home" % inside]
+        if os.environ.get("JAVA_TOOL_OPTIONS"):
+            options.append(os.environ["JAVA_TOOL_OPTIONS"])
+        env["JAVA_TOOL_OPTIONS"] = " ".join(options)
         for key, value in os.environ.items():
             if key in ENV_PASSTHROUGH or key.startswith(ENV_PASSTHROUGH_PREFIXES):
                 env.setdefault(key, value)
@@ -465,6 +476,7 @@ class Harness:
             backend=self.backend,
         )
         init_reaped = self._reap_sandbox_init() if self.backend == "bwrap" else []
+        seen = {pid: _stat_state_comm(pid) for pid in self.proc.adopted_children()}
         survivors = self.proc.reap_survivors()
         run = score.Run(
             state=res.state.name,
@@ -486,12 +498,16 @@ class Harness:
             signal=res.signal,
             errno=res.errno,
             survivor_pids=survivors,
+            survivor_info=[
+                "%d:%s:%s" % ((pid, *seen[pid]) if seen.get(pid) else (pid, "?", "?"))
+                for pid in survivors
+            ],
             sandbox_init_reaped=len(init_reaped),
         )
         self.records.append(record)
         return record
 
-    def _reap_sandbox_init(self, grace_s: float = 2.0) -> List[int]:
+    def _reap_sandbox_init(self, grace_s: float = 15.0) -> List[int]:
         """Reap the exited ``bwrap`` namespace init a subreaper inherits; return its PIDs.
 
         ``bwrap --unshare-pid`` runs an init process inside the new namespace. The
@@ -506,7 +522,10 @@ class Harness:
         it holds nothing, and the PID namespace has already taken every command
         descendant with it. Everything else stays a survivor. A still-live adopted
         ``bwrap`` is given ``grace_s`` to finish exiting (it has just signalled
-        completion) and is then left for ``reap_survivors`` to count and kill.
+        completion, and while it tears the namespace down it is not yet a zombie) and
+        is then left for ``reap_survivors`` to count and kill. The bound is generous
+        because a 2 s window proved too short once on a loaded host (a cell ended with
+        the init unreaped); the normal path returns as soon as the zombie is reaped.
         """
         reaped: List[int] = []
         deadline = time.monotonic() + grace_s

@@ -423,7 +423,11 @@ def test_a_command_sees_only_its_cell_and_a_scrubbed_environment(world, tmp_path
     done, report = run_runner(
         common(world, "--no-control", "--cli", cli),
         tmp_path / "env",
-        env_extra={"PASSCARD_LEAK_PROBE": "1", "SUPWNGO_PASSCARD_PROBE": "kept"},
+        env_extra={
+            "PASSCARD_LEAK_PROBE": "1",
+            "SUPWNGO_PASSCARD_PROBE": "kept",
+            "JAVA_TOOL_OPTIONS": "-Dpasscard.probe=1",
+        },
     )
     assert done.returncode == 0, done.stdout + done.stderr
     seen = json.loads(by_cell(report)["mini_a-pwn-r1"]["stdout"])
@@ -431,6 +435,9 @@ def test_a_command_sees_only_its_cell_and_a_scrubbed_environment(world, tmp_path
     env = seen["env"]
     assert env["HOME"] == "/tmp/cell/home" and env["TMPDIR"] == "/tmp/cell/tmp"
     assert env["XDG_CACHE_HOME"] == "/tmp/cell/cache"
+    # A JVM ignores $HOME (Ghidra would write under the read-only real home), so user.home
+    # is pointed at the cell home; the operator's own options follow and so still win.
+    assert env["JAVA_TOOL_OPTIONS"] == "-Duser.home=/tmp/cell/home -Dpasscard.probe=1"
     assert env["PYTHONPATH"] == str(REPO_ROOT) and env["PWNLIB_NOTERM"] == "1"
     assert "PASSCARD_LEAK_PROBE" not in env  # the parent environment is not inherited
     assert env["SUPWNGO_PASSCARD_PROBE"] == "kept"  # except the declared passthrough
