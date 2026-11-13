@@ -23,13 +23,20 @@ image_base`` (``benchmark/gen/payoff/generate.py``) by ``image_base``.
 from __future__ import annotations
 
 import enum
+import hashlib
 import json
+import logging
 import os
 import re
 import shutil
-from dataclasses import dataclass
+import tempfile
+import time
+import types
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "to_corpus_rva",
@@ -61,6 +68,8 @@ __all__ = [
     "ghidra_version",
     "angr_version",
     "backend_version",
+    "GHIDRA_PAYOFF_SCRIPT",
+    "rank_payoffs",
 ]
 
 
@@ -493,3 +502,346 @@ def backend_version(backend: str) -> str:
     if backend == "angr":
         return angr_version()
     return "unknown"
+
+
+# --------------------------------------------------------------------------- #
+# Commit 4 — Ghidra extractor driver (rank_payoffs)
+# --------------------------------------------------------------------------- #
+
+GHIDRA_PAYOFF_SCRIPT = "SupwngoPayoff.java"
+
+
+def _sha256_of(path: Any) -> Optional[str]:
+    """SHA-256 of a file's bytes, or None if it cannot be read. Used to rehash
+    for the digest-TOCTOU guard (round-2 MAJOR 4)."""
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _read_payoff_envelope(path: Path) -> Optional[dict]:
+    """Parse the extractor's JSON *object* envelope, or None for a missing,
+    empty, malformed or non-object file — i.e. the script never produced a usable
+    result (distinct from a valid envelope that found nothing)."""
+    try:
+        if not path.exists():
+            return None
+        raw = path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _merged_jvm_env(home_dir: str) -> Dict[str, str]:
+    """``os.environ`` plus ``JAVA_TOOL_OPTIONS=-Duser.home=<home_dir>`` (BLOCKER 3).
+
+    A JVM takes ``user.home`` from the passwd entry, not ``$HOME``; without a
+    writable JVM home Ghidra's launcher fails and the backend silently falls to
+    angr. Any operator ``JAVA_TOOL_OPTIONS`` is appended *after* ours so a later
+    duplicate ``-D`` wins (mirrors ``benchmark/passcard.py``)."""
+    opts = f"-Duser.home={home_dir}"
+    existing = os.environ.get("JAVA_TOOL_OPTIONS", "").strip()
+    if existing:
+        opts = f"{opts} {existing}"
+    env = dict(os.environ)
+    env["JAVA_TOOL_OPTIONS"] = opts
+    return env
+
+
+def _marker_from_envelope(env: dict) -> Optional[CompletionMarker]:
+    """Build the completion marker, or None when the envelope lacks the integer
+    count fields (a malformed/partial envelope)."""
+    try:
+        enumerated = env["enumerated"]
+        analyzed = env["analyzed"]
+        failed = env["failed"]
+    except (KeyError, TypeError):
+        return None
+    if not all(
+        isinstance(v, int) and not isinstance(v, bool)
+        for v in (enumerated, analyzed, failed)
+    ):
+        return None
+    return CompletionMarker(
+        enumerated=enumerated,
+        analyzed=analyzed,
+        failed=failed,
+        script_version=str(env.get("script_version", "")),
+    )
+
+
+def _evidence_from_envelope(env: dict) -> List[FunctionEvidence]:
+    """Build the scorer's inputs from the envelope's records, normalizing each
+    backend address to the corpus RVA. Raises (``KeyError``/``TypeError``/
+    ``ValueError``) on a malformed record or a normalization failure, so the
+    caller yields ``ERROR`` rather than silently dropping a found payoff into a
+    ``COMPLETE``-empty result (round-2 BLOCKER 1, second path)."""
+    backend_base = env["backend_base"]
+    fes: List[FunctionEvidence] = []
+    for r in env["records"]:
+        sinks = []
+        for s in r["sinks"]:
+            t = s["target"]
+            sinks.append(
+                SinkObservation(
+                    api=s["api"],
+                    path_target=TargetTrace(
+                        t["kind"], t.get("address"), t.get("value")
+                    ),
+                )
+            )
+        fes.append(
+            FunctionEvidence(
+                rva=to_corpus_rva(r["address"], backend_base),
+                name=r.get("name"),
+                sinks=tuple(sinks),
+                has_read=bool(r.get("has_read")),
+                has_stdout_output=bool(r.get("has_stdout_output")),
+                unreferenced=bool(r.get("unreferenced")),
+            )
+        )
+    return fes
+
+
+def _open_cache(db: Any) -> Tuple[Any, Optional[str]]:
+    """The cache DB to use, or ``(None, reason)`` when one cannot be opened.
+
+    An injected ``db`` is used as-is. Otherwise the default ``Database()`` is
+    constructed lazily; any failure (e.g. ``~/.supwngo`` not writable) is caught
+    and reported so analysis still runs **uncached** — a broken cache must never
+    suppress analysis (round-2 MAJOR 3)."""
+    if db is not None:
+        return db, None
+    try:
+        from supwngo.core.database import Database
+
+        return Database(), None
+    except Exception as exc:  # noqa: BLE001 - any construction failure degrades
+        return None, f"{type(exc).__name__}: {exc}"
+
+
+def _binary_path_and_digest(binary: Any) -> Tuple[Path, Optional[str]]:
+    """``(path, sha256)`` for a path string/``Path`` or a ``Binary`` instance."""
+    try:
+        from supwngo.core.binary import Binary
+    except Exception:  # pragma: no cover - Binary import should not fail
+        Binary = ()  # type: ignore[assignment]
+    if Binary and isinstance(binary, Binary):
+        path = Path(binary.path)
+        return path, (binary.sha256 or _sha256_of(path))
+    path = Path(binary)
+    return path, _sha256_of(path)
+
+
+def rank_payoffs(
+    binary: Any,
+    *,
+    db: Any = None,
+    use_cache: bool = True,
+    ghidra_timeout: Optional[float] = None,
+) -> PayoffReport:
+    """Rank a binary's candidate payoff functions from static evidence.
+
+    Returns a :class:`PayoffReport` whose ``candidates[0]`` is the top payoff
+    hypothesis. ``candidates`` is authoritative-empty (a true negative) *only*
+    when ``status is PayoffStatus.COMPLETE`` and the completion invariant holds
+    (valid marker, ``failed == 0``, ``analyzed == enumerated``).
+
+    The Ghidra path is the authoritative one. A cache hit spawns zero Ghidra
+    processes; the first miss spawns exactly one. Only ``COMPLETE`` reports are
+    cached, under the key ``(sha256, script_version, backend_version)``, and only
+    when the file digest is unchanged across the whole pass (TOCTOU guard)."""
+    from supwngo.analysis.decompile import (
+        DEFAULT_GHIDRA_TIMEOUT,
+        _resolve_ghidra_timeout,
+    )
+    from supwngo.core.proc import ProcState
+
+    budget = (
+        DEFAULT_GHIDRA_TIMEOUT
+        if ghidra_timeout is None
+        else _resolve_ghidra_timeout(ghidra_timeout)
+    )
+    backend = "ghidra"
+    bver = backend_version(backend)
+    attempts: List[Dict[str, Any]] = []
+    path, sha = _binary_path_and_digest(binary)
+
+    # Cache lookup BEFORE constructing or running any backend (0 Ghidra on a hit).
+    cache: Any = None
+    if use_cache:
+        cache, cache_err = _open_cache(db)
+        if cache_err:
+            attempts.append(
+                {"backend": "cache", "outcome": "unavailable", "reason": cache_err}
+            )
+        elif cache is not None and sha:
+            try:
+                cached_text = cache.get_payoff_analysis(sha, SCRIPT_VERSION, bver)
+            except Exception as exc:  # noqa: BLE001 - read failure degrades to a miss
+                attempts.append(
+                    {"backend": "cache", "outcome": "read_error", "reason": str(exc)}
+                )
+            else:
+                cached = report_from_json(cached_text)
+                if cached is not None and cached.status is PayoffStatus.COMPLETE:
+                    return replace(cached, from_cache=True, budget_s=budget)
+
+    from supwngo.analysis.decompile import Decompiler
+
+    binary_like = (
+        binary if hasattr(binary, "path") else types.SimpleNamespace(path=path)
+    )
+    d = Decompiler(binary_like, ghidra_timeout=ghidra_timeout)
+
+    if d._ghidra_path is None:
+        # angr fallback is commit 8; until then, no authoritative backend.
+        attempts.append(
+            {
+                "backend": "ghidra",
+                "outcome": "unavailable",
+                "reason": "analyzeHeadless not found",
+            }
+        )
+        return PayoffReport(
+            status=PayoffStatus.NO_BACKEND,
+            candidates=(),
+            backend="none",
+            attempts=tuple(attempts),
+            counts={},
+            elapsed_s=0.0,
+            budget_s=budget,
+        )
+
+    def _fail(
+        status: PayoffStatus, reason: str, counts: Dict[str, int]
+    ) -> PayoffReport:
+        attempts.append(
+            {"backend": "ghidra", "outcome": status.value, "reason": reason}
+        )
+        return PayoffReport(
+            status=status,
+            candidates=(),
+            backend="ghidra",
+            attempts=tuple(attempts),
+            counts=counts,
+            elapsed_s=elapsed,
+            budget_s=budget,
+        )
+
+    elapsed = 0.0
+    sha_before = _sha256_of(path)
+    script_dir = d._ghidra_scripts_dir()
+    script_path = script_dir / GHIDRA_PAYOFF_SCRIPT
+    if not script_path.is_file():
+        return _fail(PayoffStatus.ERROR, f"extractor script missing: {script_path}", {})
+
+    with tempfile.TemporaryDirectory() as tmp:
+        project_dir = Path(tmp) / "project"
+        project_dir.mkdir()
+        out_file = Path(tmp) / "payoff.json"
+        jvm_home = Path(tmp) / "home"
+        jvm_home.mkdir()
+        file_format, entry_rva = d._entry_info()
+        entry_arg = "none" if entry_rva is None else hex(entry_rva)
+        cmd = [
+            str(d._ghidra_path),
+            str(project_dir),
+            "SupwngoPayoffTmp",
+            "-import",
+            str(path),
+            "-scriptPath",
+            str(script_dir),
+            "-postScript",
+            GHIDRA_PAYOFF_SCRIPT,
+            str(out_file),
+            entry_arg,
+            file_format,
+            "-deleteProject",
+        ]
+        env = _merged_jvm_env(str(jvm_home))
+        start = time.monotonic()
+        run = d._run_ghidra_headless(cmd, budget, env=env)
+        elapsed = time.monotonic() - start
+
+        if not run.finished:
+            if run.state is ProcState.TIMEOUT:
+                return _fail(PayoffStatus.TIMEOUT, run.error, {})
+            return _fail(PayoffStatus.ERROR, run.error, {})
+
+        envelope = _read_payoff_envelope(out_file)
+        if envelope is None:
+            return _fail(
+                PayoffStatus.ERROR,
+                run.error or "extractor wrote no usable envelope",
+                {},
+            )
+
+        marker = _marker_from_envelope(envelope)
+        if marker is None:
+            return _fail(
+                PayoffStatus.ERROR, "envelope has no valid completion marker", {}
+            )
+        counts = {
+            "enumerated": marker.enumerated,
+            "analyzed": marker.analyzed,
+            "failed": marker.failed,
+        }
+        if not marker_is_complete(marker):
+            # Ran, but a function failed or not every function was accounted for:
+            # trustworthy only up to a point, never a COMPLETE negative, never cached.
+            return _fail(
+                PayoffStatus.DEGRADED,
+                f"incomplete pass (failed={marker.failed}, "
+                f"analyzed={marker.analyzed}, enumerated={marker.enumerated})",
+                counts,
+            )
+
+        try:
+            fes = _evidence_from_envelope(envelope)
+        except (KeyError, TypeError, ValueError) as exc:
+            return _fail(PayoffStatus.ERROR, f"malformed record: {exc}", counts)
+
+        candidates = rank_candidates(fes)
+        attempts.append({"backend": "ghidra", "outcome": "complete", "reason": ""})
+        sha_after = _sha256_of(path)
+
+    report = PayoffReport(
+        status=PayoffStatus.COMPLETE,
+        candidates=candidates,
+        backend="ghidra",
+        attempts=tuple(attempts),
+        counts=counts,
+        elapsed_s=elapsed,
+        budget_s=budget,
+        from_cache=False,
+    )
+
+    # Cache only COMPLETE, and only when the digest never changed (TOCTOU guard).
+    if use_cache and cache is not None and sha:
+        if sha_before == sha and sha_after == sha:
+            try:
+                cache.save_payoff_analysis(
+                    sha, SCRIPT_VERSION, bver, report_to_json(report)
+                )
+            except (
+                Exception
+            ) as exc:  # noqa: BLE001 - write failure must not fail the call
+                attempts.append(
+                    {"backend": "cache", "outcome": "write_error", "reason": str(exc)}
+                )
+                report = replace(report, attempts=tuple(attempts))
+        else:
+            attempts.append(
+                {"backend": "cache", "outcome": "skipped", "reason": "digest changed"}
+            )
+            report = replace(report, attempts=tuple(attempts))
+
+    return report
