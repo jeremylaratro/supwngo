@@ -16,16 +16,19 @@
 # pe_strip.exe has no symbols (`nm`: "no symbols"), so the addresses below are
 # taken from the symbol-bearing build pe_sym.exe (truth/s0pe/pe_sym.yaml) and
 # CONFIRMED to hold in the stripped file:
-#   - pe_strip.exe is strip(pe_sym.exe), so the two share one VMA layout:
-#     `objdump -h` shows every shared section (.text .data .rdata .pdata .xdata
-#     .bss .idata .CRT .tls .reloc) at the same VMA and size; only the .debug_*
-#     sections are gone, which shifts every file offset by 0x200 (.text is at
-#     file offset 0x600 in pe_sym and 0x400 in pe_strip) but changes no VMA;
+#   - pe_strip.exe is strip(pe_sym.exe), so the two share one layout:
+#     `objdump -h` shows every section (.text .data .rdata .pdata .xdata .bss
+#     .idata .CRT .tls .reloc) at the same VMA, size and file offset in both
+#     (.text at file offset 0x400); the only difference is the COFF symbol and
+#     string tables that `strip` drops;
 #   - `objdump -s -j .text` of the two files hashes identically
-#     (a99a886c13f380873ad795b55184231e10237d6387570ac62b1a6632f360d332);
+#     (`... | tail -n +4 | sha256sum` ->
+#     cf8c27d05e10eea827b03859db22ab6be141874e1e271703857040f624343a8d);
 #   - `objdump -d -M intel --start-address=0x140001550 pe_strip.exe` shows the
-#     same instructions at 140001550 (pe_vuln: ... call 0x140002690, the puts
-#     thunk `jmp [__imp_puts]`) and at 14000156f (main: ... call 0x140001550);
+#     same instructions at 140001550 (pe_vuln: ... call 0x1400026a0, the puts
+#     thunk `jmp [__imp_puts]`) and at 14000156f (main: call 0x140001650
+#     (__main), call 0x1400026a0 (the same puts thunk), call 0x140001550
+#     (pe_vuln)); main calls puts itself, so the `puts` anchor is a call main makes;
 #   - AddressOfEntryPoint is 0x14f0 in both (mainCRTStartup, 0x1400014f0).
 # Rebuilding does not reproduce these bytes (the PE TimeDateStamp is the build
 # time); the committed binary and its pinned SHA-256 are the reference.
@@ -35,7 +38,7 @@ arch: amd64
 metrics: [decomp, robust]
 binary:
   path: benchmark/fixtures/s0pe/pe_strip.exe
-  sha256: dea2c60726e111f62fae31c34070e5b7fd69cc517b80fe218fd465e7b63069c0
+  sha256: ec60e14b980c7ecff08d4a6be544b7dab588cece32effdb932f74a0c15709f1a
 vuln_family: null
 method_accept: []
 method_basis: null
@@ -46,7 +49,8 @@ decompile:
     addr: 0x140001550
     provenance: "from pe_sym (nm: T pe_vuln); same VMA and bytes in the stripped file, see header"
   # User main only (V-9). The PE entry is the CRT start (mainCRTStartup,
-  # 0x1400014f0), so a result of `entry` is an honest DECOMP FAIL.
+  # 0x1400014f0), so a result of `entry` is an honest DECOMP FAIL. main calls puts
+  # directly (see header), which is what the `puts` anchor below relies on.
   default_function_any_of: [0x14000156f]
   anchors: {calls: [puts], min_calls: 1}
 stage:
