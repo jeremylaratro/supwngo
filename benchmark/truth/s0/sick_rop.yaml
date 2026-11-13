@@ -1,0 +1,47 @@
+# S0 truth for sick_rop (SP-01 plan 2.3). Smoke set: in-sample, never a gate.
+# Commands run from tests/htb-targets/organized (the binary is read in place).
+slug: sick_rop
+format: elf
+arch: amd64
+vuln_family: stack_bof
+method_accept: [srop]
+method_basis: reviewed
+solve_proven: srop_symtab_pivot
+distance:
+  - kind: buf_to_ret
+    state: known_value
+    value: 40
+    provenance: >-
+      objdump -d --no-show-raw-insn sick_rop: vuln (0x40102e) is push rbp;
+      mov rsp,rbp; sub $0x20,rsp; r10=rsp is the buffer handed to read with
+      count 0x300 (0x401039-0x401040), so buffer = rbp-0x20 and the saved RIP
+      is at rbp+8: 0x20 + 8 = 40. Matches plan 2.3.
+decompile:
+  vuln_function:
+    addr: 0x40102e
+    provenance: "nm sick_rop | grep -w vuln  ->  000000000040102e t vuln"
+  # No main and no libc start call: plan 4.4 order falls to the entry function.
+  default_function_any_of: [0x40104f]
+  anchors:
+    calls: [vuln]
+    min_calls: 1
+stage:
+  files: [sick_rop]
+  placeholders: []
+forbidden_symbols: []
+provenance:
+  default_function: >-
+    readelf -hW sick_rop | grep Entry  ->  0x40104f; nm sick_rop | grep -w
+    -e _start -e main -e __libc_start_main  ->  only _start (0x40104f). The
+    image has 3 program headers and no libc start call, so plan 4.4 step 3
+    (entry function) selects _start at 0x40104f. Note this differs from the
+    illustrative schema example in plan 2 (anchors [read]): read is inside
+    vuln, not in _start.
+  anchors: >-
+    objdump -d --no-show-raw-insn sick_rop: _start is "call 40102e <vuln>;
+    jmp 40104f <_start>", so the only call expression in the default function
+    is vuln. Disassembly only; not cross-checked against a Ghidra run.
+  stage_files: "ls -p tests/htb-targets/a12c7345-917f-481d-9484-105f478cabc9 -> sick_rop only"
+  placeholders: "strings -a sick_rop | grep -ci flag -> 0; no runtime file is opened"
+  vuln_family: "plan 2.3; stack overflow in vuln (read 0x300 into a 0x20 frame)"
+  method_accept: "plan 2.3: write-up method plus the family solve proved (srop_symtab_pivot)"
