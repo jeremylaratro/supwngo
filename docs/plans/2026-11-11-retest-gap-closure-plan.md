@@ -181,9 +181,13 @@ decided in **S7** with the spike evidence.
     a scratch copy of the repo. It is recorded at
     `docs/reviews/2026-11-12-mythos-roadmap/verify-mythos-execution.md`, and its amendments are in §14 of the
     roadmap.
+  - **Owner directive F (2026-11-12).** Pick 2-3 strategies and do not move on until they are bulletproof.
+    - The focus is F-1 `ret2win`, F-2 `ret2libc` and F-3 syscall ROP (`srop`/`rop_syscall`).
+    - Gate F and the focus path are in roadmap §14. All other strategies and SP-07+ are frozen until gate F is
+      met.
   - **Next: SP-01** (passcard v0 and the honesty fixes):
-    `docs/plans/2026-11-12-sp01-passcard-and-honesty-plan.md`. Plan v3 is under Daybreak Blue review; rounds 1
-    and 2 were REJECT, and both are recorded beside the plan.
+    `docs/plans/2026-11-12-sp01-passcard-and-honesty-plan.md`. Plan v4.1 is approved: Daybreak Blue round 4 was APPROVE WITH CHANGES,
+    after rounds 1–3 were REJECT. All four rounds are recorded beside the plan.
 
 ## Phase 4 — Research (reproduced this session)
 

@@ -1,12 +1,15 @@
-# SP-01 — Passcard v0 and the honesty fixes (plan v3, 2026-11-12)
+# SP-01 — Passcard v0 and the honesty fixes (plan v4.1, 2026-11-12)
 
 - **Roadmap.** `docs/roadmaps/2026-11-12-mythos-roadmap.md` §5–6 (SP-01). This is the canonical copy of
   `docs/reviews/2026-11-12-mythos-roadmap/roadmap-final-mythos.md`.
 - **Supersedes** the S6 detector-depth draft, archived at
   `docs/reviews/2026-11-12-mythos-roadmap/inputs/S6-PLAN-DRAFT-superseded.md`.
-- **Review history**, both by Daybreak Blue, recorded beside this file:
+- **Review history**, all by Daybreak Blue, recorded beside this file:
   - v1: REJECT, B-1..B-8 (`…-review-daybreak-blue.md`).
   - v2: REJECT, B2-1..B2-4 (`…-review-daybreak-blue-r2.md`).
+  - v3: REJECT, B3-1..B3-5 (`…-review-daybreak-blue-r3.md`). The §3.7 arithmetic was confirmed consistent.
+  - v4: **APPROVE WITH CHANGES**, no blocking items (`…-review-daybreak-blue-r4.md`). The four required edits,
+    N4-1..N4-4, are applied in v4.1.
   - §9 maps every review item to the change it caused.
 
 ## 1. Goal
@@ -20,6 +23,10 @@
 
 **Not in scope (SP-02):** the SROP gate, role tiering, overrides on `pwn`/`template`, and template honesty.
 `pwn`, `template` and `solve` are measured here, not changed.
+
+**Owner directive F** (roadmap §14) keeps SP-01 unchanged, because gate F needs this instrument. The three
+targets outside the focus strategies (auth-or-out, sabotage, bon-nie-appetit) are measured here and are not
+fixed.
 
 **The S0 set (HTB-7) is smoke** (roadmap §1.4): in-sample, never a gate, never tuned on. Nothing in this sprint
 claims generalisation.
@@ -124,6 +131,11 @@ proved `shell_proven`.
 **Decompile truth** uses addresses only (`vuln_function`, `default_function_any_of`, call anchors). The
 implementer derives it with objdump and records the commands.
 
+**Method basis (N3-3).** Roadmap §1 scores METHOD-R0 only on `solver_proven` or `construction` truth. S0 is
+an explicit exception: its `method_basis` is `reviewed`, from the write-up method plus the `solve` family that
+was proven. This is acceptable only because S0 is smoke and never gates. From SP-02c on, the gated sets use
+generated truth.
+
 **Vuln families** for the heap and integer targets are re-checked against the executor that proved each one.
 Any change is recorded.
 
@@ -168,41 +180,82 @@ before the post-fix run, both baseline headers record their content hashes.
 **Baseline:** `benchmark/baselines/passcard-s0-pre-sp01.{json,md}`, immutable. The post-fix run is a separate
 file (N-2).
 
-### 3.3 Sandbox and staging (B2-3, B2-4, DEC-25)
+### 3.3 Sandbox and staging (B2-3, B2-4, B3-1, B3-2, DEC-25)
 
-**`sandbox.run(argv, *, cwd, rw=[...], hide=[...], net=False, timeout, input=None) -> ProcResult`.** Two
-backends:
+**`sandbox.run(argv, *, cwd, binds=[(host, inside)], hide=[...], net=False, timeout, input=None) -> ProcResult`.**
+Two backends:
 
 - **`bwrap`.** The host has bubblewrap 0.6.1, `kernel.apparmor_restrict_unprivileged_userns = 0` and
-  `unprivileged_userns_clone = 1`. Flags:
-  - mounts: `--ro-bind / /`, `--dev /dev`, `--proc /proc`, `--tmpfs /tmp`;
-  - `--bind <p> <p>` for each `rw`, and `--tmpfs <p>` for each `hide`;
-  - `--unshare-net` (unless `net=True`), `--unshare-pid`, `--die-with-parent`, `--new-session`, and `--chdir <cwd>`.
-
-  The PID namespace means that killing bwrap on timeout kills every descendant, including gdb inferiors and
-  processes that call `setsid()`.
+  `unprivileged_userns_clone = 1`.
+  - **Mount order (B3-1).** bwrap applies mounts in argument order and takes bind sources from the old root, so
+    a later hide cannot cut a bind's source off:
+    1. `--ro-bind / /`, `--dev /dev`, `--proc /proc`;
+    2. `--tmpfs <p>` for each existing `hide` path;
+    3. `--tmpfs /tmp`;
+    4. last, `--bind <host> <inside>` for each writable bind.
+  - **Bind targets.** Every `inside` path is under `/tmp`, so bwrap creates the mount point on the fresh tmpfs.
+    Nothing has to be created on the read-only root, and no hide can overmount a writable bind.
+  - **Other flags.** `--unshare-net` (unless `net=True`), `--unshare-pid`, `--die-with-parent`, `--new-session`
+    and `--chdir <cwd>`. `cwd` must be either an `inside` path or a read-only path that is not hidden.
+  - **PID namespace.** Killing bwrap on timeout kills every descendant, including gdb inferiors and processes
+    that call `setsid()`.
+  - **Hide paths.** A hide path that does not exist is skipped and recorded as `hide_absent: [...]`, because
+    bwrap cannot create a mount point on the read-only root.
 - **`none`.** A plain `proc.run`, used only when the bwrap self-check fails. Every result carries
   `isolation: "none"`.
 
-**Self-check.** `sandbox.available()` runs, once per process and cached:
-1. `bwrap … true`;
-2. a probe that a hidden path is unreadable;
-3. a probe that a socket `connect()` fails.
+**Confidentiality boundary (N3-2).**
+- `--ro-bind / /` leaves most host files readable.
+- The sandbox contains writes, **IP** networking and processes.
+  - `--unshare-net` gives the sandbox its own loopback, which bwrap 0.6.1 brings up. Host listeners are not
+    reachable through it.
+  - It does **not** block pathname Unix sockets that are visible on the read-only root. The passcard therefore
+    also hides `$XDG_RUNTIME_DIR` when it exists.
+  - For reads, the sandbox protects only the paths it is told to hide.
+- The passcard depends on exactly that. The product `offset` documentation says so, and does not present the
+  sandbox as a general host-confidentiality boundary.
 
-All three must behave as expected for `isolation: "bwrap"`.
+**Self-check with controlled positives (B3-1).** `sandbox.available()` runs once per process and caches the
+result. Every probe has an unsandboxed positive control:
+1. **Bootstrap.** Direct `true` exits 0 (control); `bwrap … true` exits 0.
+2. **Hide probe.**
+   - The parent creates a temporary directory containing a sentinel file.
+   - The sentinel is readable without the sandbox.
+   - With that directory in `hide`, `cat <sentinel>` inside the sandbox fails.
+3. **Network probe.**
+   - The parent listens on `127.0.0.1:<ephemeral>`.
+   - An unsandboxed `connect()` succeeds.
+   - The same `connect()` inside the sandbox fails. Its isolated loopback is up but has no host listener.
+4. **Bind probe.**
+   - Control: a direct write-then-read round trip on the host directory succeeds.
+   - A file written inside the sandbox to the `inside` path appears at the host path with the same content.
 
-**Staging (passcard; allowlisted, not a directory copy).** `passcard_stage.py` builds each cell in a fresh
-scratch directory from:
+All four must behave as expected for `isolation: "bwrap"`.
+
+**Staging (passcard; allowlisted file by file; B3-2).** `passcard_stage.py` builds each cell in a fresh host
+directory, `<scratch>/<run>/<cell>`, from:
 - the truth file's `stage.files`;
-- the loader and library closure: the `PT_INTERP` target if it is relative, and the `DT_RUNPATH`/`DT_RPATH`
-  directories that resolve inside the challenge directory;
+- **the dependency closure, file by file.** Start with the `PT_INTERP` file, when it is relative. Then add each
+  `DT_NEEDED` soname that resolves to a file under the challenge directory, either through a
+  `DT_RUNPATH`/`DT_RPATH` entry or relative to `PT_INTERP`. Repeat transitively. Only those resolved files are
+  copied, keeping their relative paths. Directories are never copied.
 - `stage.placeholders`, written with neutral content.
 
-Sources, write-ups, `.debug` siblings and everything else stay out. The harness then runs each command through
-`sandbox.run` with:
-- `cwd` = the cell, and `rw` = the cell plus the cell's private `TMPDIR`/`HOME`/`XDG_CACHE_HOME`;
-- `hide` = `benchmark/truth`, `tests/htb-targets`, the scorer's scratch root, and any held-out path;
-- `-o`/`--output` forced into the cell (`template` writes into `cwd` by default, `cli.py:1245-1249`).
+Sources, write-ups, `.debug` siblings and every unlisted file stay out. A staging test asserts that the cell's
+file list equals the computed closure.
+
+**Harness invocation.** The harness runs each command through `sandbox.run` with:
+- `binds = [(<host cell>, /tmp/cell)]` and `cwd = /tmp/cell`. The cell's private `TMPDIR`, `HOME` and
+  `XDG_CACHE_HOME` are `/tmp/cell/.tmp`, `.home` and `.cache`.
+- `hide`:
+  - `benchmark/truth`;
+  - `benchmark/gen` (generator sources and seeds, from SP-02c; recorded as `hide_absent` until it exists);
+  - `tests/htb-targets`;
+  - the scorer's scratch root;
+  - every held-out path;
+  - `$XDG_RUNTIME_DIR`, when it exists (pathname Unix sockets);
+  - every `--extra-hide` path (used by the self-test).
+- `-o`/`--output` forced to `/tmp/cell/...` (`template` writes into `cwd` by default, `cli.py:1245-1249`).
 
 **Acceptance.**
 - A baseline or post-fix result is accepted only with `isolation: "bwrap"`.
@@ -222,8 +275,16 @@ Sources, write-ups, `.debug` siblings and everything else stay out. The harness 
 - On timeout: `killpg(SIGKILL)`, then `communicate()` to reap.
 - Spawn `OSError`s become `SPAWN_ERROR`; they never raise.
 
-**After every passcard cell**, the harness scans `/proc` for survivors in the cell's session. Any survivor is a
-ROBUST FAIL and is killed.
+**Survivor detection (B3-5).**
+- At start, the harness makes itself a child subreaper with `prctl(PR_SET_CHILD_SUBREAPER, 1)`, via ctypes.
+- Any descendant orphaned by a cell is then re-parented to the harness. This includes one that called
+  `setsid()` or double-forked.
+- After every cell, the harness lists `/proc/*/stat` entries whose parent PID is the harness, other than its
+  live runner. Any such process is a survivor: ROBUST FAIL, `SIGKILL`, then reap.
+- Cleanup repeats until nothing is left: kill every adopted child, reap it, and rescan, because killing an
+  intermediate process can orphan more.
+- This does not depend on sessions, so it works the same on both backends. Under `bwrap`, the PID namespace
+  normally leaves nothing to find.
 
 ### 3.5 Preflight (passcard side; B-3)
 
@@ -279,7 +340,8 @@ as ABSTAIN. For `offset`, it is `success: false`.
 | TIME | wall seconds and the 1-minute load average per cell | — | — | — |
 
 **TIME** is not gated in SP-01. With `--require-time-quorum N`, the harness exits 3 with `time_quorum_failed`
-when fewer than N valid samples exist per command. A sample is valid when the load is ≤ `--load-max`.
+when fewer than N valid samples exist per command. A sample is valid when it completed and its 1-minute load
+was strictly below `--load-max`.
 
 **v0 limits, stated in the report header (N-4):**
 - TEMPLATE trusts the `technique` field.
@@ -309,15 +371,15 @@ verdict for every `(target, metric[, kind])` is pinned in `tests/test_passcard_s
 | `empty_body`: right address, `code` reduced to an empty function body | DECOMP FAIL 7/7 |
 | `anchor_in_comment`: anchors only inside comments | DECOMP FAIL 7/7 |
 | `wrong_addr`: right code, wrong address | DECOMP FAIL 7/7 |
-| `traceback` | ROBUST FAIL 28/28; each semantic metric ERROR |
+| `traceback` | ROBUST FAIL 28/28. ERROR on every non-VOID semantic cell. The 4 truthless OFF cells stay VOID with their pinned reasons, because VOID is decided before the output is read (§2.1). |
 | `two_docs` | ROBUST FAIL 28/28 |
 | `rc0_error`: a failure envelope with rc 0 (today's `decompile`) | ROBUST FAIL on every cell where it is emitted; the semantic metric is ABSTAIN |
 | `rc2_success`, `rc127_clean` | ROBUST FAIL on every emitted cell |
-| `hang`: sleeps past the budget | ERROR; no process survives |
-| `grandchild`: a `setsid()` + fork of a 60 s sleeper, then exits 0 with a valid document | under `bwrap`: the survivor is gone (PID namespace) and ROBUST PASS. A test on the `none` backend alone asserts the survivor is detected (ROBUST FAIL) and killed. |
-| `answer_key`: opens by absolute path (1) its truth file, (2) the challenge source file, (3) a `.debug` sibling planted next to the original binary, then emits `truth_echo` output for anything it read | Each open fails inside the sandbox. The mutant scores as `abstain_all`, so no metric can PASS from a leaked key. |
+| `hang`: sleeps past the budget | ROBUST FAIL 28/28. ERROR on every non-VOID semantic cell; the same 4 OFF cells stay VOID. No process survives. |
+| `grandchild`: the parent forks a child, which calls `setsid()` and forks a 60 s sleeper. The sleeper redirects stdin, stdout and stderr to `/dev/null`, then writes its PID to a readiness pipe. The parent waits for that, emits a valid document and exits 0 | Under `bwrap`, the PID namespace removes the survivor, so ROBUST PASS. A separate test forces the `none` backend: the subreaper scan (§3.4) finds the re-parented sleeper (ROBUST FAIL), kills it, and its PID is gone afterwards. |
+| `answer_key`: opens by absolute path (1) its truth file, (2) the challenge source file, (3) a `.debug` sibling planted next to the original binary, and (4) a generator-source file containing the truth, planted by the test in a temporary generator root passed as `--extra-hide` (it stands in for `benchmark/gen` until SP-02c creates it). It emits `truth_echo` output for anything it read, and declines otherwise. | Each of the 4 opens fails inside the sandbox, and each path is asserted readable outside it first (positive control). The mutant scores exactly as `abstain_all`, so no metric can PASS from a leaked key. |
 | VOID fixture: a cell whose relative interpreter does not exist | OFF VOID(`interp_missing`); the other metrics are still scored |
-| `time_quorum`: run with `--require-time-quorum 1 --load-max 0` | harness exit 3, `time_quorum_failed` |
+| `time_quorum`: `--reps 1 --require-time-quorum 2` | Harness exit 3, `time_quorum_failed`. It is deterministic because a quorum larger than the number of reps cannot be met, whatever the load. A sample is valid when it completed and its 1-minute load was strictly below `--load-max`. |
 | `parses_as_json` scorer (D5-F1) | cannot tell `const` from `truth_echo`; the passcard can (asserted) |
 
 ### 3.8 Baseline
@@ -346,16 +408,33 @@ verdict for every `(target, metric[, kind])` is pinned in `tests/test_passcard_s
 **Changes in `supwngo/exploit/offset_finder.py`:**
 
 - **Absolute path.** `self.binary_path = Path(binary_path).resolve()`. Today it is kept as given (`:173`).
+- **Private workspace (B3-3).**
+  - Each `find_offset` call creates one host directory with `tempfile.mkdtemp(dir="/tmp", prefix="supwngo-offset-")`.
+    `dir` is pinned so a caller's `TMPDIR` cannot move it.
+  - It is bound at the same path, which is always under the sandbox `/tmp`.
+  - The pattern file, the gdb script and any file input go there.
+  - Today those files are made with `NamedTemporaryFile` in the host `/tmp` (`:245`, `:275`), which the sandbox
+    tmpfs would hide.
+  - The workspace is removed afterwards.
 - **One target-input adapter.** `_run_target(payload, input_method, args, timeout) -> ProcResult`:
-  - stdin, argv and file input; file input writes the pattern into a private temporary directory and passes an
-    absolute path;
-  - `cwd` = the binary's directory;
-  - executes through `sandbox.run`, with `rw` = the private temporary directory and `net=False`.
-- **Every target execution on the `supwngo offset` path (`OffsetFinder`) goes through the adapter:**
-  - gdb (`:280`), run inside the sandbox, so the inferior shares the PID namespace;
-  - the core-dump runner (`:402-426`);
-  - the bisect probe (`:502-520`);
-  - the refine loop (`:541-556`).
+  - stdin, argv and file input; file input passes the workspace file's absolute path;
+  - `cwd` = the binary's directory, which is read-only inside the sandbox;
+  - executes through `sandbox.run`, with `binds` = the workspace and `net=False`.
+- **gdb runner.** `_run_gdb(script, timeout) -> ProcResult` builds `gdb -q -batch -x <workspace>/s.gdb <binary>`
+  and runs it through the same `sandbox.run` and workspace. The inferior is a descendant, so it shares the PID
+  namespace and dies with it.
+- **Every target execution on the `supwngo offset` path (`OffsetFinder`) goes through one of those two:**
+  - gdb (`:280`), through `_run_gdb`;
+  - the core-dump runner (`:402-426`), the bisect probe (`:502-520`) and the refine loop (`:541-556`), through
+    `_run_target`.
+- **Nested sandbox.** When the passcard runs `offset`, the product's `sandbox.run` is inside the passcard's own
+  bwrap.
+  - The product's self-check (§3.3) runs there too. If nested bwrap works, it reports `isolation: "bwrap"`.
+  - If nested bwrap does not work, the product reports `isolation: "outer"`, but only when both of these hold:
+    - the passcard set `SUPWNGO_OUTER_SANDBOX=1`;
+    - the product sees that it is in a separate PID namespace (`/proc/self/ns/pid` differs from the value the
+      passcard recorded on the host and passed in).
+  - Otherwise it reports `none`.
 - **Narrowed claim.** `InteractiveOffsetFinder` and `QuickExploit` (the pwntools paths at
   `:649, 744, 797, 823, 1199`) have no callers outside this file. They are out of scope and listed for SP-12.
 - **Core dumps.**
@@ -390,6 +469,8 @@ verdict for every `(target, metric[, kind])` is pinned in `tests/test_passcard_s
 | Missing relative interpreter (`-Wl,--dynamic-linker=./nope/ld.so`) | Today: "Could not determine offset with any method". Assert `error_code`, `interp_missing` and the path. |
 | Zero-byte relative loader | Assert `interp_empty`. |
 | Relative-interpreter positive control: a crashing fixture with a copied host loader reachable only from its directory, run from another `cwd` with a relative `binary_path` | It cannot be exec'd today. Assert the target crashes and the offset equals the source distance. |
+| gdb under bwrap (B3-3): a crashing stack fixture with a known source distance, run directly (not under the passcard) | Assert all four: `isolation == "bwrap"`, `method` starts with `GDB - ` (the existing free-text values at `:305, 319, 331`), the offset equals the source distance, and the gdb script and pattern paths were inside the workspace. A run that falls through to bisect is a FAIL, not a pass. It is RED today: there is no sandbox, and the files are in host `/tmp`. |
+| Bisect under bwrap: the same fixture with gdb forced unavailable | Assert `isolation == "bwrap"`, `method` starts with `Binary search` (`:561, 567`), and `success`. The value is recorded, not asserted: bisect is approximate by design, and offset accuracy belongs to SP-04. This test proves the route, not the number. |
 | Stale core in `cwd` and `/tmp`, non-crashing fixture, `--no-sandbox` | It may be analysed today. Assert it is ignored. |
 | `offset --json` failure (monkeypatched finder) | rc 0 today |
 | EOF spin (`eof_spin`) | Assert one document, rc 2 and `error_code="timeout"`. |
@@ -438,27 +519,56 @@ receiver type in the commit message.
   - `fmtstr_techniques.py:198`;
   - `rop_techniques.py:1513, 1536`;
   - `heap_techniques.py:237, 251-252` (the `relro` alias);
-  - `heap_strlen_ofb1_techniques.py:1009-1010`.
+  - `heap_strlen_ofb1_techniques.py:1009-1010`;
+  - `walkthrough/facts.py:376, 388`, the reported-versus-derived cross-check.
 
-**Lint (`tests/test_relro_lint.py`, AST): a display-only rule.**
-- **Scope.** Outside `supwngo/core/`, a read of an attribute `relro`, or of `getattr(_, "relro", …)`, is allowed
-  only in a display position:
-  - inside an f-string or a `.format()` argument;
-  - as a value in a dict literal passed to JSON emission;
-  - as an argument to a logging or `console.print` call.
-- **Any other read is flagged.** This covers comparisons, `in`, `.lower()`, `.startswith()`, `str(...) or ""`
-  wrappers, and assignment to a local alias.
-- **Exceptions** need an exact allowlist entry `(path, enclosing qualname, receiver type, justification)` for
-  the non-core models:
-  - pwntools `ELF.relro`: `ret2dlresolve.py:365`, `walkthrough/common.py:483`;
-  - `GOTAnalysis`: `got_plt.py:105-106, 259, 310`;
-  - `ProtectionFacts`: `facts.py:111`, `families/heap.py:860`;
-  - `DetailedProtections`: `analysis/protections.py:142-155`;
-  - `reporting/cvss.py:453`.
-- **Controls.**
-  - A stale allowlist entry fails.
-  - Positive control: synthetic source with `prots.relro == "full"`,
-    `str(getattr(p, "relro", "") or "").lower().startswith("full")` and `r = ctx.protections.relro` is flagged.
+The complete classification, including the allowlisted and display reads, is the starting-inventory table
+below.
+
+**Lint (`tests/test_relro_lint.py`, AST): a display-only rule (B3-4).**
+
+**Flagged reads.** Outside `supwngo/core/`, the lint looks at every load of an attribute named `relro` and every
+`getattr(_, "relro", …)`.
+
+**Display positions.** A read is allowed when its value reaches one of these positions, after stripping `str()`
+and `repr()` calls, conditional expressions, and `or <constant>`:
+- a `FormattedValue` in an f-string;
+- an argument to `.format()`, to a logging method, or to `print`/`console.print`;
+- a value in a dict literal.
+
+Every other read is flagged. That covers comparisons, `in`, `.lower()`, `.startswith()`, keyword arguments, tuple
+members and assignment to a local alias.
+
+**Allowlist.** An entry is `(path, enclosing qualname, receiver type, justification)` and is keyed by qualname,
+not line number. Only receivers that are not the core `Protections` qualify. A stale entry, one that matches no
+read, fails the lint.
+
+**Procedure.**
+1. The lint has a `--report` mode.
+2. The implementer runs it at the SP-01b merge base and pastes the output into the commit message.
+3. If it differs from the inventory below, the plan's table is corrected in the same PR. A differing inventory
+   is not a blocker; an unclassified read is.
+
+**Starting inventory.** The orchestrator measured 39 reads with an AST scan at `3b7e6b2`.
+
+| Class | Sites | Action |
+|---|---|---|
+| **Migrate** (core `Protections`, or a mix of core and `DetailedProtections`): 20 reads on 19 lines | **analysis/imports.py** `:398, 499`<br>**exploit/bypass.py** `:72, 211`<br>**exploit/chainer.py** `:299` (×2)<br>**exploit/pie_bypass.py** `:191`<br>**exploit/strategy.py** `:454, 976`<br>**vulns/format_string.py** `:597, 640`<br>**vulns/leak_finder.py** `:329`<br>**executors/fmtstr_techniques.py** `:198`<br>**executors/heap_strlen_ofb1_techniques.py** `:1009`<br>**executors/heap_techniques.py** `:237, 251`<br>**executors/rop_techniques.py** `:1513, 1536`<br>**walkthrough/facts.py** `:376, 388` (`reported = detailed or prot`: compare with `normalize_relro()` on both sides) | Use `relro_kind`, or `normalize_relro()` |
+| **Allowlist, by receiver type**: 12 reads | **pwntools `ELF`:** `rop/ret2dlresolve.py:365`, `got_plt.py:105`<br>**`GOTAnalysis`:** `got_plt.py:106, 259, 310`<br>**`DetailedProtections`:** `analysis/protections.py:153, 155`<br>**`ProtectionFacts`:** `walkthrough/facts.py:111`, `walkthrough/common.py:393`, `walkthrough/families/heap.py:860, 864` (one `_weaponisation_step` entry; `:864` is under `_q()`, which the rule does not strip)<br>**`_Image.relro`** (a list of address ranges, not a level): `executors/finiarray_techniques.py:262` | Entry plus justification |
+| **Display, passes the rule**: 7 reads | `analysis/protections.py:505`<br>`exploit/bypass.py:430`<br>`exploit/enhanced_auto.py:1281`<br>`pipeline/templates.py:28`<br>`exploit/strategy.py:300`<br>`analysis/imports.py:524`<br>`cli.py:1037` | None |
+
+**Corrections from round 3.**
+- `walkthrough/common.py:483` was in the v3 list but is text inside a generated-code string, not an AST read.
+- `reporting/cvss.py:453` was in the v3 list but reads a local name.
+- `got_plt.py:105` reads pwntools `elf.relro`, not `GOTAnalysis`.
+- `cli.py:1037` and `finiarray_techniques.py:262` were in no earlier list.
+
+**Controls.**
+- **Positive:** synthetic source containing `prots.relro == "full"`,
+  `str(getattr(p, "relro", "") or "").lower().startswith("full")`, `r = ctx.protections.relro` and
+  `f(state=x.relro)` is flagged on all four.
+- **Negative:** `f"{p.relro}"`, `log.info("%s", p.relro)` and `{"relro": str(p.relro) if p else None}` pass.
+- **Stale entry:** a synthetic allowlist entry that matches nothing fails the lint.
 
 **RED.**
 - Full-RELRO fixture: `StrategySuggester(bin).analyze()` must not contain RET2DLRESOLVE (it does today).
@@ -550,7 +660,8 @@ callers with `git grep` first.
 ### SP-01a
 
 - I-45 is merged, and the flag-shape test is green.
-- `sandbox.available()` reports `bwrap` on this host. All three self-check probes behave as expected.
+- `sandbox.available()` reports `bwrap` on this host. All four self-check probes, each with its unsandboxed
+  positive control, behave as expected.
 - `passcard-s0-pre-sp01` is committed under `bwrap`, with the §3.8 header.
 - Every §3.7 row meets its pinned expectation.
 - Mapping coverage is green.
@@ -563,9 +674,14 @@ callers with `git grep` first.
 - **No sentinel** scores as success anywhere.
 - **Processes:** the descendant and hidden-path tests are green, and no surviving process is found after any
   passcard cell.
-- **`offset` isolation:** `offset --json` reports `isolation: "bwrap"` on every S0 cell.
+- **`offset` isolation.**
+  - Under the passcard, `offset --json` reports `isolation` of `"bwrap"` (nested) or `"outer"` on every S0
+    cell (§4.1).
+  - Run directly, it reports `"bwrap"`.
+  - The gdb-under-bwrap test is green with `GDB - ` provenance.
 - **RELRO:** RET2DLRESOLVE is absent on every Full-RELRO S0 target, counted with `readelf`, and on the Full
-  fixture. Both lints are green.
+  fixture. Both lints are green: every non-core `relro` read is migrated, allowlisted by receiver type, or in a
+  display position, and no allowlist entry is stale.
 - **Default decompile:** the fixtures pass with `SUPWNGO_REQUIRE_GHIDRA=1`, or the cut line is invoked and
   recorded.
 - **Unit suite:** no new failures against a pre-branch run, with counts recorded. The expected count is about
@@ -582,14 +698,18 @@ callers with `git grep` first.
 - **`offset` behaviour changes.** Targets now run from their own directory, and under `bwrap`; the core method
   is skipped there. This gets a CHANGELOG `Changed` entry. gdb inside `bwrap` needs ptrace of its own child,
   which Yama scope 1 allows. A test covers it.
-- **bwrap on NFS or ext paths.** `/srv/share` is ext2/3 locally, and `--ro-bind / /` is recursive. The `hide`
-  tmpfs mounts need existing mount points, which the sandbox asserts.
+- **bwrap mount topology.** `/srv/share` is ext2/3 locally, and `--ro-bind / /` is recursive. Hide mounts need
+  existing directories, so absent ones are skipped and recorded. Writable binds live under the sandbox `/tmp`
+  tmpfs, after every hide. The bind probe in the self-check catches a regression.
+- **Nested bwrap.** The product's sandbox runs inside the passcard's. If the host refuses a nested user
+  namespace, the `outer` rule (§4.1) applies. The self-check result is recorded either way, and a direct run
+  still has to report `bwrap`.
 - **Truth labels are judgement.** Each has provenance and an owner override. S0 never gates.
 - **Host contention.** Times are recorded with the load average and are not gated in SP-01.
 
 ## 7. Process
 
-- Plan v3 is re-reviewed by Daybreak Blue and recorded beside this file.
+- Plan review is complete: v4 was APPROVED WITH CHANGES in round 4, and v4.1 applies those changes.
 - The amendments from the execution-enabled Mythos verify pass are folded into §8 before implementation.
 - Implementation is by Sonnet agents, with SP-01a and SP-01b on separate branches.
 - The orchestrator reviews each diff and runs the full suite before each PR. CHANGELOG goes under
@@ -630,3 +750,26 @@ callers with `git grep` first.
 | N2-4 RVA | Prelinked ELF stated unsupported |
 | N2-5 / N-1 | `docs/roadmaps/2026-11-12-mythos-roadmap.md` exists |
 | `confidence` deferral | Accepted by the review; recorded as a roadmap amendment |
+
+### Round 3 (v3 → v4)
+
+| Item | Change |
+|---|---|
+| B3-1 mount topology | Mount order is hides, then the `/tmp` tmpfs, then writable binds, and every bind target is under the sandbox `/tmp`. Bind sources come from the old root, so a hide cannot cut one off. The cell is at `/tmp/cell`. The self-check has four probes, each with an unsandboxed positive control (sentinel file, parent listener, bind round-trip). |
+| B3-2 answer-key arms and staging | `benchmark/gen` is hidden (recorded as `hide_absent` until SP-02c). A fourth arm, generator source, uses an `--extra-hide` temporary generator root, and each arm is first shown readable outside the sandbox. The dependency closure is staged file by file, never by directory, and a test checks the cell's file list. |
+| B3-3 gdb under bwrap | A private workspace is bound into the sandbox for the pattern, the gdb script and file input. `_run_gdb` runs gdb through `sandbox.run`. A new test runs gdb under bwrap and asserts `GDB - ` provenance, so falling through to bisect fails it. A separate bisect-route test checks the route only. A nested-sandbox `outer` rule is added. |
+| B3-4 RELRO lint | The allowlist is keyed by qualname and receiver type. A `--report` procedure is defined. A measured 39-read starting inventory gives 20 migrate, 11 allowlist and 8 display. The stale v3 entries are removed and the two missing sites added. Display positions are defined after `str()`, conditional and `or` stripping. |
+| B3-5 nondeterministic pins | TIME uses a quorum larger than the number of reps, and a valid sample needs load strictly below `--load-max`. Survivors are found by the child-subreaper scan, which is independent of sessions. `traceback` and `hang` give ERROR on non-VOID semantic cells, while the 4 truthless OFF cells stay VOID. |
+| N3-1 `confidence` | Recorded as orchestrator roadmap amendment AMD-O1 (roadmap §14) in the follow-up docs PR. |
+| N3-2 confidentiality | The sandbox boundary is stated: writes, network and processes are contained; reads are protected only for hidden paths. |
+| N3-3 method basis | S0 is stated as an exception to the generic METHOD-R0 basis rule (smoke only; it never gates). |
+
+### Round 4 (v4 → v4.1; APPROVE WITH CHANGES)
+
+| Item | Change |
+|---|---|
+| N4-1 `heap.py:864` | Moved to the `ProtectionFacts` allowlist entry for `_weaponisation_step`, because `_q()` is not a stripped display wrapper. The inventory is now 20 migrate, 12 allowlist and 7 display. |
+| N4-2 network wording | The guarantee is IP-network isolation: loopback is up, isolated, and has no host listener. Pathname Unix sockets are not blocked, so `$XDG_RUNTIME_DIR` is hidden. Probes 1 and 4 have explicit direct controls. |
+| N4-3 workspace path | `mkdtemp(dir="/tmp", …)`, bound at the same path under the sandbox `/tmp`. |
+| N4-4 survivor fixture | The sleeper closes its standard descriptors and signals readiness before the parent emits. Cleanup kills, reaps and rescans until nothing is left. |
+| N3-1 / AMD-O1 | Landed in roadmap §14, with an inline marker at the SP-01 `confidence` line. |
