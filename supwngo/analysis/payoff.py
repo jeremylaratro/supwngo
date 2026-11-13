@@ -640,6 +640,62 @@ def _binary_path_and_digest(binary: Any) -> Tuple[Path, Optional[str]]:
     return path, _sha256_of(path)
 
 
+def _angr_fallback(
+    path: Path,
+    angr_timeout: float,
+    budget: float,
+    attempts: List[Dict[str, Any]],
+) -> PayoffReport:
+    """Ghidra-absent fallback: one angr CFG pass, never authoritative (§3.2).
+
+    angr's ``_op_cfg`` yields no ``backend_base``, so candidates cannot be
+    normalized to the corpus RVA contract in W-1. The pass only establishes a
+    tri-state: ``NO_BACKEND`` when angr is not installed, ``DEGRADED`` (empty
+    candidates) when the binary parses, and ``ERROR`` / ``TIMEOUT`` when the
+    pass fails. The Done-when gate is proven only on the Ghidra path; an angr
+    result never passes it and is never cached."""
+    import importlib.util
+
+    def _report(
+        status: PayoffStatus, backend: str, reason: str, elapsed: float
+    ) -> PayoffReport:
+        attempts.append({"backend": "angr", "outcome": status.value, "reason": reason})
+        return PayoffReport(
+            status=status,
+            candidates=(),
+            backend=backend,
+            attempts=tuple(attempts),
+            counts={},
+            elapsed_s=elapsed,
+            budget_s=budget,
+        )
+
+    if importlib.util.find_spec("angr") is None:
+        return _report(PayoffStatus.NO_BACKEND, "none", "angr not installed", 0.0)
+
+    from supwngo.analysis._angr_subprocess import (
+        AnalysisBudgetExceeded,
+        AngrSubprocessError,
+        run_angr_op,
+    )
+
+    start = time.monotonic()
+    try:
+        result = run_angr_op(str(path), "cfg", angr_timeout)
+    except AnalysisBudgetExceeded as exc:
+        return _report(PayoffStatus.TIMEOUT, "angr", str(exc), time.monotonic() - start)
+    except AngrSubprocessError as exc:
+        return _report(PayoffStatus.ERROR, "angr", str(exc), time.monotonic() - start)
+    n = len(result.get("functions", ())) if isinstance(result, dict) else 0
+    return _report(
+        PayoffStatus.DEGRADED,
+        "angr",
+        f"angr-only: binary parsed ({n} functions), but candidates are not "
+        "RVA-normalizable without backend_base (W-1 defers angr candidates)",
+        time.monotonic() - start,
+    )
+
+
 def rank_payoffs(
     binary: Any,
     *,
@@ -702,7 +758,11 @@ def rank_payoffs(
     d = Decompiler(binary_like, ghidra_timeout=ghidra_timeout)
 
     if d._ghidra_path is None:
-        # angr fallback is commit 8; until then, no authoritative backend.
+        # Ghidra absent: fall back to a single angr CFG pass. angr's _op_cfg
+        # yields no backend_base, so candidates cannot be normalized to the
+        # corpus RVA contract in W-1; an angr-only result is therefore never
+        # authoritative (NO_BACKEND if angr is missing, DEGRADED+empty if the
+        # binary parses, ERROR/TIMEOUT if the pass fails) and never caches (§3.2).
         attempts.append(
             {
                 "backend": "ghidra",
@@ -710,15 +770,7 @@ def rank_payoffs(
                 "reason": "analyzeHeadless not found",
             }
         )
-        return PayoffReport(
-            status=PayoffStatus.NO_BACKEND,
-            candidates=(),
-            backend="none",
-            attempts=tuple(attempts),
-            counts={},
-            elapsed_s=0.0,
-            budget_s=budget,
-        )
+        return _angr_fallback(path, d._angr_timeout, budget, attempts)
 
     def _fail(
         status: PayoffStatus, reason: str, counts: Dict[str, int]

@@ -9,6 +9,7 @@ run; a corpus cross-check runs only when the dev corpus has been built.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
 import types
@@ -1024,3 +1025,112 @@ def test_jvm_user_home_override_reaches_runner_and_completes(monkeypatch, corpus
     assert report.backend == "ghidra"
     assert captured["env"] is not None
     assert "-Duser.home=" in captured["env"].get("JAVA_TOOL_OPTIONS", "")
+
+
+# ---------------------------------------------------------------------------
+# Commit 8: angr fallback (Ghidra absent). Never authoritative, never cached.
+# An angr-only result lacks a backend_base, so it can never meet the Done-when
+# gate and is DEGRADED at best (§3.2).
+# ---------------------------------------------------------------------------
+
+_HAS_ANGR = importlib.util.find_spec("angr") is not None
+
+
+def _patch_no_ghidra(monkeypatch):
+    monkeypatch.setattr(Decompiler, "_find_ghidra", lambda self: None)
+
+
+@skip_no_bin
+def test_angr_absent_is_no_backend_and_uncached(monkeypatch, tmp_path):
+    """Ghidra absent AND angr not installed -> NO_BACKEND (backend 'none'),
+    empty, uncached. Forcing find_spec('angr') to None also proves the fallback
+    returns before importing angr."""
+    from supwngo.core.database import Database
+
+    _patch_no_ghidra(monkeypatch)
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *a, **k: (
+            None if name == "angr" else real_find_spec(name, *a, **k)
+        ),
+    )
+    db = Database(db_path=str(tmp_path / "c.db"))
+    report = payoff.rank_payoffs(_MOCK_BIN, db=db)
+
+    assert report.status is payoff.PayoffStatus.NO_BACKEND
+    assert report.backend == "none"
+    assert report.candidates == ()
+    assert db.get_payoff_analysis(*_key(_MOCK_BIN)) is None
+    assert {a["outcome"] for a in report.attempts if a["backend"] == "angr"} == {
+        "no_backend"
+    }
+
+
+@pytest.mark.skipif(
+    not (_HAS_ANGR and _MOCK_BIN), reason="needs angr installed and a binary"
+)
+def test_angr_cfg_error_is_error_and_uncached(monkeypatch, tmp_path):
+    """A failing angr pass (Ghidra absent) is ERROR, empty, and uncached."""
+    from supwngo.core.database import Database
+    import supwngo.analysis._angr_subprocess as angr_sub
+
+    _patch_no_ghidra(monkeypatch)
+
+    def boom(path, op, seconds, **k):
+        raise angr_sub.AngrSubprocessError("cfg blew up")
+
+    monkeypatch.setattr(angr_sub, "run_angr_op", boom)
+    db = Database(db_path=str(tmp_path / "c.db"))
+    report = payoff.rank_payoffs(_MOCK_BIN, db=db)
+
+    assert report.status is payoff.PayoffStatus.ERROR
+    assert report.backend == "angr"
+    assert report.candidates == ()
+    assert db.get_payoff_analysis(*_key(_MOCK_BIN)) is None
+
+
+@pytest.mark.skipif(
+    not (_HAS_ANGR and _MOCK_BIN), reason="needs angr installed and a binary"
+)
+def test_angr_cfg_timeout_is_timeout_and_uncached(monkeypatch, tmp_path):
+    """An angr pass that exceeds its budget (Ghidra absent) is TIMEOUT, uncached."""
+    from supwngo.core.database import Database
+    import supwngo.analysis._angr_subprocess as angr_sub
+
+    _patch_no_ghidra(monkeypatch)
+
+    def slow(path, op, seconds, **k):
+        raise angr_sub.AnalysisBudgetExceeded("cfg exceeded budget")
+
+    monkeypatch.setattr(angr_sub, "run_angr_op", slow)
+    db = Database(db_path=str(tmp_path / "c.db"))
+    report = payoff.rank_payoffs(_MOCK_BIN, db=db)
+
+    assert report.status is payoff.PayoffStatus.TIMEOUT
+    assert report.backend == "angr"
+    assert db.get_payoff_analysis(*_key(_MOCK_BIN)) is None
+
+
+@pytest.mark.skipif(
+    not (_HAS_ANGR and _PAYOFF_ENTRIES),
+    reason="needs angr installed and the dev corpus built",
+)
+def test_angr_only_real_pass_is_degraded_never_authoritative(monkeypatch, tmp_path):
+    """End-to-end with REAL angr and Ghidra forced absent: a parseable binary
+    yields DEGRADED (never COMPLETE, never a top-1), empty candidates, and is
+    not cached -- the W-1 gate can never be met on angr."""
+    from supwngo.core.database import Database
+
+    _patch_no_ghidra(monkeypatch)
+    bin_path = str(_bin_for(_PAYOFF_ENTRIES[0]))
+    db = Database(db_path=str(tmp_path / "c.db"))
+    report = payoff.rank_payoffs(bin_path, db=db)
+
+    assert report.status is payoff.PayoffStatus.DEGRADED
+    assert report.backend == "angr"
+    assert report.candidates == ()
+    assert db.get_payoff_analysis(*_key(bin_path)) is None
+    reasons = [a["reason"] for a in report.attempts if a["backend"] == "angr"]
+    assert reasons and "binary parsed" in reasons[0]
