@@ -73,12 +73,14 @@ Legend: `[x]` done and verified · `[ ]` open · **Done when** = the completion 
 
 Branch: `feat/sp01a-passcard-harness`. Plan: SP-01 §3.3, §3.5–§3.8 and §8.1.
 
-- [ ] **1a.1 Staging** — `benchmark/passcard_stage.py` (§3.3).
+1a.1–1a.4 merged in PR #34 (`992986e`). 1a.5 merged with the baseline PR.
+
+- [x] **1a.1 Staging** — `benchmark/passcard_stage.py` (§3.3).
   - Stage per file: copy the target plus its PT_INTERP/DT_NEEDED closure, and add placeholders.
   - No dot-component paths anywhere in the cell (V-1).
-- [ ] **1a.2 Preflight** — `benchmark/passcard_preflight.py` (§3.5).
+- [x] **1a.2 Preflight** — `benchmark/passcard_preflight.py` (§3.5).
   - A loader or target must be regular, non-empty and executable. Otherwise the cell is VOID with a reason.
-- [ ] **1a.3 Runner** — `benchmark/passcard.py`.
+- [x] **1a.3 Runner** — `benchmark/passcard.py`.
   - Every cell runs through `sandbox.run`:
     - bind `cell → /tmp/cell`, with cwd `/tmp/cell`;
     - `TMPDIR`, `HOME` and `XDG_CACHE_HOME` point inside the cell;
@@ -92,10 +94,13 @@ Branch: `feat/sp01a-passcard-harness`. Plan: SP-01 §3.3, §3.5–§3.8 and §8.
   - Report the S0-PE table: 2 DECOMP and 8 ROBUST cells, separate from the 7-ELF matrix (V-15).
   - Write the §3.8 header.
   - One truth loader reads both `s0/` and `s0pe/`, reconciling the `binary:`/`metrics:` schema divergence.
-- [ ] **1a.4 Mutant self-test** — `benchmark/mutants/*.py` and `tests/test_passcard_selftest.py`.
+- [x] **1a.4 Mutant self-test** — `benchmark/mutants/*.py` and `tests/test_passcard_selftest.py`.
   - Every §3.7 row is pinned and runs end to end under bwrap.
-- [ ] **1a.5 Pre-fix baseline** — `benchmark/baselines/passcard-s0-pre-sp01.{json,md}`.
+- [x] **1a.5 Pre-fix baseline** — `benchmark/baselines/passcard-s0-pre-sp01.{json,md}`.
   - Committed before any SP-01b code lands.
+  - Done 2026-11-13 on `992986e`: VALID and ACCEPTED, control PASS, isolation `bwrap`, solve 7/7 ingested.
+    The first attempt was INVALID because Ghidra timed out on the control cell at load up to about 70; it is
+    kept out of tree. Report: `docs/reports/2026-11-13-sp01a-pre-fix-baseline.md`.
 
 **Done when** (SP-01 §5 and §8.3, SP-01a):
 - `sandbox.available()` reports `bwrap`, and all 4 self-check probes behave, each with its unsandboxed control.
@@ -106,6 +111,12 @@ Branch: `feat/sp01a-passcard-harness`. Plan: SP-01 §3.3, §3.5–§3.8 and §8.
 - The baseline is committed under bwrap with the §3.8 header, the `solve` column, VOID flags and the S0-PE table.
 - The full suite shows no new genuine failures against the `3332a0a` run.
 - The PR is merged and G-4 holds.
+
+**Status 2026-11-13: met.**
+- PR #34 delivered the harness, the self-test (every §3.7 mutant caught) and mapping coverage. The full
+  suite on `c2f2bc4` gave 2686 passed, 19 skipped and 1 load flake, against `3332a0a`.
+- The baseline header shows `bwrap` with all 4 self-check probes true and the control cell PASS.
+- Every VOID is explained in the report, §4.
 
 ## 3. SP-01b — the honesty fixes (one commit and one RED test per fix)
 
