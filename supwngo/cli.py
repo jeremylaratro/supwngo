@@ -63,6 +63,47 @@ def _reset_console():
             pass
 
 
+def _require_native_elf(ctx, binary, json_output, *, offset_document=False):
+    """Refuse a target that is not a native ELF, before anything loads it.
+
+    ``pwn``, ``template`` and ``offset`` analyse ELF files; a PE (or anything
+    else) used to be half-parsed into a fabricated analysis with exit 0. This
+    runs first in each, ahead of ``Binary.load`` and of any output file.
+
+    A refusal exits 2. With ``--json`` stdout carries one document:
+    ``{"error": "Unsupported binary format: <pe|unknown>", "error_code":
+    "unsupported_format"}``, or for ``offset`` the ordinary ``OffsetResult``
+    failure document (``offset_document``). Nothing ran, so its ``isolation``
+    is empty. Without ``--json`` the diagnostic goes to stderr and stdout stays
+    empty.
+    """
+    from supwngo.core import fileformat
+
+    detected = fileformat.detect_format(binary)
+    if detected == fileformat.ELF:
+        return
+
+    message = f"Unsupported binary format: {detected}"
+    if json_output:
+        if offset_document:
+            from supwngo.exploit.offset_finder import OffsetResult
+
+            _emit_json(
+                OffsetResult(
+                    success=False,
+                    error=f"{message} ({binary} is not a native ELF executable)",
+                    error_code="unsupported_format",
+                ).to_dict()
+            )
+        else:
+            _emit_json({"error": message, "error_code": "unsupported_format"})
+    else:
+        click.echo(
+            f"Error: {message}: {binary} is not a native ELF executable.", err=True
+        )
+    ctx.exit(2)
+
+
 def target_override_options(func):
     """Attach ``--win`` / ``--ret2`` / ``--rop`` to a command.
 
@@ -748,6 +789,7 @@ def pwn(ctx, binary, libc, no_gadgets, json_output, angr_timeout, analyze_only):
     _reset_console()
     if json_output:
         _json_mode()
+    _require_native_elf(ctx, binary, json_output)
 
     from supwngo.core.binary import Binary
     from supwngo.analysis.protections import ProtectionAnalyzer
@@ -928,6 +970,7 @@ def offset(ctx, binary, max_length, input_method, json_output, no_sandbox):
     _reset_console()
     if json_output:
         _json_mode()
+    _require_native_elf(ctx, binary, json_output, offset_document=True)
 
     from supwngo.core.binary import Binary
     from supwngo.exploit.offset_finder import OffsetFinder
@@ -1220,6 +1263,7 @@ def template(ctx, binary, technique, offset, libc, output, json_output):
     _reset_console()
     if json_output:
         _json_mode()
+    _require_native_elf(ctx, binary, json_output)
 
     from supwngo.core.binary import Binary
     from supwngo.exploit.auto import generate_exploit_script
