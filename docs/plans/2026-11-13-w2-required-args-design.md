@@ -1,11 +1,36 @@
-# W-2 — required-args extraction: constants from the binary (class B) (2026-11-13, Rev 9)
+# W-2 — required-args extraction: constants from the binary (class B) (2026-11-13, Rev 10)
 
 Detailed design for **directive W, phase W-2**. Parent plan:
 `docs/plans/2026-11-13-retire-hardcoded-target-values-plan.md` (§3 principle 3 / §82-84, §4 row W-2 / §130,
 §12 class-B notes / §240). Builds directly on **W-1** (`supwngo/analysis/payoff.py` + `SupwngoPayoff.java`,
 merged PR #39, `9f543bb`). Branch `feat/w2-required-args` off `main` `9f543bb`.
 
-> **Rev 9 — reworked after the Tier-2 (cyber) re-review of Rev 8 returned REWORK (0 BLOCKER / 1 MAJOR / 1
+> **Rev 10 — reworked after the Tier-2 (cyber) re-review of Rev 9 returned REWORK (0 BLOCKER / 1 MAJOR, with the
+> MINOR and everything else CONFIRMED FIXED).** The reviewer confirmed the `1L<<64` fix, the counts, the header/
+> lineage arrangement, the `bool_compose`-before-parity ordering, and that the companion-script mechanism is
+> viable in this repo (`payoff.py:798` already runs `-import … -postScript` on a temp project). The one MAJOR was
+> that Rev 9's T14b, as specified, invoked `edgeMeansEqual`/`flipParity` *in isolation* — proving the formula but
+> **not** that the extractor's walk and Step 1/Step 2 actually feed the walk-accumulated parity into them; a
+> mutant with correct helpers but `edgeMeansEqual(…, 0, …)` at a call site would survive. Rev 10 closes it, each
+> change grounded against the repo's test harness:
+> - **T14b is redesigned from a formula test into a WIRING / mutation-kill test** (§2.2, §6 T14, §7 step 2). The
+>   parity logic is factored into **three production decision sites the real extractor calls (no parallel copy)**:
+>   the walk's `accumulateNegateParity` (applies `flipParity` once per `BOOL_NEGATE`), Step 1's
+>   `edgeMeansEqual(isTrueEdge(r_b), b.negateParity, b.cmpOp)`, and Step 2's determined-edge selection — Step 1/2
+>   pass the **walk-accumulated** parity, never a literal. T14b drives all three with `negateParity ∈ {0,1}` (and
+>   `accumulateNegateParity` over 0/1/2 negations → `0/1/0`) and asserts each output **flips with parity**,
+>   deterministically killing the three mutants {walk discards the flip, Step 1 passes a literal 0, Step 2 passes
+>   a literal 0} **without** depending on whether `-O0`/Ghidra preserves a `BOOL_NEGATE`.
+> - **T14b reads a RESULT ARTIFACT, not the exit code** (§6 T14, §7 step 2, closing the implementability note that
+>   `Decompiler._run_ghidra_headless` treats any ended process as "finished" — `decompile.py:133` — and Ghidra's
+>   HeadlessAnalyzer catches a thrown Java exception). The self-test writes `w2_parity_selftest.result`
+>   (`PASS`/`FAIL:<case>` per case + an `ALL_PASS <n>` sentinel); the Python harness asserts the file exists, ends
+>   with `ALL_PASS` and the expected case count, and has no `FAIL` (missing/short artifact ⇒ failure).
+> - **T14a is demoted to a spec change-detector only** (it proves nothing about the Java); **T4's
+>   `gate_negeq`/`gate_neginv` stay a semantic end-to-end check** with a structural P-code probe. The wiring
+>   guarantee rests on T14b.
+>
+> **Rev 9 (lineage) — reworked after the Tier-2 (cyber) re-review of Rev 8 returned REWORK (0 BLOCKER / 1 MAJOR / 1
 > MINOR; everything else CONFIRMED FIXED).** The reviewer confirmed the Rev-8 *algorithm* is sound across the
 > board — the `edge_means_equal` parity algebra for all four `{INT_EQUAL,INT_NOTEQUAL}×{parity 0,1}` cases and
 > the exact `BOOL_NEGATE(a==X)` counterexample (→ `avoidance`), the `MEM`-through-`COPY`/`CAST` lattice (no
@@ -363,18 +388,26 @@ result and the `CBRANCH` condition — or it is **unresolved** with a recorded *
 `INT_NOTEQUAL` flip and every `BOOL_NEGATE` flip into one parity). **Both Step 1 (emit vs avoidance) and Step 2
 (the determined edge under an assignment σ) decide polarity through `edge_means_equal`, never through the raw
 `INT_EQUAL`/`INT_NOTEQUAL` edge.** So `CBRANCH(sink, BOOL_NEGATE(a==X))` — sink reached iff `a != X` — is
-correctly `avoidance_gate`, not a false `known,[X]`. **`edge_means_equal` and the walk's parity accumulation
-are factored as pure, Ghidra-state-free static helpers** — `edgeMeansEqual(boolean isTrueEdge, int negateParity,
-int cmpOpcode)` and `flipParity(int p) { return p ^ 1; }`, the latter applied once per `BOOL_NEGATE` traversed
-(so a double negation returns to parity 0) — **specifically so the parity decision can be exercised against the
-implementation without a Ghidra program** (§6 T14, Rev-8-review MAJOR: the corpus fixtures alone cannot, because
-GCC `-O0` folds the C-level negation away). Falsifiers: `gate_negeq` (a `BOOL_NEGATE` chain composing to an
-*equality* gate → emit the value) and `gate_neginv` (composing to an *avoidance* gate → `avoidance_gate`). **T14
-is the parity-consumption guarantor** — an always-run Python mirror of this truth table over all eight
-`{opcode}×{parity}×{edge}` combinations (plus 0/1/2 negations) and a gated real-Ghidra self-test invoking the
-actual Java `edgeMeansEqual`/`flipParity`; **T4's `gate_negeq`/`gate_neginv` are a semantic end-to-end check
-only** (with a structural P-code probe), because at `-O0` both fixtures may present to Ghidra with
-`negateParity==0`.
+correctly `avoidance_gate`, not a false `known,[X]`. The parity logic is factored into **three production
+decision sites, each a Ghidra-state-free static method that the real extractor calls (no parallel copy)** so the
+*wiring* — not merely the formula — is testable (§6 T14, Rev-9-review MAJOR):
+1. `flipParity(int p) { return p ^ 1; }`, and `accumulateNegateParity(peeled unary ops) → int`, the walk's fold
+   that applies `flipParity` **once per `BOOL_NEGATE`** traversed and ignores the other value-preserving unary
+   ops (so 0/1/2 negations → parity 0/1/0). The condition walk calls exactly this to produce `negateParity`.
+2. `edgeMeansEqual(boolean isTrueEdge, int negateParity, int cmpOpcode)`. **Step 1's** emit-vs-avoidance test is
+   literally `edgeMeansEqual(isTrueEdge(r_b), b.negateParity, b.cmpOp)` — the walk-accumulated parity, never a
+   literal.
+3. **Step 2's** determined edge is the out-edge `e` solving `edgeMeansEqual(e) == (σ(param)==const)` for
+   `isTrueEdge(e)`, again from `b.negateParity`.
+Falsifiers: `gate_negeq` (a `BOOL_NEGATE` chain composing to an *equality* gate → emit the value) and
+`gate_neginv` (composing to an *avoidance* gate → `avoidance_gate`). **T14b is the parity-consumption guarantor**
+— a gated self-test that drives these three *production* sites (the walk's `accumulateNegateParity`, Step 1's
+decision, Step 2's determined-edge) with `negateParity ∈ {0,1}` and asserts the result **flips with parity**,
+deterministically killing the three wiring mutants {walk drops the flip, Step 1 passes a literal 0, Step 2
+passes a literal 0} **without** depending on whether `-O0`/Ghidra preserves a `BOOL_NEGATE`. **T14a** (always-run
+Python mirror of the eight `{opcode}×{parity}×{edge}` combinations + `flipParity` as `0→1→0`) is only a
+**spec change-detector**; **T4's `gate_negeq`/`gate_neginv` are a semantic end-to-end check only** (with a
+structural P-code probe), because at `-O0` both fixtures may present to Ghidra with `negateParity==0`.
 
 **An unresolved-condition branch is NOT tainted on sight** (Rev-6-review MAJOR: a composed/fanned-out condition
 on a branch that does **not** gate the sink must stay `known` — e.g. `c=(a==X)&flag; if(c) audit(); sink;`, both
@@ -884,7 +917,7 @@ the discovery result type and the delivery control flow (BLOCKER 4):
 | T11 | inventory | unit | 27 entries `allowed`+justification; 42 still `open` **and matching live hits** (not stale); frozen fields unchanged; 0 `migrated`; no class-B consumer edit; the ret2win rewire is the only non-inventory edit |
 | T12 | ret2win arg path (§5.4) | seam=always-run; e2e=gated | **seam** (patch `rank_payoffs`; assert on a **spied `verifier.verify_payload`**): `known_args` at **random, non-contiguous positions** with recorded `reg`s ⇒ `_discover_args` (normalized-RVA lookup) → `_build_arg_chain` pops each value into **its recorded `reg`**; **every** delivery is **arg-bearing** and the call count equals **(offsets × applicable alignment variants)** — the `for use_align in (True,False)` exploration at `:227-244` is **retained** (one aligned + one unaligned arg-bearing pass per offset), while the separate `"(no args)"` retry at `:262-289` is **removed** (asserted: zero deliveries whose chain omits the arg pops); `known_empty` ⇒ arg-free deliveries, same **(offsets × alignment variants)** count, no arg pops; `COMPLETE`+`unknown` ⇒ **abstain: zero `verify_payload` calls**, no legacy call; `rva_miss` (normalized `win_rva` matches no candidate) ⇒ **zero `verify_payload` calls**; `known_args` but a required `pop` gadget absent ⇒ **zero `verify_payload` calls**; `known_args` naming a required `reg` **outside `{rdi,rsi,rdx}`** (e.g. a 4th arg at `rcx`, within the §3 extractor contract set but beyond the builder, §5.4) ⇒ **zero `verify_payload` calls** (abstain, not a truncated chain); non-`COMPLETE` report ⇒ `unavailable` → legacy fallback (normalized to pairs), delivered. Image base: one case with `pwntools_load_state==SUCCESS` (uses `base_address`) and one with `!=SUCCESS` (derives lowest `PT_LOAD`); one **no-base/PE** case ⇒ `unavailable` (not `rva_miss`). **Count subcase uses an always-failing spy verifier** (MINOR, Rev-6-review `stack_techniques.py:245-260`: the delivery loop `return`s on the first `receipt.success`, so the exact `(offsets × alignment variants)` call count only holds when every verify fails); a **separate** case with a verifier that succeeds on the first aligned pass asserts the loop **early-exits** (one call, `AttemptOutcome.SUCCESS`). **end-to-end (gated):** on a dedicated overflowable non-PIE no-canary `arg1` **and** `arg3` fixture (§7 step 1; offsets provided, directive-W PASS criterion b; `arg3` has a `pop rdx` gadget), the win call is reached with each param set; the **stripped** variant supplies `--win <link-time VADDR>` (normalized to RVA for lookup, used absolute for the jump — an override-assisted stripped path, **not** automatic stripped win discovery, PASS criterion a) |
 | T13 | mixed float/int ABI positive (§3 MAJOR) | real-Ghidra | a dedicated `win(double unused, long key){ if(key==X) sink; }` fixture ⇒ `required_args == [(2, X)]` with `reg=="rdi"` (position 2, but the leading `double` took `XMM0`, so `key`'s storage is `RDI`); the un-compared `double` does **not** trigger `abi_class`; the seam delivers it (pops `X` into `rdi`) |
-| T14 | **`BOOL_NEGATE` parity truth table** (§2.2; Rev-8-review MAJOR) | 14a mock/unit (always-run) + 14b real-Ghidra (gated) | **14a (always-run Python mirror, spec change-detector):** a pure Python reimplementation of `edge_means_equal(isTrueEdge, negateParity, cmpOp)` + `flipParity` is asserted against a hand-written table over **all eight** combinations `{INT_EQUAL, INT_NOTEQUAL} × {negateParity 0, 1} × {true-edge, false-edge}` — equality is implied exactly when `isTrueEdge XOR negateParity XOR (cmpOp==INT_NOTEQUAL)` — **plus** `flipParity` over **0, 1, 2** `BOOL_NEGATE`s (single → parity 1, double → parity 0); documents the spec and fails if the design table drifts. **14b (gated real-Ghidra self-test — the implementation guarantor that kills the "records-but-ignores-parity" mutant):** a companion GhidraScript run under `analyzeHeadless` (reusing a throwaway import of any tiny corpus ELF, whose program state it ignores) **invokes the actual Java `SupwngoPayoff.edgeMeansEqual`/`flipParity` static helpers** across the same eight combinations + double negation, exiting non-zero on any mismatch; gated because loading the GhidraScript class needs Ghidra's classpath (there is **no JUnit harness** — the extractor is a GhidraScript). Together they exercise the parity against the real implementation without depending on whether `-O0` preserves a `BOOL_NEGATE` in any corpus fixture |
+| T14 | **`BOOL_NEGATE` parity wiring** (§2.2; Rev-8/Rev-9-review MAJOR) | 14a mock/unit (always-run) + 14b real-Ghidra (gated) | **14a (always-run Python mirror — spec change-detector ONLY; proves nothing about the Java):** a pure Python reimplementation of `edgeMeansEqual(isTrueEdge, negateParity, cmpOp)` + `flipParity` asserted against a hand-written table over **all eight** `{INT_EQUAL, INT_NOTEQUAL} × {parity 0, 1} × {true-edge, false-edge}` combinations (equality implied exactly when `isTrueEdge XOR negateParity XOR (cmpOp==INT_NOTEQUAL)`), **plus** the accumulator asserted as `flipParity: 0→1→0` over 0/1/2 `BOOL_NEGATE`s; fails if the design table drifts. **14b (gated real-Ghidra self-test — the wiring guarantor):** a companion GhidraScript run under `analyzeHeadless` (via the existing temp-project `-import <tiny corpus ELF> -scriptPath -postScript` path, `payoff.py:798`; program state ignored) drives the **three production decision sites** (§2.2) — the walk's `accumulateNegateParity` over synthetic peel sequences `[]`/`[BOOL_NEGATE]`/`[BOOL_NEGATE,BOOL_NEGATE]`/`[COPY,BOOL_NEGATE,CAST]` → `0/1/0/1`; **Step 1's** emit-vs-avoidance decision and **Step 2's** determined-edge selection, each over `cmpOp ∈ {INT_EQUAL, INT_NOTEQUAL} × negateParity ∈ {0,1} × edge` — and asserts each output **flips with parity**, deterministically killing the three mutants {walk discards the flip; Step 1 passes a literal `0`; Step 2 passes a literal `0`}. The seam methods **are** the production call sites (no parallel copy), so a mutation at any of the three is caught. **Pass/fail is read from a RESULT ARTIFACT, not the exit code** — the self-test writes `w2_parity_selftest.result` with one `PASS`/`FAIL:<case>` line per case and a trailing `ALL_PASS <n>` sentinel; the Python T14b harness asserts the file exists, ends with `ALL_PASS` and the **expected case count**, and contains no `FAIL` (a missing/empty/short artifact ⇒ test failure). This is required because `Decompiler._run_ghidra_headless` treats **any ended process as "finished"** (`decompile.py:133`) and Ghidra's HeadlessAnalyzer **catches and logs** a thrown Java exception, so neither a non-zero rc nor an uncaught exception reliably fails the test. Gated because loading the GhidraScript class needs Ghidra's classpath (there is **no JUnit harness** — the extractor is a GhidraScript) |
 
 T1–T6 + T3′ + T13 extend `tests/test_payoff_ranker.py` (same `index.json` driver, module-scoped cache). T7, T9,
 T10, **T14a** + the T12 seam are always-run mocks; T8's mock assertions are always-run while its behavioral cardinality
@@ -906,17 +939,22 @@ falsifier shapes are the robustness envelope W-2 proves; optimized fixtures are 
 2. **Extractor args pass** — `SupwngoPayoff.java`: `traceParamSlot` lattice (incl. the `MEM` state for `LOAD`,
    §2.1) with the entry-value/size/SEXT/back-edge/CAST guards, the **unary-only** condition walk (unresolved →
    per-branch `bool_compose`/`bool_fanout` cause, **not** an on-sight taint, §2.2) returning
-   `(cmp_op, negateParity)` via the **pure static helpers** `flipParity(int)` (one flip per `BOOL_NEGATE`) and
-   `edgeMeansEqual(boolean isTrueEdge, int negateParity, int cmpOpcode)` (both free of Ghidra program state, so
-   T14b can call them directly), per-branch required-outcome
+   `(cmp_op, negateParity)` via the **three pure static decision sites** (§2.2) — `flipParity(int)` +
+   `accumulateNegateParity(peeled ops)` (the walk's fold, one flip per `BOOL_NEGATE`), `edgeMeansEqual(boolean
+   isTrueEdge, int negateParity, int cmpOpcode)` used by **Step 1** (emit vs avoidance), and the **Step 2**
+   determined-edge selection — all free of Ghidra program state and called **directly by production** (the seam
+   is the call site, no parallel copy), per-branch required-outcome
    (Step 1) + **must-reach enumeration** (Step 2: `width_bits`-correct domain, `ENUM_CAP`, backward
-   `MustReachSink` fixed point) — both Step 1's emit/avoidance choice and Step 2's determined edge decide polarity
-   through `edgeMeansEqual`, never the raw edge — `p.getSymbol().getStorage().getRegister().getBaseRegister()`-derived `reg` +
+   `MustReachSink` fixed point) — both Step 1's emit/avoidance choice and Step 2's determined edge pass the
+   **walk-accumulated** `negateParity` (never a literal) to `edgeMeansEqual` — `p.getSymbol().getStorage().getRegister().getBaseRegister()`-derived `reg` +
    per-**emitted**-formal `abi_class` taint, `getBasicBlocks().get(0)` entry, own `try/catch`, dedup/order,
-   provenance (§2.4), `SCRIPT_VERSION → w2.0`. Also add the **T14b parity self-test GhidraScript** (asserts the
-   real `edgeMeansEqual`/`flipParity` truth table over the eight combinations + double negation, exits non-zero on
-   mismatch), placed per the Ghidra script-dir constraint (cf. `SupwngoDecompile.java:4` — a GhidraScript dir is
-   near-empty), and author the always-run **T14a** Python mirror. De-risk by running `analyzeHeadless` by hand on one each of
+   provenance (§2.4), `SCRIPT_VERSION → w2.0`. Also add the **T14b parity self-test GhidraScript**: it drives the
+   three production sites with `negateParity ∈ {0,1}` (and `accumulateNegateParity` over 0/1/2 `BOOL_NEGATE`s),
+   asserts each output flips with parity, and **writes a `w2_parity_selftest.result` artifact** (`PASS`/`FAIL:<case>`
+   per case + `ALL_PASS <n>` sentinel) that the Python T14b harness parses — **not** the process exit code, since
+   `_run_ghidra_headless` treats any ended process as finished (`decompile.py:133`) and Ghidra catches thrown
+   exceptions. Place it per the Ghidra script-dir constraint (cf. `SupwngoDecompile.java:4` — a GhidraScript dir
+   is near-empty), and author the always-run **T14a** Python mirror (spec change-detector only). De-risk by running `analyzeHeadless` by hand on one each of
    `arg3`, `gate_invert`, `gate_disj`, `gate_disjineq`, `gate_mixed`, `gate_bool` (gating composed →
    `bool_compose`) and `gate_boolnongate` (non-gating composed → `known,[]`), `gate_boolor` (confirm the
    short-circuit lowers to **two `CBRANCH`es, no `BOOL_OR`**), `gate_loop` (confirm a real back-edge SCC with no
@@ -947,11 +985,13 @@ falsifier shapes are the robustness envelope W-2 proves; optimized fixtures are 
 
 - **R1 — CFG/storage API drift.** Conditional-successor accessors, the `ArrayList` entry index, `BOOL_NEGATE`
   parity, and `p.getSymbol().getStorage()` + `Register.getBaseRegister()` verified live (de-risk step 2); an
-  unresolvable case → `unknown`, never a wrong arg. The `BOOL_NEGATE` parity is additionally pinned by **T14**:
-  an always-run Python mirror of the §2.2 truth table and a gated self-test that calls the real Java
-  `edgeMeansEqual`/`flipParity` across all eight `{opcode}×{parity}×{edge}` combinations + double negation — so a
-  "records-but-ignores-parity" regression is caught even though GCC `-O0` can fold the `gate_negeq`/`gate_neginv`
-  corpus fixtures to `negateParity==0` (Rev-8-review MAJOR).
+  unresolvable case → `unknown`, never a wrong arg. The `BOOL_NEGATE` parity **wiring** is pinned by **T14b**: a
+  gated self-test that drives the three *production* decision sites (the walk's `accumulateNegateParity`, Step 1's
+  emit/avoidance, Step 2's determined edge) with `negateParity ∈ {0,1}` and asserts each output flips with parity,
+  deterministically killing the {walk-drops-flip, Step-1-literal-0, Step-2-literal-0} mutants and reading its
+  verdict from a `w2_parity_selftest.result` artifact (not the exit code, `decompile.py:133`). This is independent
+  of whether GCC `-O0` folds the `gate_negeq`/`gate_neginv` corpus fixtures to `negateParity==0` (Rev-8/Rev-9-review
+  MAJOR). T14a (Python mirror) is a spec change-detector only.
 - **R2 — slot coalescing / redefinition / memory round-trip.** The entry-value guard (§2.1) yields `AMBIGUOUS`
   → `unknown` on a redefined or phi-merged slot (`gate_arith`/`gate_multieq`), and a value that reaches the
   comparison via a memory `LOAD` is the distinct `MEM` state (§2.1) — its P-code inputs are the address, not the
