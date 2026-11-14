@@ -52,7 +52,9 @@ is every hardcoded target value in product behaviour, and generated exploit code
     - **A test enforces both rules** against the W-0 commit's copy of the file (`git show <W-0>:<path>`).
     - A closed entry is a tombstone.
   - **Current hits**: regenerated on every test run by the same pinned scan.
-- **Red at W-0.** A test fails in any of these cases:
+- **Red at W-0.** A test fails in any of these cases (the "classified only as `open`" red condition was struck —
+  a matching `open` entry is ratchet-valid per `tests/test_target_value_inventory.py:169-175`; amended per W-2
+  design §9, 2026-11-14):
   - a current hit has no matching baseline entry;
   - an `open` baseline entry no longer matches any current hit, so it is stale and must be closed explicitly.
     Closed tombstones are exempt from the stale check.
