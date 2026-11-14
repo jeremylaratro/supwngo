@@ -776,7 +776,8 @@ _MOCK_BIN = _mock_binary()
 
 
 def _envelope(*, enumerated=2, analyzed=2, failed=0, with_payoff=True, marker=True):
-    """A real-shaped extractor envelope (mirrors SupwngoPayoff.java output)."""
+    """A real-shaped extractor envelope (mirrors SupwngoPayoff.java w2.0 output,
+    including the per-record ``args_status``/``args_reason``/``required_args``)."""
     records = [
         {
             "address": 0x1000,
@@ -785,6 +786,9 @@ def _envelope(*, enumerated=2, analyzed=2, failed=0, with_payoff=True, marker=Tr
             "has_read": False,
             "has_stdout_output": False,
             "unreferenced": False,
+            "args_status": "known",
+            "args_reason": None,
+            "required_args": [],
         }
     ]
     if with_payoff:
@@ -805,6 +809,9 @@ def _envelope(*, enumerated=2, analyzed=2, failed=0, with_payoff=True, marker=Tr
                 "has_read": False,
                 "has_stdout_output": False,
                 "unreferenced": True,
+                "args_status": "known",
+                "args_reason": None,
+                "required_args": [],
             }
         )
     body = {"script_version": payoff.SCRIPT_VERSION, "backend_base": 0}
@@ -1313,3 +1320,668 @@ def test_flip_parity_mirror_round_trips_0_1_0():
     """flipParity(0) -> 1 -> 0: one BOOL_NEGATE flips parity, two cancel."""
     assert _mirror_flip_parity(0) == 1
     assert _mirror_flip_parity(_mirror_flip_parity(0)) == 0
+
+
+# =========================================================================== #
+# W-2 Step 3 -- Python model (design 2026-11-13-w2-required-args-design.md,
+# Rev 11, sec 4 + sec 6 T7-T10): RequiredArg, the cross-field validator, the
+# args fields on FunctionEvidence/PayoffEvidence, cache envelope v2 and the
+# required_args_for/required_arg_regs accessors. All always-run (mock/unit).
+# Attribute access goes through ``payoff.`` so a RED run fails per test rather
+# than at collection.
+# =========================================================================== #
+
+# sec 2.2 reason precedence, highest first -- written out by hand from the
+# design, not derived from the module under test.
+_DESIGN_REASON_ORDER = (
+    "irreducible_cflow",
+    "analysis_exception",
+    "conflict",
+    "abi_class",
+    "bool_compose",
+    "bool_fanout",
+    "ambiguous_gate",
+    "nonconst_gate",
+    "avoidance_gate",
+    "relational_gate",
+    "unresolved_gate",
+)
+
+# benchmark/gen/payoff/payoff_source.py CONST_RANGE = (0x1000, 0x7FFFFFFF)
+_CONST_RANGE_MAX = 0x7FFFFFFF
+
+
+def _ra_kwargs(**over):
+    """Kwargs for a valid sec 2.4 RequiredArg (arg1 of the e2e fixture shape)."""
+    kw = dict(
+        position=1,
+        value=0x1111,
+        slot=0,
+        width_bits=64,
+        src_width_bits=64,
+        terminal="HighParam",
+        reg="rdi",
+        op="INT_EQUAL",
+        op_addr=0x401216,
+        sink_addrs=(0x401251,),
+        transform=(),
+    )
+    kw.update(over)
+    return kw
+
+
+def _ra(**over):
+    return payoff.RequiredArg(**_ra_kwargs(**over))
+
+
+def _ra_json(**over):
+    """The same arg as the extractor's JSON object (lists, not tuples)."""
+    kw = _ra_kwargs(**over)
+    for k in ("sink_addrs", "transform"):
+        if isinstance(kw[k], tuple):
+            kw[k] = list(kw[k])
+    return kw
+
+
+def _arg2(**over):
+    base = dict(
+        position=2,
+        value=0x2222,
+        slot=1,
+        width_bits=32,
+        src_width_bits=32,
+        reg="rsi",
+        op_addr=0x401226,
+        sink_addrs=(0x401251, 0x401260),
+        transform=("COPY", "INT_SEXT"),
+    )
+    base.update(over)
+    return base
+
+
+# (id, overrides) -- each is individually invalid per sec 4's RequiredArg list.
+_BAD_ARG_OVERRIDES = [
+    ("position_zero", dict(position=0)),
+    ("slot_negative", dict(position=0, slot=-1)),
+    ("position_ne_slot_plus_1", dict(position=2, slot=0)),
+    ("width_zero", dict(width_bits=0)),
+    ("width_negative", dict(width_bits=-64)),
+    ("width_is_bytes_not_bits", dict(width_bits=4)),
+    ("src_width_zero", dict(src_width_bits=0)),
+    ("src_width_is_bytes_not_bits", dict(src_width_bits=4)),
+    ("op_relational", dict(op="INT_LESS")),
+    ("op_not_str", dict(op=None)),
+    ("reg_xmm", dict(reg="xmm0")),
+    ("reg_none", dict(reg=None)),
+    ("reg_subregister", dict(reg="edi")),
+    ("reg_uppercase", dict(reg="RDI")),
+    ("sink_addrs_empty", dict(sink_addrs=())),
+    ("sink_addrs_negative", dict(sink_addrs=(-1,))),
+    ("sink_addrs_not_int", dict(sink_addrs=("0x401251",))),
+    ("op_addr_negative", dict(op_addr=-1)),
+    ("terminal_not_highparam", dict(terminal="HighLocal")),
+    ("transform_not_value_preserving", dict(transform=("COPY", "BOOL_NEGATE"))),
+    ("transform_not_str", dict(transform=(1,))),
+    ("value_float", dict(value=1.5)),
+    ("value_str", dict(value="4369")),
+    # bool is an int subclass: True/False would pass every range check below,
+    # so only the explicit bool rejection (the W-1 guard) catches these.
+    ("bool_position", dict(position=True)),
+    ("bool_value", dict(value=True)),
+    ("bool_slot", dict(slot=False)),
+    ("bool_width_bits", dict(width_bits=True)),
+    ("bool_src_width_bits", dict(src_width_bits=True)),
+    ("bool_op_addr", dict(op_addr=True)),
+    ("bool_sink_addr", dict(sink_addrs=(True,))),
+]
+
+
+def test_required_arg_valid_baseline_constructs_and_is_frozen():
+    a = _ra()
+    assert (a.position, a.value, a.slot, a.reg) == (1, 0x1111, 0, "rdi")
+    assert a.sink_addrs == (0x401251,) and a.transform == ()
+    with pytest.raises(Exception):  # frozen dataclass
+        a.value = 2  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("over", [o for _, o in _BAD_ARG_OVERRIDES],
+                         ids=[i for i, _ in _BAD_ARG_OVERRIDES])
+def test_t7_required_arg_rejects_malformed_with_valueerror(over):
+    """ValueError specifically -- never a bare ``assert`` (AssertionError is not
+    in the envelope try's except tuple, so it would escape rank_payoffs)."""
+    with pytest.raises(ValueError):
+        _ra(**over)
+
+
+@pytest.mark.parametrize("nbytes", [1, 2, 4, 8])
+def test_t8_provenance_widths_are_bits_eight_times_byte_size(nbytes):
+    a = _ra(width_bits=8 * nbytes, src_width_bits=8 * nbytes, value=0xFF)
+    assert a.width_bits == 8 * nbytes and a.src_width_bits == 8 * nbytes
+
+
+def test_t7_cross_field_validator_accepts_the_valid_shapes():
+    v = payoff._validate_required_args
+    assert v("known", None, ()) is None
+    assert v("known", None, (_ra(), _ra(**_arg2()))) is None
+    for reason in _DESIGN_REASON_ORDER:
+        assert v("unknown", reason, ()) is None
+
+
+_BAD_CROSS_FIELD = [
+    ("unknown_nonempty", ("unknown", "unresolved_gate", lambda: (_ra(),))),
+    ("unknown_reason_none", ("unknown", None, lambda: ())),
+    ("unknown_reason_empty", ("unknown", "", lambda: ())),
+    ("unknown_reason_unlisted", ("unknown", "made_up_reason", lambda: ())),
+    ("known_with_reason", ("known", "unresolved_gate", lambda: ())),
+    ("status_invalid", ("maybe", None, lambda: ())),
+    ("status_none", (None, None, lambda: ())),
+    ("duplicate_position", ("known", None, lambda: (_ra(), _ra()))),
+    ("same_slot_value_conflict",
+     ("known", None, lambda: (_ra(), _ra(value=0x9999)))),
+    ("element_not_required_arg", ("known", None, lambda: ({"position": 1},))),
+    ("args_not_tuple", ("known", None, lambda: [_ra()])),
+]
+
+
+@pytest.mark.parametrize("case", [c for _, c in _BAD_CROSS_FIELD],
+                         ids=[i for i, _ in _BAD_CROSS_FIELD])
+def test_t7_cross_field_validator_raises_valueerror(case):
+    status, reason, make_args = case
+    with pytest.raises(ValueError):
+        payoff._validate_required_args(status, reason, make_args())
+
+
+def test_t7_function_evidence_post_init_enforces_the_invariant():
+    ok = payoff.FunctionEvidence(rva=1, name=None)  # defaults stay W-1 compatible
+    assert ok.required_args == () and ok.args_status == "known"
+    assert ok.args_reason is None
+    good = payoff.FunctionEvidence(
+        rva=1, name=None, required_args=(_ra(),), args_status="known"
+    )
+    assert good.required_args[0].value == 0x1111
+    with pytest.raises(ValueError):
+        payoff.FunctionEvidence(
+            rva=1, name=None, args_status="unknown", args_reason=None
+        )
+    with pytest.raises(ValueError):
+        payoff.FunctionEvidence(
+            rva=1, name=None, required_args=(_ra(), _ra()), args_status="known"
+        )
+    with pytest.raises(ValueError):
+        payoff.FunctionEvidence(
+            rva=1,
+            name=None,
+            required_args=(_ra(),),
+            args_status="unknown",
+            args_reason="unresolved_gate",
+        )
+
+
+def test_score_function_passes_args_through_to_payoff_evidence():
+    fe = payoff.FunctionEvidence(
+        rva=0x1234,
+        name="win",
+        sinks=(SinkObservation("system", _const("/bin/sh")),),
+        unreferenced=True,
+        required_args=(_ra(), _ra(**_arg2())),
+        args_status="known",
+    )
+    ev = score_function(fe)
+    assert ev.required_args == fe.required_args
+    assert (ev.args_status, ev.args_reason) == ("known", None)
+    (cand,) = rank_candidates([fe])
+    # candidate reads the evidence through
+    assert cand.required_args == fe.required_args
+    assert cand.args_status == "known" and cand.args_reason is None
+
+    fu = payoff.FunctionEvidence(
+        rva=0x1234,
+        name="win",
+        sinks=(SinkObservation("system", _const("/bin/sh")),),
+        args_status="unknown",
+        args_reason="relational_gate",
+    )
+    (cu,) = rank_candidates([fu])
+    assert (cu.args_status, cu.args_reason, cu.required_args) == (
+        "unknown",
+        "relational_gate",
+        (),
+    )
+
+
+def test_args_do_not_change_ranking_or_score():
+    base = _payoff_exec()
+    with_args = payoff.FunctionEvidence(
+        rva=base.rva,
+        name=base.name,
+        sinks=base.sinks,
+        unreferenced=base.unreferenced,
+        required_args=(_ra(),),
+    )
+    a, b = score_function(base), score_function(with_args)
+    assert (a.rank_key, a.score, a.atoms) == (b.rank_key, b.score, b.atoms)
+
+
+def test_versions_are_bumped_for_w2():
+    assert payoff.SCRIPT_VERSION == "w2.0"
+    assert payoff.CACHE_ENVELOPE_VERSION == 2
+
+
+def test_t10_reason_precedence_constant_matches_design_and_java_source():
+    """The Python closed set/order is the design's sec 2.2 order AND the Java
+    extractor's REASON_PRECEDENCE (a cross-language change-detector)."""
+    import re
+
+    assert tuple(payoff.ARGS_REASON_PRECEDENCE) == _DESIGN_REASON_ORDER
+    java = (
+        Path(payoff.__file__).parent / "ghidra_scripts" / "SupwngoPayoff.java"
+    ).read_text(encoding="utf-8")
+    m = re.search(r"REASON_PRECEDENCE\s*=\s*Arrays\.asList\((.*?)\);", java, re.S)
+    assert m, "REASON_PRECEDENCE not found in SupwngoPayoff.java"
+    assert tuple(re.findall(r'"([a-z_]+)"', m.group(1))) == _DESIGN_REASON_ORDER
+    sv = re.search(r'SCRIPT_VERSION\s*=\s*"([^"]+)"', java)
+    assert sv and sv.group(1) == payoff.SCRIPT_VERSION
+    regs = re.search(r"SYSV_INT_BASE_REGS\s*=\s*setOf\((.*?)\);", java, re.S)
+    assert regs
+    assert {r.lower() for r in re.findall(r'"(\w+)"', regs.group(1))} == set(
+        payoff._SYSV_INT_BASE_REGS
+    )
+
+
+def test_t10_abi_class_outranks_unresolved_gate_in_the_ordering():
+    order = payoff.ARGS_REASON_PRECEDENCE
+    assert order.index("abi_class") < order.index("unresolved_gate")
+    assert order.index("irreducible_cflow") == 0
+    assert order.index("unresolved_gate") == len(order) - 1
+
+
+# ---- envelope path (live): rank_payoffs through the mocked extractor ----------
+
+
+def _win_env(mutate=None):
+    """The mock envelope as a dict, with ``mutate(win_record)`` applied."""
+    env = json.loads(_envelope())
+    if mutate is not None:
+        mutate(env["records"][1])
+    return env
+
+
+def _set_args(status="known", reason=None, args=()):
+    def apply(rec):
+        rec["args_status"] = status
+        rec["args_reason"] = reason
+        rec["required_args"] = list(args)
+
+    return apply
+
+
+def _arg_over(**over):
+    return _set_args(args=[_ra_json(**over)])
+
+
+def _drop(key):
+    return lambda rec: rec.pop(key)
+
+
+def _bad_arg_dict_missing_reg(rec):
+    arg = _ra_json()
+    arg.pop("reg")
+    _set_args(args=[arg])(rec)
+
+
+_BAD_ENVELOPE_RECORDS = (
+    [(f"arg_{i}", _arg_over(**o)) for i, o in _BAD_ARG_OVERRIDES]
+    + [
+        ("dup_position", _set_args(args=[_ra_json(), _ra_json()])),
+        ("same_slot_conflict", _set_args(args=[_ra_json(), _ra_json(value=0x9)])),
+        ("unknown_nonempty",
+         _set_args("unknown", "unresolved_gate", [_ra_json()])),
+        ("unknown_missing_reason", _set_args("unknown", None, [])),
+        ("unknown_unlisted_reason", _set_args("unknown", "no_such_reason", [])),
+        ("known_with_reason", _set_args("known", "unresolved_gate", [])),
+        ("status_invalid", _set_args("maybe", None, [])),
+        ("missing_args_status", _drop("args_status")),
+        ("missing_args_reason", _drop("args_reason")),
+        ("missing_required_args", _drop("required_args")),
+        ("required_args_not_list",
+         lambda rec: rec.update(required_args={"position": 1})),
+        ("required_args_elem_not_dict",
+         lambda rec: rec.update(required_args=[7])),
+        ("arg_missing_key", _bad_arg_dict_missing_reg),
+    ]
+)
+
+
+@skip_no_bin
+@pytest.mark.parametrize("mutate", [m for _, m in _BAD_ENVELOPE_RECORDS],
+                         ids=[i for i, _ in _BAD_ENVELOPE_RECORDS])
+def test_t7_malformed_envelope_record_is_error_not_raised(monkeypatch, mutate):
+    _patch_extractor(monkeypatch, envelope=json.dumps(_win_env(mutate)))
+    # use_cache=False: no sqlite fsync per case; the never-cached property is
+    # asserted once, DB-backed, in the next test.
+    report = payoff.rank_payoffs(_MOCK_BIN, use_cache=False)  # must not raise
+    assert report.status is PayoffStatus.ERROR
+    assert report.candidates == ()
+    assert "malformed record" in report.attempts[-1]["reason"]
+
+
+@skip_no_bin
+def test_t7_malformed_envelope_record_is_never_cached(monkeypatch, tmp_path):
+    _patch_extractor(
+        monkeypatch, envelope=json.dumps(_win_env(_set_args("unknown", None, [])))
+    )
+    db = Database(db_path=str(tmp_path / "c.db"))
+    report = payoff.rank_payoffs(_MOCK_BIN, db=db)
+    assert report.status is PayoffStatus.ERROR
+    assert db.get_payoff_analysis(*_key(_MOCK_BIN)) is None
+
+
+@skip_no_bin
+def test_t7_valid_args_record_is_complete_and_yields_the_args(monkeypatch):
+    """The control for the malformed matrix above: the same shape, valid."""
+    arg2 = _arg2()
+    _patch_extractor(
+        monkeypatch,
+        envelope=json.dumps(
+            _win_env(_set_args(args=[_ra_json(), _ra_json(**arg2)]))
+        ),
+    )
+    report = payoff.rank_payoffs(_MOCK_BIN, use_cache=False)
+    assert report.status is PayoffStatus.COMPLETE
+    (cand,) = report.candidates
+    assert cand.rva == 0x1234
+    assert cand.required_args == (_ra(), _ra(**arg2))
+    assert cand.args_status == "known" and cand.args_reason is None
+
+
+# ---- cache path: report_from_json builds PayoffEvidence directly --------------
+
+
+def _args_report(status="known", reason=None, args=None):
+    if args is None and status == "known":
+        args = (_ra(), _ra(**_arg2()))
+    ev = payoff.PayoffEvidence(
+        atoms=(ATOM_EXEC_CONST, ATOM_UNREFERENCED),
+        sink_api="system",
+        target=TargetTrace(TargetTrace.CONST_STRING, address=0x402000, value="/bin/sh"),
+        rank_key=(1, 1),
+        score=110,
+        required_args=tuple(args or ()),
+        args_status=status,
+        args_reason=reason,
+    )
+    return PayoffReport(
+        status=PayoffStatus.COMPLETE,
+        candidates=(PayoffCandidate(rva=0x1234, name="win", evidence=ev),),
+        backend="ghidra",
+        attempts=(),
+        counts={"enumerated": 2, "analyzed": 2, "failed": 0},
+        elapsed_s=1.0,
+        budget_s=180.0,
+        from_cache=False,
+    )
+
+
+def _mutated_cache_text(mutate, report=None):
+    d = json.loads(report_to_json(report or _args_report()))
+    mutate(d["report"]["candidates"][0]["evidence"], d)
+    return json.dumps(d)
+
+
+def _cache_set(**kv):
+    return lambda ev, d: ev.update(kv)
+
+
+def _cache_arg(index, **kv):
+    return lambda ev, d: ev["required_args"][index].update(kv)
+
+
+_BAD_CACHE_ROWS = [
+    ("bad_op", _cache_arg(0, op="INT_LESS")),
+    ("bad_reg", _cache_arg(0, reg="xmm0")),
+    ("bad_terminal", _cache_arg(0, terminal="HighLocal")),
+    ("bool_op_addr", _cache_arg(0, op_addr=True)),
+    ("position_ne_slot_plus_1", _cache_arg(0, position=3)),
+    ("empty_sink_addrs", _cache_arg(0, sink_addrs=[])),
+    # cross-field breaches that bypass FunctionEvidence entirely:
+    ("same_position_twice",
+     lambda ev, d: ev.update(required_args=[ev["required_args"][0]] * 2)),
+    ("same_slot_value_conflict",
+     lambda ev, d: ev["required_args"].append(
+         dict(ev["required_args"][0], value=0x7777))),
+    ("unknown_with_nonempty_list",
+     _cache_set(args_status="unknown", args_reason="unresolved_gate")),
+    ("unknown_without_reason", _cache_set(args_status="unknown", args_reason=None,
+                                          required_args=[])),
+    ("known_with_reason", _cache_set(args_reason="unresolved_gate")),
+    ("missing_args_status", lambda ev, d: ev.pop("args_status")),
+    ("missing_required_args", lambda ev, d: ev.pop("required_args")),
+    ("v1_envelope", lambda ev, d: d.update(envelope_version=1)),
+]
+
+
+def test_t7_cache_control_unmutated_row_parses():
+    back = report_from_json(report_to_json(_args_report()))
+    assert back is not None
+    assert back.candidates[0].required_args == (_ra(), _ra(**_arg2()))
+
+
+@pytest.mark.parametrize("mutate", [m for _, m in _BAD_CACHE_ROWS],
+                         ids=[i for i, _ in _BAD_CACHE_ROWS])
+def test_t7_malformed_cache_row_is_a_miss_never_error_or_hit(mutate):
+    assert report_from_json(_mutated_cache_text(mutate)) is None
+
+
+@skip_no_bin
+def test_t7_malformed_cache_row_misses_then_reruns_extractor(monkeypatch, tmp_path):
+    """Through rank_payoffs: a poisoned cache row is a miss (extractor runs,
+    COMPLETE result), not an ERROR and not a silently-wrong hit."""
+    calls = []
+    _patch_extractor(monkeypatch, counter=calls)
+    db = Database(db_path=str(tmp_path / "c.db"))
+    poisoned = _mutated_cache_text(_BAD_CACHE_ROWS[6][1])  # same position twice
+    db.save_payoff_analysis(*_key(_MOCK_BIN), poisoned)
+    report = payoff.rank_payoffs(_MOCK_BIN, db=db)
+    assert report.status is PayoffStatus.COMPLETE
+    assert report.from_cache is False
+    assert len(calls) == 1
+
+
+# ---- T9: cache round trip ------------------------------------------------------
+
+
+def test_t9_roundtrip_preserves_args_with_full_provenance():
+    rep = _args_report()
+    back = report_from_json(report_to_json(rep))
+    assert back is not None
+    want = rep.candidates[0].evidence
+    got = back.candidates[0].evidence
+    assert got.required_args == want.required_args
+    assert (got.args_status, got.args_reason) == ("known", None)
+    a0, a1 = got.required_args
+    assert a1.reg == "rsi" and a1.sink_addrs == (0x401251, 0x401260)
+    assert a1.transform == ("COPY", "INT_SEXT")
+    assert (a1.width_bits, a1.src_width_bits, a1.terminal) == (32, 32, "HighParam")
+    assert a0.op == "INT_EQUAL" and a0.op_addr == 0x401216
+
+
+def test_t9_roundtrip_preserves_unknown_reason_and_known_empty():
+    unk = report_from_json(
+        report_to_json(_args_report("unknown", "relational_gate", ()))
+    )
+    c = unk.candidates[0]
+    assert (c.args_status, c.args_reason, c.required_args) == (
+        "unknown",
+        "relational_gate",
+        (),
+    )
+    empty = report_from_json(report_to_json(_args_report("known", None, ())))
+    c = empty.candidates[0]
+    assert (c.args_status, c.args_reason, c.required_args) == ("known", None, ())
+
+
+def test_t9_a_v1_row_misses():
+    v1 = json.loads(report_to_json(_args_report()))
+    v1["envelope_version"] = 1
+    assert report_from_json(json.dumps(v1)) is None
+    # a genuine W-1 shaped v1 row (no args fields at all) also misses
+    legacy = json.loads(report_to_json(_sample_report()))
+    legacy["envelope_version"] = 1
+    for c in legacy["report"]["candidates"]:
+        for k in ("args_status", "args_reason", "required_args"):
+            c["evidence"].pop(k, None)
+    assert report_from_json(json.dumps(legacy)) is None
+
+
+@skip_no_bin
+def test_t9_miss_then_hit_preserves_all_three_fields(monkeypatch, tmp_path):
+    arg2 = _arg2()
+    calls = []
+    _patch_extractor(
+        monkeypatch,
+        counter=calls,
+        envelope=json.dumps(_win_env(_set_args(args=[_ra_json(), _ra_json(**arg2)]))),
+    )
+    db = Database(db_path=str(tmp_path / "c.db"))
+    r1 = payoff.rank_payoffs(_MOCK_BIN, db=db)
+    r2 = payoff.rank_payoffs(_MOCK_BIN, db=db)
+    assert len(calls) == 1
+    assert r1.from_cache is False and r2.from_cache is True
+    want = (_ra(), _ra(**arg2))
+    for r in (r1, r2):
+        (c,) = r.candidates
+        assert c.required_args == want
+        assert (c.args_status, c.args_reason) == ("known", None)
+
+
+@skip_no_bin
+def test_t9_unknown_survives_miss_then_hit(monkeypatch, tmp_path):
+    calls = []
+    _patch_extractor(
+        monkeypatch,
+        counter=calls,
+        envelope=json.dumps(_win_env(_set_args("unknown", "avoidance_gate", []))),
+    )
+    db = Database(db_path=str(tmp_path / "c.db"))
+    r1 = payoff.rank_payoffs(_MOCK_BIN, db=db)
+    r2 = payoff.rank_payoffs(_MOCK_BIN, db=db)
+    assert r2.from_cache is True and len(calls) == 1
+    for r in (r1, r2):
+        (c,) = r.candidates
+        assert (c.args_status, c.args_reason, c.required_args) == (
+            "unknown",
+            "avoidance_gate",
+            (),
+        )
+
+
+# ---- T10: every reason code round-trips exactly; report status is untouched ----
+
+
+@skip_no_bin
+@pytest.mark.parametrize("reason", _DESIGN_REASON_ORDER)
+def test_t10_each_unknown_reason_is_carried_exactly_and_report_stays_complete(
+    monkeypatch, reason
+):
+    """An args-pass failure (e.g. analysis_exception) is per-record: the report
+    stays COMPLETE (only a *decompile* failure degrades it, tested below)."""
+    _patch_extractor(
+        monkeypatch,
+        envelope=json.dumps(_win_env(_set_args("unknown", reason, []))),
+    )
+    report = payoff.rank_payoffs(_MOCK_BIN, use_cache=False)
+    assert report.status is PayoffStatus.COMPLETE
+    (c,) = report.candidates
+    assert (c.args_status, c.args_reason, c.required_args) == ("unknown", reason, ())
+    back = report_from_json(report_to_json(report))
+    assert back.candidates[0].args_reason == reason
+
+
+@skip_no_bin
+def test_t10_decompile_failure_degrades_the_report_with_no_candidates(monkeypatch):
+    """A W-1 decompile failure is failed>0 -> DEGRADED; the surviving record's
+    args are not surfaced as an authoritative result."""
+    env = _win_env(_set_args(args=[_ra_json()]))
+    env.update(enumerated=3, analyzed=2, failed=1)
+    _patch_extractor(monkeypatch, envelope=json.dumps(env))
+    report = payoff.rank_payoffs(_MOCK_BIN, use_cache=False)
+    assert report.status is PayoffStatus.DEGRADED
+    assert report.candidates == ()
+
+
+# ---- T8 (mock half): un-truncated 31-bit constants through both paths ---------
+
+
+@skip_no_bin
+@pytest.mark.parametrize("width", [32, 64])
+def test_t8_const_range_value_is_reported_untruncated(monkeypatch, width):
+    value = _CONST_RANGE_MAX
+    arg = _ra_json(
+        value=value,
+        width_bits=width,
+        src_width_bits=width,
+        transform=["INT_SEXT"] if width == 32 else [],
+    )
+    _patch_extractor(
+        monkeypatch, envelope=json.dumps(_win_env(_set_args(args=[arg])))
+    )
+    r1 = payoff.rank_payoffs(_MOCK_BIN, use_cache=False)
+    r2 = report_from_json(report_to_json(r1))  # the cache half, no sqlite fsync
+    assert r2 is not None and r2.from_cache is True
+    for r in (r1, r2):
+        a = r.candidates[0].required_args[0]
+        assert a.value == value == 0x7FFFFFFF
+        assert a.width_bits == width
+
+
+# ---- required_args_for / required_arg_regs -------------------------------------
+
+
+def _cand(rva, status="known", reason=None, args=()):
+    ev = payoff.PayoffEvidence(
+        atoms=(ATOM_EXEC_CONST,),
+        sink_api="system",
+        target=None,
+        rank_key=(1, 1),
+        score=110,
+        required_args=tuple(args),
+        args_status=status,
+        args_reason=reason,
+    )
+    return PayoffCandidate(rva=rva, name=None, evidence=ev)
+
+
+def _report_of(*cands, status=PayoffStatus.COMPLETE):
+    return PayoffReport(status=status, candidates=tuple(cands), backend="ghidra")
+
+
+def test_required_args_for_returns_position_value_pairs_for_known():
+    rep = _report_of(_cand(0x10, args=(_ra(), _ra(**_arg2()))), _cand(0x20))
+    assert payoff.required_args_for(rep) == ((1, 0x1111), (2, 0x2222))
+    assert payoff.required_args_for(rep, rva=0x10) == ((1, 0x1111), (2, 0x2222))
+    assert payoff.required_args_for(rep, rva=0x20) == ()  # known, empty
+
+
+def test_required_arg_regs_exposes_the_recorded_register():
+    rep = _report_of(_cand(0x10, args=(_ra(), _ra(**_arg2()))))
+    assert payoff.required_arg_regs(rep) == ((1, "rdi"), (2, "rsi"))
+    assert payoff.required_arg_regs(rep, rva=0x10) == ((1, "rdi"), (2, "rsi"))
+    assert payoff.required_arg_regs(rep, rva=0x99) is None
+
+
+def test_required_args_for_none_for_unknown_rva_miss_and_non_complete():
+    unk = _report_of(_cand(0x10, "unknown", "unresolved_gate"))
+    assert payoff.required_args_for(unk) is None
+    assert payoff.required_arg_regs(unk) is None
+    known = _report_of(_cand(0x10, args=(_ra(),)))
+    assert payoff.required_args_for(known, rva=0x77) is None  # rva miss
+    assert payoff.required_args_for(_report_of()) is None  # no candidates
+    for status in (
+        PayoffStatus.DEGRADED,
+        PayoffStatus.TIMEOUT,
+        PayoffStatus.ERROR,
+        PayoffStatus.NO_BACKEND,
+    ):
+        rep = _report_of(_cand(0x10, args=(_ra(),)), status=status)
+        assert payoff.required_args_for(rep) is None, status
+        assert payoff.required_arg_regs(rep) is None, status

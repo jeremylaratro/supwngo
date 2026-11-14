@@ -14,6 +14,14 @@ Built up across the W-1 commits (plan §7):
   (Ghidra in commit 4, angr in commit 8) produces :class:`FunctionEvidence` records
   that this module scores and ranks.
 
+**W-2** (``docs/plans/2026-11-13-w2-required-args-design.md``, Rev 11) adds the
+payoff function's *required arguments*: :class:`RequiredArg` (the extractor's
+per-argument provenance record), the ``args_status``/``args_reason``/
+``required_args`` fields carried on :class:`FunctionEvidence` ->
+:class:`PayoffEvidence` -> :class:`PayoffCandidate`, the shared cross-field
+validator, cache envelope v2, and the :func:`required_args_for` /
+:func:`required_arg_regs` accessors the ret2win consumer reads.
+
 Why ``to_corpus_rva`` exists: ``Decompiler._to_file_address`` returns
 ``file_base + (address - backend_base)`` — the *link-time VADDR*, which for a
 non-PIE ELF or a PE differs from the corpus truth ``payoff_rva = address -
@@ -43,6 +51,10 @@ __all__ = [
     "PayoffStatus",
     "TargetTrace",
     "SinkObservation",
+    "RequiredArg",
+    "ARGS_KNOWN",
+    "ARGS_UNKNOWN",
+    "ARGS_REASON_PRECEDENCE",
     "FunctionEvidence",
     "PayoffEvidence",
     "PayoffCandidate",
@@ -65,6 +77,8 @@ __all__ = [
     "marker_is_complete",
     "report_to_json",
     "report_from_json",
+    "required_args_for",
+    "required_arg_regs",
     "ghidra_version",
     "angr_version",
     "backend_version",
@@ -175,10 +189,172 @@ class SinkObservation:
     path_target: TargetTrace
 
 
+# --- W-2: required arguments (design sec 2.3 / 2.4 / 4) ---------------------
+
+ARGS_KNOWN = "known"
+ARGS_UNKNOWN = "unknown"
+
+# sec 2.2 reason precedence, highest first. The closed set of ``unknown``
+# reasons; mirrors ``REASON_PRECEDENCE`` in SupwngoPayoff.java (a test compares
+# the two sources).
+ARGS_REASON_PRECEDENCE: tuple[str, ...] = (
+    "irreducible_cflow",
+    "analysis_exception",
+    "conflict",
+    "abi_class",
+    "bool_compose",
+    "bool_fanout",
+    "ambiguous_gate",
+    "nonconst_gate",
+    "avoidance_gate",
+    "relational_gate",
+    "unresolved_gate",
+)
+
+# sec 3: the SysV integer argument *base* registers an emitted arg may name
+# (EDI->RDI etc. is normalized by the extractor, never guessed by position).
+_SYSV_INT_BASE_REGS = frozenset({"rdi", "rsi", "rdx", "rcx", "r8", "r9"})
+_REQUIRED_ARG_OPS = frozenset({"INT_EQUAL", "INT_NOTEQUAL"})
+# sec 2.4: the only P-code ops a required value may travel through unchanged.
+_VALUE_PRESERVING_TRANSFORMS = frozenset({"COPY", "CAST", "INT_ZEXT", "INT_SEXT"})
+
+
+def _is_int(x: Any) -> bool:
+    """The W-1 integer guard: ``bool`` is an ``int`` subclass and is rejected."""
+    return isinstance(x, int) and not isinstance(x, bool)
+
+
+@dataclass(frozen=True)
+class RequiredArg:
+    """One required ``param == const`` value, with the extractor's provenance
+    (sec 2.4). Every check raises :class:`ValueError` -- never a bare ``assert``,
+    because ``AssertionError`` is not in the envelope ``try``'s ``except`` tuple
+    and would escape :func:`rank_payoffs` instead of becoming ``ERROR``."""
+
+    position: int  # 1-based SysV position, == slot + 1
+    value: int  # constant masked to the comparison width
+    slot: int  # 0-based formal slot
+    width_bits: int  # comparison width in BITS
+    src_width_bits: int  # formal source width in BITS (8 * getSize())
+    terminal: str  # always "HighParam"
+    reg: str  # SysV integer *base* register, e.g. "rdi"
+    op: str  # "INT_EQUAL" | "INT_NOTEQUAL"
+    op_addr: int  # unsigned address of the compare op
+    sink_addrs: tuple[int, ...]  # non-empty, unsigned
+    transform: tuple[str, ...] = ()  # value-preserving chain, entry-first
+
+    def __post_init__(self) -> None:
+        for name in (
+            "position",
+            "value",
+            "slot",
+            "width_bits",
+            "src_width_bits",
+            "op_addr",
+        ):
+            v = getattr(self, name)
+            if not _is_int(v):
+                raise ValueError(
+                    f"RequiredArg.{name} must be an int, got {type(v).__name__}"
+                )
+        if self.position < 1:
+            raise ValueError(f"RequiredArg.position must be >= 1, got {self.position}")
+        if self.slot < 0:
+            raise ValueError(f"RequiredArg.slot must be >= 0, got {self.slot}")
+        if self.position != self.slot + 1:
+            raise ValueError(
+                f"RequiredArg.position ({self.position}) != slot + 1 ({self.slot + 1})"
+            )
+        # Widths are BITS (8 * byte size): a positive multiple of 8 rejects a
+        # bytes-for-bits regression such as 4 for a 4-byte formal.
+        for name in ("width_bits", "src_width_bits"):
+            v = getattr(self, name)
+            if v <= 0 or v % 8 != 0:
+                raise ValueError(
+                    f"RequiredArg.{name} must be a positive multiple of 8 "
+                    f"(bits, not bytes), got {v}"
+                )
+        if not isinstance(self.op, str) or self.op not in _REQUIRED_ARG_OPS:
+            raise ValueError(
+                f"RequiredArg.op {self.op!r} is not INT_EQUAL/INT_NOTEQUAL"
+            )
+        if not isinstance(self.reg, str) or self.reg not in _SYSV_INT_BASE_REGS:
+            raise ValueError(
+                f"RequiredArg.reg {self.reg!r} is not a SysV integer base register"
+            )
+        if self.terminal != "HighParam":
+            raise ValueError(f"RequiredArg.terminal {self.terminal!r} != 'HighParam'")
+        if self.op_addr < 0:
+            raise ValueError(f"RequiredArg.op_addr must be >= 0, got {self.op_addr}")
+        if not isinstance(self.sink_addrs, tuple) or not self.sink_addrs:
+            raise ValueError("RequiredArg.sink_addrs must be a non-empty tuple")
+        for a in self.sink_addrs:
+            if not _is_int(a) or a < 0:
+                raise ValueError(
+                    f"RequiredArg.sink_addrs element {a!r} must be an unsigned int"
+                )
+        if not isinstance(self.transform, tuple):
+            raise ValueError("RequiredArg.transform must be a tuple")
+        for t in self.transform:
+            if not isinstance(t, str) or t not in _VALUE_PRESERVING_TRANSFORMS:
+                raise ValueError(
+                    f"RequiredArg.transform element {t!r} is not value-preserving"
+                )
+
+
+def _validate_required_args(status: Any, reason: Any, args: Any) -> None:
+    """The shared sec 2.3 cross-field invariant, raised as :class:`ValueError`.
+
+    ``unknown => args == () and reason in the closed reason set``;
+    ``known => reason is None``; positions unique; no same-slot value conflict.
+    Called from :meth:`FunctionEvidence.__post_init__` (live path) AND explicitly
+    inside :func:`report_from_json`'s ``try`` (cache path, which builds
+    :class:`PayoffEvidence` directly and never touches ``FunctionEvidence``), so
+    the invariant cannot be bypassed by whichever constructor a path uses."""
+    if not isinstance(status, str) or status not in (ARGS_KNOWN, ARGS_UNKNOWN):
+        raise ValueError(f"args_status {status!r} is not 'known' or 'unknown'")
+    if not isinstance(args, tuple):
+        raise ValueError("required_args must be a tuple")
+    for a in args:
+        if not isinstance(a, RequiredArg):
+            raise ValueError(f"required_args element {a!r} is not a RequiredArg")
+    if status == ARGS_UNKNOWN:
+        if args:
+            raise ValueError("args_status 'unknown' requires an empty required_args")
+        if not isinstance(reason, str) or reason not in ARGS_REASON_PRECEDENCE:
+            raise ValueError(
+                f"args_status 'unknown' needs a listed reason, got {reason!r}"
+            )
+    elif reason is not None:
+        raise ValueError(
+            f"args_status 'known' requires args_reason None, got {reason!r}"
+        )
+    by_slot: Dict[int, RequiredArg] = {}
+    positions: set = set()
+    for a in args:
+        prior = by_slot.get(a.slot)
+        if prior is not None and prior.value != a.value:
+            raise ValueError(
+                f"conflicting required values for slot {a.slot}: "
+                f"{prior.value} vs {a.value}"
+            )
+        if a.position in positions:
+            raise ValueError(f"duplicate required_args position {a.position}")
+        by_slot[a.slot] = a
+        positions.add(a.position)
+
+
 @dataclass(frozen=True)
 class FunctionEvidence:
     """Raw per-function facts a backend emits; the scorer's input. ``rva`` is
-    already in the corpus-truth convention (the backend applies ``to_corpus_rva``)."""
+    already in the corpus-truth convention (the backend applies ``to_corpus_rva``).
+
+    The W-2 args fields default to ``known`` / no reason / no args so hand-built
+    W-1 style evidence stays valid; the production path
+    (:func:`_evidence_from_envelope`) always passes them explicitly from the
+    extractor record and fails closed if they are missing. ``__post_init__``
+    enforces the sec 2.3 invariant (raises :class:`ValueError`, which the
+    envelope ``try`` in :func:`rank_payoffs` turns into ``ERROR``)."""
 
     rva: int
     name: Optional[str]
@@ -186,6 +362,12 @@ class FunctionEvidence:
     has_read: bool = False
     has_stdout_output: bool = False
     unreferenced: bool = False
+    required_args: tuple[RequiredArg, ...] = ()
+    args_status: str = ARGS_KNOWN
+    args_reason: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        _validate_required_args(self.args_status, self.args_reason, self.required_args)
 
 
 @dataclass(frozen=True)
@@ -197,6 +379,12 @@ class PayoffEvidence:
     target: Optional[TargetTrace]
     rank_key: tuple
     score: int
+    # W-2: copied through from the (already validated) FunctionEvidence. No
+    # re-validation here -- this is built outside the envelope ``try``, so a
+    # raise would escape; the cache path validates explicitly instead.
+    required_args: tuple[RequiredArg, ...] = ()
+    args_status: str = ARGS_KNOWN
+    args_reason: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -204,6 +392,18 @@ class PayoffCandidate:
     rva: int
     name: Optional[str]
     evidence: PayoffEvidence
+
+    @property
+    def required_args(self) -> tuple[RequiredArg, ...]:
+        return self.evidence.required_args
+
+    @property
+    def args_status(self) -> str:
+        return self.evidence.args_status
+
+    @property
+    def args_reason(self) -> Optional[str]:
+        return self.evidence.args_reason
 
 
 @dataclass(frozen=True)
@@ -301,6 +501,9 @@ def score_function(fe: FunctionEvidence) -> PayoffEvidence:
         target=target,
         rank_key=rank_key,
         score=score,
+        required_args=fe.required_args,
+        args_status=fe.args_status,
+        args_reason=fe.args_reason,
     )
 
 
@@ -344,8 +547,8 @@ def marker_is_complete(marker: Optional[CompletionMarker]) -> bool:
 # Bump SCRIPT_VERSION when the Ghidra extractor's output contract changes; bump
 # CACHE_ENVELOPE_VERSION when this serialization changes. Either invalidates cache
 # entries (the former via the key, the latter via from_json returning None).
-SCRIPT_VERSION = "w1.1"
-CACHE_ENVELOPE_VERSION = 1
+SCRIPT_VERSION = "w2.0"
+CACHE_ENVELOPE_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -361,6 +564,62 @@ class PayoffReport:
     elapsed_s: float = 0.0
     budget_s: float = 0.0
     from_cache: bool = False
+
+
+def _required_arg_to_json(a: RequiredArg) -> Dict[str, Any]:
+    """The sec 2.4 object, full provenance (also the cache row shape)."""
+    return {
+        "position": a.position,
+        "value": a.value,
+        "slot": a.slot,
+        "width_bits": a.width_bits,
+        "src_width_bits": a.src_width_bits,
+        "terminal": a.terminal,
+        "reg": a.reg,
+        "op": a.op,
+        "op_addr": a.op_addr,
+        "sink_addrs": list(a.sink_addrs),
+        "transform": list(a.transform),
+    }
+
+
+def _required_arg_from_json(d: Any) -> RequiredArg:
+    """Strict inverse of :func:`_required_arg_to_json` (also reads the extractor's
+    record). Raises ``KeyError``/``TypeError``/``ValueError`` on anything
+    malformed; both callers sit inside a ``try`` that catches exactly those."""
+    if not isinstance(d, dict):
+        raise ValueError(f"required_args element is not an object: {d!r}")
+    sink_addrs = d["sink_addrs"]
+    transform = d["transform"]
+    if not isinstance(sink_addrs, list) or not isinstance(transform, list):
+        raise ValueError("sink_addrs/transform must be JSON arrays")
+    return RequiredArg(
+        position=d["position"],
+        value=d["value"],
+        slot=d["slot"],
+        width_bits=d["width_bits"],
+        src_width_bits=d["src_width_bits"],
+        terminal=d["terminal"],
+        reg=d["reg"],
+        op=d["op"],
+        op_addr=d["op_addr"],
+        sink_addrs=tuple(sink_addrs),
+        transform=tuple(transform),
+    )
+
+
+def _args_fields_from_json(
+    obj: Dict[str, Any],
+) -> Tuple[Any, Any, Tuple[RequiredArg, ...]]:
+    """``(args_status, args_reason, required_args)`` from an extractor record or a
+    cache evidence row. All three keys are required (fail closed: a missing
+    ``args_status`` must never read as 'known, no args')."""
+    status = obj["args_status"]
+    reason = obj["args_reason"]
+    rows = obj["required_args"]
+    if not isinstance(rows, list):
+        raise ValueError("required_args must be a JSON array")
+    return status, reason, tuple(_required_arg_from_json(r) for r in rows)
 
 
 def report_to_json(report: PayoffReport) -> str:
@@ -394,6 +653,11 @@ def report_to_json(report: PayoffReport) -> str:
                     ),
                     "rank_key": list(c.evidence.rank_key),
                     "score": c.evidence.score,
+                    "args_status": c.evidence.args_status,
+                    "args_reason": c.evidence.args_reason,
+                    "required_args": [
+                        _required_arg_to_json(a) for a in c.evidence.required_args
+                    ],
                 },
             }
             for c in report.candidates
@@ -429,12 +693,22 @@ def report_from_json(text: Optional[str]) -> Optional[PayoffReport]:
                 if ct is None
                 else TargetTrace(ct["kind"], ct.get("address"), ct.get("value"))
             )
+            # The cache path builds PayoffEvidence directly (never via
+            # FunctionEvidence), so the cross-field invariant is enforced here,
+            # inside this try: any breach is a cache MISS, never a wrong hit.
+            args_status, args_reason, required_args = _args_fields_from_json(
+                c["evidence"]
+            )
+            _validate_required_args(args_status, args_reason, required_args)
             evidence = PayoffEvidence(
                 atoms=tuple(c["evidence"]["atoms"]),
                 sink_api=c["evidence"]["sink_api"],
                 target=target,
                 rank_key=tuple(c["evidence"]["rank_key"]),
                 score=c["evidence"]["score"],
+                required_args=required_args,
+                args_status=args_status,
+                args_reason=args_reason,
             )
             candidates.append(
                 PayoffCandidate(rva=c["rva"], name=c["name"], evidence=evidence)
@@ -451,6 +725,50 @@ def report_from_json(text: Optional[str]) -> Optional[PayoffReport]:
         )
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _candidate_for_args(
+    report: PayoffReport, rva: Optional[int]
+) -> Optional[PayoffCandidate]:
+    """The candidate to read args from: the one at ``rva`` (the top candidate when
+    ``rva`` is ``None``), only from a ``COMPLETE`` report; else ``None``."""
+    if report.status is not PayoffStatus.COMPLETE:
+        return None
+    if rva is None:
+        return report.candidates[0] if report.candidates else None
+    for c in report.candidates:
+        if c.rva == rva:
+            return c
+    return None
+
+
+def required_args_for(
+    report: PayoffReport, *, rva: Optional[int] = None
+) -> Optional[tuple[tuple[int, int], ...]]:
+    """The ``(position, value)`` pairs the payoff at ``rva`` requires (top
+    candidate when ``None``) -- only when ``report.status is COMPLETE`` and that
+    candidate's ``args_status == "known"``; otherwise ``None``.
+
+    ``()`` means *known, no arguments required*; ``None`` means *no
+    authoritative answer* (``unknown``, an rva that matches no candidate, or a
+    non-``COMPLETE`` report). A caller that must tell those apart reads
+    ``report.status`` / the candidate itself first (design sec 5.4)."""
+    c = _candidate_for_args(report, rva)
+    if c is None or c.args_status != ARGS_KNOWN:
+        return None
+    return tuple((a.position, a.value) for a in c.required_args)
+
+
+def required_arg_regs(
+    report: PayoffReport, *, rva: Optional[int] = None
+) -> Optional[tuple[tuple[int, str], ...]]:
+    """Sibling of :func:`required_args_for`: the ``(position, reg)`` pairs, ``reg``
+    being the recorded SysV integer base register (never a position guess), under
+    exactly the same ``COMPLETE`` + ``known`` gate."""
+    c = _candidate_for_args(report, rva)
+    if c is None or c.args_status != ARGS_KNOWN:
+        return None
+    return tuple((a.position, a.reg) for a in c.required_args)
 
 
 def _ghidra_roots() -> list:
@@ -597,6 +915,9 @@ def _evidence_from_envelope(env: dict) -> List[FunctionEvidence]:
                     ),
                 )
             )
+        # Strict: a w2.0 record always carries all three (a missing key is a
+        # malformed record -> ERROR, never a silent 'known, no args').
+        args_status, args_reason, required_args = _args_fields_from_json(r)
         fes.append(
             FunctionEvidence(
                 rva=to_corpus_rva(r["address"], backend_base),
@@ -605,6 +926,9 @@ def _evidence_from_envelope(env: dict) -> List[FunctionEvidence]:
                 has_read=bool(r.get("has_read")),
                 has_stdout_output=bool(r.get("has_stdout_output")),
                 unreferenced=bool(r.get("unreferenced")),
+                required_args=required_args,
+                args_status=args_status,
+                args_reason=args_reason,
             )
         )
     return fes
