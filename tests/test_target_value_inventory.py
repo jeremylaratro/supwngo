@@ -491,3 +491,131 @@ def test_scanner_output_does_not_depend_on_hash_seed(tmp_path):
         outputs.append(done.stdout)
     assert json.loads(outputs[0])["hits"], "the sample produced no hits"
     assert outputs[0] == outputs[1] == outputs[2]
+
+
+# ---------------------------------------------------------------------------
+# Directive W, phase W-2 (design doc docs/plans/2026-11-13-w2-required-args-
+# design.md section 5, test T11): the 27 ABI/infrastructure class-B constants
+# close ``open -> allowed`` with a justification; the 42 per-binary target
+# guesses stay ``open``; nothing is ``migrated`` (the audit of all 69 class-B
+# consumer sites found zero payoff-formal-argument guesses).
+
+# id -> "basename:line" of the baseline entry, as listed in design section 5.2.
+W2_ALLOWED = {
+    "W-0007": "cli.py:1610",
+    "W-0043": "enhanced_auto.py:520",
+    "W-0044": "enhanced_auto.py:522",
+    "W-0052": "offset_finder.py:1048",
+    "W-0053": "offset_finder.py:1073",
+    "W-0060": "delivery.py:61",
+    "W-0061": "delivery.py:180",
+    "W-0063": "allocsize_techniques.py:510",
+    "W-0080": "heap_techniques.py:70",
+    "W-0081": "heap_techniques.py:354",
+    "W-0086": "input_shape_techniques.py:44",
+    "W-0089": "input_shape_techniques.py:168",
+    "W-0111": "shellcode_techniques.py:40",
+    "W-0112": "shellcode_techniques.py:98",
+    "W-0126": "reliability.py:621",
+    "W-0140": "verify.py:477",
+    "W-0146": "heap_probe.py:925",
+    "W-0147": "crash_triage.py:446",
+    "W-0148": "crash_triage.py:447",
+    "W-0149": "crash_triage.py:528",
+    "W-0150": "crash_triage.py:536",
+    "W-0151": "module.py:68",
+    "W-0152": "module.py:69",
+    "W-0154": "integer.py:215",
+    "W-0155": "integer.py:232",
+    "W-0156": "stack_bof.py:378",
+    "W-0157": "stack_bof.py:380",
+}
+
+# sha256 over the JSON of every entry's (id, path, line, class, kind, anchor) in
+# file order, computed at the W-0 baseline. It pins the entry set and every
+# frozen field, so a W-2 edit that touched anything but ``status`` and
+# ``justification`` (or added/removed an entry) fails.
+W0_FROZEN_FIELDS_SHA256 = (
+    "add1127b2361592c33c2f10de54103d99898d071cc7862bb4009b25bfaf302e1"
+)
+
+
+def _class_b(baseline: dict) -> List[dict]:
+    return [e for e in baseline["entries"] if e["class"] == "B"]
+
+
+def test_w2_frozen_fields_and_entry_set_are_unchanged(baseline):
+    import hashlib
+
+    rows = [
+        (e["id"], e["path"], e["line"], e["class"], e["kind"], e["anchor"])
+        for e in baseline["entries"]
+    ]
+    blob = json.dumps(rows, separators=(",", ":")).encode()
+    digest = hashlib.sha256(blob).hexdigest()
+    assert len(baseline["entries"]) == 157
+    assert digest == W0_FROZEN_FIELDS_SHA256, (
+        "a frozen field (id/path/line/class/kind/anchor) or the entry set changed; "
+        "after W-0 only an entry's status (+ its justification) may change"
+    )
+
+
+def test_w2_the_27_abi_infrastructure_constants_are_allowed_with_justification(
+    baseline,
+):
+    by_id = {e["id"]: e for e in baseline["entries"]}
+    assert len(W2_ALLOWED) == 27
+    for entry_id, where in W2_ALLOWED.items():
+        entry = by_id[entry_id]
+        assert entry["class"] == "B", entry_id
+        assert f"{Path(entry['path']).name}:{entry['line']}" == where, (
+            entry_id,
+            entry["path"],
+            entry["line"],
+        )
+        assert entry["status"] == "allowed", entry_id
+        just = entry.get("justification")
+        assert isinstance(just, str) and len(just.strip()) >= 10, (entry_id, just)
+        assert "phase" not in entry, f"{entry_id}: an allowed entry carries no phase"
+
+
+def test_w2_the_42_per_binary_target_guesses_stay_open(baseline):
+    class_b = _class_b(baseline)
+    assert len(class_b) == 69
+    rest = [e for e in class_b if e["id"] not in W2_ALLOWED]
+    assert len(rest) == 42
+    for entry in rest:
+        assert entry["status"] == OPEN, entry["id"]
+        assert "justification" not in entry and "phase" not in entry, entry["id"]
+
+
+def test_w2_the_42_open_entries_still_match_live_hits_not_stale(hits, baseline):
+    """A surviving ``open`` entry that still matches a live hit is ratchet-valid;
+    only an ``open`` entry matching NO hit is stale (and test_no_stale_open_
+    baseline_entry would fail). Pinned here for the 42 specifically."""
+    _, unmatched = match_hits(hits, baseline["entries"])
+    stale_ids = {e["id"] for e in unmatched}
+    rest = [e for e in _class_b(baseline) if e["id"] not in W2_ALLOWED]
+    assert len(rest) == 42
+    assert not [e["id"] for e in rest if e["id"] in stale_ids]
+
+
+def test_w2_nothing_is_migrated_and_other_classes_are_untouched(baseline):
+    statuses = [e["status"] for e in baseline["entries"]]
+    assert statuses.count("migrated") == 0
+    assert statuses.count("allowed") == 27
+    assert statuses.count(OPEN) == len(statuses) - 27
+    for entry in baseline["entries"]:
+        if entry["class"] != "B":
+            assert entry["status"] == OPEN, entry["id"]
+
+
+def test_w2_lifecycle_rule_accepts_exactly_this_closure(baseline):
+    """``check_lifecycle`` against a frozen copy (every status reset to open and
+    the justifications dropped) must report nothing: W-2 only closed entries."""
+    reopened = []
+    for e in baseline["entries"]:
+        copy = {k: v for k, v in e.items() if k not in ("justification", "phase")}
+        copy["status"] = OPEN
+        reopened.append(copy)
+    assert check_lifecycle({"entries": reopened}, baseline) == []
