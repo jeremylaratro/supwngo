@@ -158,11 +158,18 @@ def build_e2e_fixture(variant: str) -> FixtureProgram:
 
 
 def build_abimix_fixture() -> FixtureProgram:
+    # The double is stored to a volatile global so it is a *live* use of xmm0:
+    # a purely dead ``(void)unused`` lets Ghidra's parameter recovery drop the
+    # float formal altogether (verified live on 12.1.3: HighFunction then has a
+    # single param ``key`` in RDI at slot 0 -> position 1), which would make
+    # this fixture not exercise the mixed float/int ABI case it exists for.
     win = (
+        "volatile double abimix_sink_d;\n"
+        "\n"
         "%s\n"
         "void win(double unused, long key)\n"
         "{\n"
-        "    (void)unused;\n"
+        "    abimix_sink_d = unused;\n"
         "    if (key == 0x4242) {\n"
         '        system("/bin/sh");\n'
         "    }\n"

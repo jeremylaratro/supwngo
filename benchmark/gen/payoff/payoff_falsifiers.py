@@ -126,22 +126,28 @@ def _small_distinct(rng: random.Random, lo: int, hi: int, count: int) -> List[in
 
 def _build_decoy_sink(rng, ns, consts) -> dict:
     name = ns.fresh()
-    r_val = str(rng.randint(2, 40))
+    g_name = ns.fresh()
     c1, c2 = consts.drawn(), consts.drawn()
+    # The compares must SURVIVE decompilation for this to be a control at all:
+    # constant-valued locals (the original r = 16; v = r * 3 + 11) are folded
+    # away by the decompiler, leaving no INT_EQUAL in the high P-code, so the
+    # "non-parameter constants are rejected" check would be vacuous. A
+    # call-return (not a param, not a memory global) compared against constants,
+    # with live branch bodies (a store to a global) so the compares are not
+    # dead-code eliminated, keeps real non-param equalities in the P-code.
     body = [
-        "long r = %s;" % r_val,
-        "long v = r * 3L + 11L;",
-        "if (v == %s) {" % c1,
-        "    r |= 1;",
+        "long r = (long)getpid();",
+        "if (r == %s) {" % c1,
+        "    %s = 1;" % g_name,
         "}",
         "if (r == %s) {" % c2,
-        "    r |= 2;",
+        "    %s = 2;" % g_name,
         "}",
-        "(void)r;",
         *_sink(rng),
     ]
     func = _function("payoff", "void", name, "void", body)
-    return dict(func=func, globals_text=[], globals_names=[], status="known",
+    gdef = "long %s;" % g_name
+    return dict(func=func, globals_text=[gdef], globals_names=[g_name], status="known",
                 required=[], reason=None)
 
 

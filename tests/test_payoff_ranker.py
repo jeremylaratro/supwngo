@@ -1985,3 +1985,494 @@ def test_required_args_for_none_for_unknown_rva_miss_and_non_complete():
         rep = _report_of(_cand(0x10, args=(_ra(),)), status=status)
         assert payoff.required_args_for(rep) is None, status
         assert payoff.required_arg_regs(rep) is None, status
+
+
+# =========================================================================== #
+# W-2 Step 4 -- real-Ghidra corpus tests (design sec 6: T1-T6, T3', T13, T14b).
+#
+# Gated by need_ghidra() (SUPWNGO_REQUIRE_GHIDRA=1) except the T14b artifact-
+# parser unit tests, which are always-run. Extraction goes through rank_payoffs
+# with the module-scoped ``corpus_db`` (a binary already ranked by the W-1 top-1
+# test is a cache hit); the *raw* envelope (T1 provenance) and the structural
+# P-code probe (T4) are memoized per binary so each costs at most one extra
+# Ghidra pass.
+# =========================================================================== #
+
+import re  # noqa: E402
+import tempfile  # noqa: E402
+
+_SYSV_INT_REGS = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"}
+_VALUE_PRESERVING_OPS = {"COPY", "CAST", "INT_ZEXT", "INT_SEXT"}
+
+_RAW_ENVELOPES: dict = {}
+_PROBES: dict = {}
+
+
+def _truth_shape(entry):
+    return _truth_for(entry).get("shape")
+
+
+_ARG_POSITIVES = [
+    e for e in _entries_of("positive") if _truth_shape(e) in ("arg1", "arg3")
+]
+_NOARG_POSITIVES = [
+    e for e in _entries_of("positive") if _truth_shape(e) in ("exec", "file")
+]
+_TWIN_ENTRIES = _entries_of("rename_twin", "strip_twin")
+_FALSIFIER_ELF = _entries_of("falsifier")
+_FALSIFIER_VARIANTS = _entries_of("falsifier_strip_twin", "falsifier_pe")
+_PE_ENTRIES = _entries_of("pe")
+_FIXTURE_ENTRIES = _entries_of("fixture")
+
+
+def _payoff_rva(truth):
+    """Truth RVA of the function under test (fixtures name it ``win_rva``)."""
+    return truth["payoff_rva"] if "payoff_rva" in truth else truth["win_rva"]
+
+
+def _payoff_vaddr(truth):
+    return truth["payoff_vaddr"] if "payoff_vaddr" in truth else truth["win_vaddr"]
+
+
+def _raw_envelope(entry):
+    """The un-validated extractor envelope for ``entry`` (one Ghidra pass per
+    binary for the whole module)."""
+    key = str(_bin_for(entry))
+    if key not in _RAW_ENVELOPES:
+        env = _extract_envelope(key)
+        assert env is not None, f"{entry['id']}: extractor wrote no envelope"
+        _RAW_ENVELOPES[key] = env
+    return _RAW_ENVELOPES[key]
+
+
+def _raw_record(entry, truth):
+    env = _raw_envelope(entry)
+    base = env["backend_base"]
+    for r in env["records"]:
+        if payoff.to_corpus_rva(r["address"], base) == _payoff_rva(truth):
+            return r
+    pytest.fail(f"{entry['id']}: no raw record at rva {_payoff_rva(truth)}")
+
+
+def _check_args_truth(entry, corpus_db):
+    """Run the real pipeline on ``entry`` and assert the payoff candidate's
+    ``(args_status, args_reason, required_args)`` equal the entry's truth, with
+    ``required_args`` compared by position (order-insensitive) and no duplicate
+    positions. Returns ``(report, candidate)``."""
+    need_ghidra()
+    truth = _truth_for(entry)
+    rva = _payoff_rva(truth)
+    report = payoff.rank_payoffs(str(_bin_for(entry)), db=corpus_db)
+    assert report.status is PayoffStatus.COMPLETE, (entry["id"], report.attempts)
+    cand = next((c for c in report.candidates if c.rva == rva), None)
+    assert cand is not None, (
+        entry["id"],
+        "payoff is not a candidate",
+        rva,
+        [c.rva for c in report.candidates],
+    )
+    want_status = truth.get("args_status", "known")
+    want_reason = truth.get("args_reason")
+    want = {a["position"]: a["value"] for a in truth.get("required_args", [])}
+    got = {a.position: a.value for a in cand.required_args}
+    assert (cand.args_status, cand.args_reason) == (want_status, want_reason), (
+        entry["id"],
+        cand.args_status,
+        cand.args_reason,
+    )
+    assert got == want, (entry["id"], got, want)
+    assert len(cand.required_args) == len(want), (entry["id"], "duplicate position")
+    pairs = payoff.required_args_for(report, rva=rva)
+    if want_status == "known":
+        assert pairs is not None and dict(pairs) == want, (entry["id"], pairs)
+    else:
+        assert pairs is None, (entry["id"], pairs)
+    return report, cand
+
+
+def _assert_raw_provenance(entry, truth):
+    """sec 2.4 / T1: read the RAW envelope (not the Python model) and assert each
+    emitted arg independently demonstrates termination at a full HighParam."""
+    rec = _raw_record(entry, truth)
+    assert rec["args_status"] == "known", (entry["id"], rec["args_reason"])
+    assert rec["args_reason"] is None
+    assert rec["required_args"], (entry["id"], "no required_args on an arg positive")
+    ptypes = truth["program"]["param_types"]
+    for a in rec["required_args"]:
+        who = (entry["id"], a["position"])
+        assert a["terminal"] == "HighParam", who
+        assert isinstance(a["transform"], list), who
+        assert set(a["transform"]) <= _VALUE_PRESERVING_OPS, (who, a["transform"])
+        assert a["reg"] in _SYSV_INT_REGS, (who, a["reg"])
+        assert a["op"] in ("INT_EQUAL", "INT_NOTEQUAL"), who
+        for name in ("position", "slot", "width_bits", "src_width_bits", "op_addr"):
+            v = a[name]
+            assert isinstance(v, int) and not isinstance(v, bool), (who, name, v)
+        assert a["position"] == a["slot"] + 1, who
+        assert a["op_addr"] >= 0, who
+        assert isinstance(a["sink_addrs"], list) and a["sink_addrs"], who
+        for s in a["sink_addrs"]:
+            assert isinstance(s, int) and not isinstance(s, bool) and s >= 0, (who, s)
+        # src_width_bits is the formal's width in BITS: LP64 on ELF (long = 64),
+        # LLP64 on PE (long = 32).
+        decl = ptypes[a["position"] - 1]
+        wide = "long" in decl and truth["format"] == "elf"
+        assert a["src_width_bits"] == (64 if wide else 32), (who, decl, a)
+
+
+# ---- T1 / T2: arg1 / arg3 positives ------------------------------------------
+
+
+@pytest.mark.skipif(not _ARG_POSITIVES, reason="dev payoff corpus not built")
+@pytest.mark.parametrize("entry", _ARG_POSITIVES, ids=_ids(_ARG_POSITIVES))
+def test_t1_arg_positive_required_args_match_truth_with_raw_provenance(
+    entry, corpus_db
+):
+    """16 arg1/arg3 positives: COMPLETE, ``known``, ``required_args`` == truth by
+    position, and the RAW envelope's provenance is HighParam-terminated."""
+    _check_args_truth(entry, corpus_db)
+    _assert_raw_provenance(entry, _truth_for(entry))
+
+
+@pytest.mark.skipif(not _ARG_POSITIVES, reason="dev payoff corpus not built")
+def test_t2_all_three_arg_styles_pass(corpus_db):
+    """>= 1 ``and``, >= 1 ``nest`` and >= 1 ``early`` unit of T1 passes (results
+    are cache/memo hits when T1 ran first)."""
+    need_ghidra()
+    by_style: dict = {}
+    for e in _ARG_POSITIVES:
+        by_style.setdefault(_truth_for(e)["program"]["arg_style"], []).append(e)
+    assert {"and", "nest", "early"} <= set(by_style), sorted(by_style)
+    for style in ("and", "nest", "early"):
+        entry = by_style[style][0]
+        _check_args_truth(entry, corpus_db)
+        _assert_raw_provenance(entry, _truth_for(entry))
+
+
+# ---- T3 / T3': no-arg positives and the non-param-constant control -------------
+
+
+@pytest.mark.skipif(not _NOARG_POSITIVES, reason="dev payoff corpus not built")
+@pytest.mark.parametrize("entry", _NOARG_POSITIVES, ids=_ids(_NOARG_POSITIVES))
+def test_t3_exec_file_positive_is_known_and_exactly_empty(entry, corpus_db):
+    _, cand = _check_args_truth(entry, corpus_db)
+    assert cand.args_status == "known"
+    assert cand.required_args == ()
+
+
+def _probe(entry, truth):
+    """Run SupwngoPayoffProbe on the payoff function (memoized); returns its JSON.
+    ``payoff_vaddr`` is the link-time address, which equals Ghidra's address for
+    the non-PIE ELF falsifiers this is used on."""
+    key = (str(_bin_for(entry)), _payoff_vaddr(truth))
+    if key not in _PROBES:
+        bin_path = _bin_for(entry)
+        d = Decompiler(types.SimpleNamespace(path=Path(bin_path)))
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = Path(tmp) / "project"
+            proj.mkdir()
+            home = Path(tmp) / "home"
+            home.mkdir()
+            out = Path(tmp) / "probe.json"
+            cmd = [
+                str(d._ghidra_path),
+                str(proj),
+                "SupwngoProbeTmp",
+                "-import",
+                str(bin_path),
+                "-scriptPath",
+                str(d._ghidra_scripts_dir()),
+                "-postScript",
+                "SupwngoPayoffProbe.java",
+                str(out),
+                hex(_payoff_vaddr(truth)),
+                "-deleteProject",
+            ]
+            d._run_ghidra_headless(cmd, 300, env=payoff._merged_jvm_env(str(home)))
+            assert out.is_file(), (entry["id"], "probe wrote no artifact")
+            _PROBES[key] = json.loads(out.read_text(encoding="utf-8"))
+    probe = _PROBES[key]
+    assert probe["decompiled"] is True, (entry["id"], probe)
+    return probe
+
+
+@pytest.mark.skipif(not _FALSIFIER_ELF, reason="dev payoff corpus not built")
+def test_t3prime_decoy_sink_runs_the_pass_and_rejects_non_param_constants(corpus_db):
+    """The real anti-hallucination control: the function has a REAL const-string
+    sink (so the requiredness pass runs, unlike a sink-less decoy that the
+    extractor short-circuits), compares non-parameter values against constants,
+    and still yields ``known, ()``."""
+    need_ghidra()
+    entry = next(e for e in _FALSIFIER_ELF if _truth_for(e)["shape"] == "decoy_sink")
+    truth = _truth_for(entry)
+    _, cand = _check_args_truth(entry, corpus_db)
+    assert cand.args_status == "known" and cand.required_args == ()
+    assert payoff.ATOM_EXEC_CONST in cand.evidence.atoms, cand.evidence.atoms
+    probe = _probe(entry, truth)
+    assert probe["compares"], "decoy_sink must contain equality compares"
+    for c in probe["compares"]:
+        assert "param" not in c["kinds"], c
+
+
+@pytest.mark.skipif(not _ARG_POSITIVES, reason="dev payoff corpus not built")
+@pytest.mark.parametrize("shape", ["exec", "arg3"])
+def test_t3prime_other_functions_serialize_the_default_empty_args(shape):
+    """Decoys/fillers/main (no gated const-string sink) report ``known`` + ``[]``
+    in the raw envelope -- the default serialization, not the control (above)."""
+    need_ghidra()
+    entry = next(
+        e
+        for e in _entries_of("positive")
+        if _truth_shape(e) == shape and not _truth_for(e)["stripped"]
+    )
+    truth = _truth_for(entry)
+    env = _raw_envelope(entry)
+    others = [
+        r
+        for r in env["records"]
+        if payoff.to_corpus_rva(r["address"], env["backend_base"])
+        != truth["payoff_rva"]
+    ]
+    assert others, entry["id"]
+    for r in others:
+        got = (r["args_status"], r["args_reason"], r["required_args"])
+        assert got == ("known", None, []), (entry["id"], r["name"], got)
+
+
+# ---- T4: the 25 falsifier shapes ------------------------------------------------
+
+_WIDTH_BYTES = {
+    "gate_u8_pair": 1,
+    "gate_u8_full": 1,
+    "gate_u16_sparse": 2,
+    "gate_u64_sparse": 8,
+}
+_PROBED_SHAPES = {
+    "gate_arith",
+    "gate_bool",
+    "gate_boolor",
+    "gate_loop",
+    "gate_reload",
+    "gate_nonconst",
+    "gate_nonconst_copy",
+    "gate_paramcmp",
+    "gate_abistack",
+    "gate_negeq",
+    "gate_neginv",
+} | set(_WIDTH_BYTES)
+
+
+def _arith_literal(entry):
+    text = (_BUILD / entry["source"]).read_text(encoding="utf-8")
+    m = re.search(r"==\s*(0x[0-9a-fA-F]+|\d+)", text)
+    assert m, f"{entry['id']}: no compared literal in the source"
+    return int(m.group(1), 0)
+
+
+def _t4_structure(shape, entry, truth, cand, record_property):
+    """The per-shape structural P-code probe assertions of design sec 6 T4."""
+    if shape not in _PROBED_SHAPES:
+        return
+    probe = _probe(entry, truth)
+    ops = probe["ops"]
+    kinds = [tuple(c["kinds"]) for c in probe["compares"]]
+    if shape == "gate_arith":
+        # no emitted value equals the source literal (the compared quantity is a
+        # product of the parameter, not the parameter)
+        assert _arith_literal(entry) not in {a.value for a in cand.required_args}
+    elif shape == "gate_bool":
+        # a composed condition: the binary AND is a real P-code op
+        assert ops.get("INT_AND", 0) + ops.get("BOOL_AND", 0) >= 1, ops
+    elif shape == "gate_boolor":
+        # short-circuit || is two CBRANCHes, never a BOOL_OR op
+        assert ops.get("CBRANCH", 0) >= 2 and ops.get("BOOL_OR", 0) == 0, ops
+    elif shape == "gate_loop":
+        assert probe["has_exitless_cycle"] is True, "no back-edge SCC without exit"
+    elif shape == "gate_reload":
+        # The round-tripped parameter is memory-resident (store to a global, an
+        # external call, then a reload), compared to a constant. Ghidra 12.1.3
+        # re-materializes the reload as an INDIRECT-defined varnode (or a bare
+        # memory-space input): design sec 2.1 maps INDIRECT -> AMBIGUOUS, the
+        # same class as a LOAD -> MEM. A plain PARAM here would be a pinnable
+        # (known) compare, i.e. the fixture would not exercise the reason.
+        memish = ("mem", "op:INDIRECT")
+        assert any(
+            sorted(k)[0] == "const" and sorted(k)[1] in memish for k in kinds
+        ), kinds
+        assert not any("param" in k for k in kinds), kinds
+    elif shape in ("gate_nonconst", "gate_nonconst_copy"):
+        assert any(sorted(k) == ["mem", "param"] for k in kinds), kinds
+    elif shape == "gate_paramcmp":
+        assert any(k == ("param", "param") for k in kinds), kinds
+    elif shape == "gate_abistack":
+        params = {p["slot"]: p for p in probe["params"]}
+        assert 6 in params, ("7th formal not recovered", probe["params"])
+        assert params[6]["register"] is None and params[6]["stack"] is True, params[6]
+    elif shape in ("gate_negeq", "gate_neginv"):
+        # The semantic end-to-end result is asserted by the caller. Record (never
+        # fail) whether -O0 folded the negation into a flipped branch; parity
+        # consumption itself is guaranteed by T14, not by these fixtures.
+        record_property("bool_negate_in_high_pcode", ops.get("BOOL_NEGATE", 0))
+    if shape in _WIDTH_BYTES:
+        params = {p["slot"]: p for p in probe["params"]}
+        assert params[0]["size"] == _WIDTH_BYTES[shape], (shape, params[0])
+
+
+@pytest.mark.skipif(not _FALSIFIER_ELF, reason="dev payoff corpus not built")
+@pytest.mark.parametrize("entry", _FALSIFIER_ELF, ids=_ids(_FALSIFIER_ELF))
+def test_t4_falsifier_matches_table_truth_and_shape(entry, corpus_db, record_property):
+    """Each of the 25 sec 3a shapes yields its exact ``(args_status, reason,
+    required_args)`` -- never a partial-known -- plus its structural P-code shape."""
+    _, cand = _check_args_truth(entry, corpus_db)
+    truth = _truth_for(entry)
+    if cand.args_status == "unknown":
+        assert cand.required_args == (), (entry["id"], "partial-known")
+    _t4_structure(truth["shape"], entry, truth, cand, record_property)
+
+
+# ---- T5: rename + strip twins; gate_disj strip twin and PE ----------------------
+
+
+@pytest.mark.skipif(not _TWIN_ENTRIES, reason="dev payoff corpus not built")
+@pytest.mark.parametrize("entry", _TWIN_ENTRIES, ids=_ids(_TWIN_ENTRIES))
+def test_t5_twin_matches_truth(entry, corpus_db):
+    _check_args_truth(entry, corpus_db)
+
+
+@pytest.mark.skipif(not _FALSIFIER_VARIANTS, reason="dev payoff corpus not built")
+@pytest.mark.parametrize("entry", _FALSIFIER_VARIANTS, ids=_ids(_FALSIFIER_VARIANTS))
+def test_t5_t6_gate_disj_strip_twin_and_pe_stay_unknown_and_empty(entry, corpus_db):
+    _, cand = _check_args_truth(entry, corpus_db)
+    got = (cand.args_status, cand.args_reason, cand.required_args)
+    assert got == ("unknown", "unresolved_gate", ()), (entry["id"], got)
+
+
+# ---- T6: PE ---------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _PE_ENTRIES, reason="dev payoff corpus not built")
+@pytest.mark.parametrize("entry", _PE_ENTRIES, ids=_ids(_PE_ENTRIES))
+def test_t6_pe_matches_truth(entry, corpus_db):
+    """Truth on every PE binary (32-bit agreement: PE ``long`` is 32 bits and the
+    31-bit corpus constants equal the ELF twin's, so no value changes)."""
+    _, cand = _check_args_truth(entry, corpus_db)
+    if _truth_shape(entry) in ("arg1", "arg3"):
+        _assert_raw_provenance(entry, _truth_for(entry))
+
+
+@pytest.mark.skipif(not _PE_ENTRIES, reason="dev payoff corpus not built")
+def test_t6_there_are_four_pe_arg_binaries():
+    assert sum(1 for e in _PE_ENTRIES if _truth_shape(e) in ("arg1", "arg3")) == 4
+
+
+# ---- T13 / fixtures --------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _FIXTURE_ENTRIES, reason="dev payoff corpus not built")
+@pytest.mark.parametrize("entry", _FIXTURE_ENTRIES, ids=_ids(_FIXTURE_ENTRIES))
+def test_t13_fixture_required_args_and_registers_match_truth(entry, corpus_db):
+    """The two overflowable ret2win fixtures and the mixed float/int ABI positive:
+    values by position AND the recorded register per arg equal the fixture truth
+    (``abimix``: position 2 in ``rdi`` -- the leading ``double`` took XMM0 and
+    does not trigger ``abi_class``)."""
+    _, cand = _check_args_truth(entry, corpus_db)
+    truth = _truth_for(entry)
+    by_pos = sorted(cand.required_args, key=lambda a: a.position)
+    assert [a.reg for a in by_pos] == truth["required_regs"], entry["id"]
+    if truth["fixture"] == "abimix":
+        assert [(a.position, a.value, a.reg) for a in by_pos] == [(2, 0x4242, "rdi")]
+
+
+# ---- T14b: gated real-Ghidra parity self-test, judged from a result artifact -----
+
+# design sec 6 T14b: 4 peel sequences x 2 cmpOpcodes, hand-counted from the design.
+_SELFTEST_EXPECTED_CASES = 4 * 2
+
+
+def _parse_self_test_artifact(text, expected_cases):
+    """Validate the self-test result artifact per design sec 6 T14b and return the
+    case-line count. Raises AssertionError on a missing/empty/short/stale artifact:
+    the count of PASS/FAIL:<case> lines must equal BOTH ``expected_cases`` and the
+    ``<n>`` in the trailing ``ALL_PASS <n>`` sentinel, the file must END with that
+    sentinel, and no line may be a FAIL."""
+    assert text and text.strip(), "self-test artifact is empty"
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    assert not any(ln.startswith("FAIL") for ln in lines), text
+    sentinel = re.fullmatch(r"ALL_PASS (\d+)", lines[-1])
+    assert sentinel, f"artifact does not end with an ALL_PASS sentinel: {text!r}"
+    n = int(sentinel.group(1))
+    case_lines = [ln for ln in lines if ln == "PASS" or ln.startswith("FAIL:")]
+    assert len(case_lines) == expected_cases == n, (len(case_lines), expected_cases, n)
+    return len(case_lines)
+
+
+def test_w2_self_test_artifact_parser_accepts_exactly_the_complete_artifact():
+    n = _SELFTEST_EXPECTED_CASES
+    good = "PASS\n" * n + f"ALL_PASS {n}\n"
+    assert _parse_self_test_artifact(good, n) == 8
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",  # empty / crash-before-write
+        "\n\n",
+        "PASS\n" * 7 + "ALL_PASS 7\n",  # truncated, embedded n matches
+        "PASS\n" * 8 + "ALL_PASS 7\n",  # sentinel n disagrees
+        "PASS\n" * 7 + "ALL_PASS 8\n",  # short artifact, sentinel claims 8
+        "PASS\n" * 8,  # no sentinel
+        "PASS\n" * 7 + "FAIL:peel1:EQUAL\nALL_PASS 8\n",  # a failed case
+        "PASS\n" * 8 + "ALL_PASS 8\nPASS\n",  # does not END with the sentinel
+        "PASS\n" * 9 + "ALL_PASS 9\n",  # more cases than the design counts
+    ],
+    ids=[
+        "empty",
+        "blank",
+        "truncated-n-matches",
+        "n-disagrees",
+        "short-claims-8",
+        "no-sentinel",
+        "fail-line",
+        "trailing-junk",
+        "too-many",
+    ],
+)
+def test_w2_self_test_artifact_parser_rejects_bad_artifacts(text):
+    with pytest.raises(AssertionError):
+        _parse_self_test_artifact(text, _SELFTEST_EXPECTED_CASES)
+
+
+@pytest.mark.skipif(not _PAYOFF_ENTRIES, reason="dev payoff corpus not built")
+def test_w2_self_test_parity_seam_passes_in_real_ghidra():
+    """T14b: run SupwngoPayoffSelfTest under analyzeHeadless (the program is
+    ignored -- the script drives the package-private parity seam directly) and
+    judge it from the RESULT ARTIFACT at a fresh path, never the exit code
+    (``_run_ghidra_headless`` treats any ended process as finished and Ghidra
+    logs, not rethrows, a script exception)."""
+    need_ghidra()
+    bin_path = _bin_for(_PAYOFF_ENTRIES[0])
+    d = Decompiler(types.SimpleNamespace(path=Path(bin_path)))
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = Path(tmp) / "project"
+        proj.mkdir()
+        home = Path(tmp) / "home"
+        home.mkdir()
+        result = Path(tmp) / "selftest-result.txt"
+        assert not result.exists(), "result path must be guaranteed-absent"
+        cmd = [
+            str(d._ghidra_path),
+            str(proj),
+            "SupwngoSelfTestTmp",
+            "-import",
+            str(bin_path),
+            "-scriptPath",
+            str(d._ghidra_scripts_dir()),
+            "-postScript",
+            "SupwngoPayoffSelfTest.java",
+            str(result),
+            "-deleteProject",
+        ]
+        d._run_ghidra_headless(cmd, 300, env=payoff._merged_jvm_env(str(home)))
+        assert result.is_file(), "self-test wrote no result artifact (did not run)"
+        text = result.read_text(encoding="utf-8")
+    assert _parse_self_test_artifact(text, _SELFTEST_EXPECTED_CASES) == 8
