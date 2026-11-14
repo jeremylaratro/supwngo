@@ -1,11 +1,40 @@
-# W-2 — required-args extraction: constants from the binary (class B) (2026-11-13, Rev 6)
+# W-2 — required-args extraction: constants from the binary (class B) (2026-11-13, Rev 7)
 
 Detailed design for **directive W, phase W-2**. Parent plan:
 `docs/plans/2026-11-13-retire-hardcoded-target-values-plan.md` (§3 principle 3 / §82-84, §4 row W-2 / §130,
 §12 class-B notes / §240). Builds directly on **W-1** (`supwngo/analysis/payoff.py` + `SupwngoPayoff.java`,
 merged PR #39, `9f543bb`). Branch `feat/w2-required-args` off `main` `9f543bb`.
 
-> **Rev 6 — reworked after the Tier-2 (cyber) re-review of Rev 5 returned REWORK (2 BLOCKER / 6 MAJOR / 3
+> **Rev 7 — reworked after the Tier-2 (cyber) re-review of Rev 6 returned REWORK (1 BLOCKER / 5 MAJOR / 3
+> MINOR; large CONFIRMED-FIXED list).** The reviewer confirmed Rev 6 closed every big Rev-5 hole (must-reach for
+> `gate_boolor`/`gate_relaudit`, `LOAD`→ambiguous, the shared cache validator, compound-storage rejection,
+> PE/image-base routing, consumer abstention, `gate_invert → avoidance_gate`, and all counts). Rev 7 closes the
+> five narrower correctness refinements the re-review found, each grounded against source:
+> - **Step-2 avoidability is a backward must-reach least fixed point, not a forward BFS-to-terminal** (§2.2,
+>   closing the BLOCKER that `if(nondet())for(;;){} sink;` reaches no terminal after sink deletion yet still
+>   avoids the sink, so Rev 6 reported `known,[]`). `MustReachSink = sinkBlocks ∪ {v | succ(v)≠∅ ∧ ∀s∈succ(v):
+>   s∈MustReachSink}`; avoidable iff `Entry ∉ MustReachSink`. New falsifier `gate_loop`; conservative limitation
+>   recorded (R11): a terminating pre-sink loop is also `unknown` — the safe direction.
+> - **Domain cardinality is in bits, overflow-safe** (§2.2, closing the MAJOR that `Varnode.getSize()` is
+>   **bytes**, so `uint8_t a; if(a==0||a==1)` computed `|D|=2==2^1` and dropped `⊥`). `width_bits = 8*getSize()`;
+>   `⊥` added iff `width_bits>12 || |D| < (1L<<width_bits)` (never evaluates `1L<<64`).
+> - **A distinct `MEM` lattice state** (§2.1, closing the MAJOR that unconditional `LOAD→AMBIGUOUS` made
+>   `a==global_key`-via-`LOAD` classify `ambiguous_gate`, contradicting the `gate_nonconst→nonconst_gate`
+>   contract). `MEM` vs const ⇒ `ambiguous_gate` (`gate_reload`); `PARAM(full)` vs `MEM` ⇒ `nonconst_gate`
+>   (`gate_nonconst`); `decoy_sink` redefined to register-resident non-param locals (no memory global).
+> - **`bool_compose`/`bool_fanout` are a per-branch cause, not on-sight taint** (§2.2, closing the MAJOR that a
+>   non-gating composed branch `c=(a==X)&flag; if(c)audit(); sink;` wrongly returned `unknown`). The cause is
+>   recorded; Step 1 emits it only if the branch individually gates, else Step 2 leaves both edges adversarial →
+>   `known,[]`. New falsifier `gate_boolnongate`.
+> - **ABI-class storage is validated only for EMITTED required formals** (§3, closing the MAJOR that checking
+>   every formal "at/below the highest required position" rejected `win(double unused, long key){if(key==X)…}`
+>   — `key` is position 2 but correctly lives in `RDI`). New positive T13 proves position-2→`RDI` delivery.
+> - MINORs folded: T12's exact call-count subcase uses an **always-failing** spied verifier (success early-exit
+>   tested separately); the six-register extractor set is attributed to the §3 contract and `profile_stage.py:77-80`
+>   is cited only as evidence gadget discovery lacks `rcx/r8/r9`; the **parent plan is now actually amended**
+>   (`:56,87,133`, §9).
+>
+> **Rev 6 (lineage) — reworked after the Tier-2 (cyber) re-review of Rev 5 returned REWORK (2 BLOCKER / 6 MAJOR / 3
 > MINOR; 7 CONFIRMED FIXED).** The reviewer confirmed all four Rev-4 BLOCKERs are genuinely closed (bounded
 > enumeration, four-way classification, unary-only bool walk fail-closed, typed `ArgDiscovery` abstention),
 > the corrected Ghidra API names, the ELF image-base guard, the live-envelope validation placement, and parent
@@ -26,7 +55,8 @@ merged PR #39, `9f543bb`). Branch `feat/w2-required-args` off `main` `9f543bb`.
 >   forwarding is deferred to W-2.1.
 > - **The bounded-enumeration domain is built in source-width bitvector space** (§2.2), closing the MAJOR that
 >   `{0…255}∪{⊥}` for an 8-bit formal injected an impossible value and produced a false `unknown`: constants are
->   inverse-normalized to the formal's width and deduped, and `⊥` is added **only** when `|D(p)| < 2^width(p)`.
+>   inverse-normalized to the formal's width and deduped, and `⊥` is added **only** when `|D(p)| < 2^width(p)`
+>   (Rev 7 corrected `width` to **bits** = `8*getSize()` with overflow-safe arithmetic — see the Rev-7 note above).
 > - **Compound/multi-varnode storage is rejected** (§3 `simpleReg` guard; falsifier `gate_abicompound`), closing
 >   the MAJOR that `VariableStorage.getRegister()` returns the first register even for a compound `{RDI,RSI}`
 >   parameter, which would have delivered half a value. The guard requires
@@ -104,12 +134,13 @@ parameter checks let control reach its W-1 sink — **from the binary**, not fro
   `param == const` (§2.2).
 - The **exec/file positives (16/16)** and the **const-sink non-param decoy** (`decoy_sink`) yield
   `args_status=="known"` with **`required_args == ()` exactly** (the sink is ungated / all compares are
-  non-parameter). The **thirteen unresolvable-gate falsifiers** (`gate_invert`, `gate_disj`, `gate_disjineq`,
+  non-parameter). The **fourteen unresolvable-gate falsifiers** (`gate_invert`, `gate_disj`, `gate_disjineq`,
   `gate_relational`, `gate_arith`, `gate_mixed`, `gate_bool`, `gate_boolor`, `gate_reload`, `gate_nonconst`,
-  `gate_paramcmp`, `gate_multieq`, `gate_abicompound`) yield `args_status=="unknown"` with an empty list and a
-  `reason`: a real gate (or an unrepresentable ABI) W-2 cannot pin to a single required `param==const` value.
-  `gate_audit` and `gate_relaudit` (branches that do **not** gate the sink) yield `known, ()`. A spurious arg is
-  never emitted for any of them; `gate_arith`/`gate_mixed` never emit the literal compared constant.
+  `gate_paramcmp`, `gate_multieq`, `gate_abicompound`, `gate_loop`) yield `args_status=="unknown"` with an empty
+  list and a `reason`: a real gate (or an unrepresentable ABI) W-2 cannot pin to a single required `param==const`
+  value. `gate_audit`, `gate_relaudit`, and `gate_boolnongate` (branches that do **not** gate the sink) yield
+  `known, ()`. A spurious arg is never emitted for any of them; `gate_arith`/`gate_mixed` never emit the literal
+  compared constant.
 - The **27 class-B ABI/infrastructure constants** are closed as `allowed` (with a justification); the remaining
   **42 class-B per-binary target guesses stay `open`** (they still match live hits, so the W-0 ratchet is
   satisfied) with their owning phase recorded in §5.2. **0 `migrated`.** No new lifecycle state is introduced.
@@ -169,13 +200,18 @@ value, an ambiguous slot, or a boolean composition is `unknown`, never a guessed
 
 ### 2.1 Slot lattice with an entry-value guard (MAJOR 1 / B1, B2)
 
-`traceParamSlot(Varnode)` classifies an operand over an explicit lattice ordered `NONPARAM, PARAM ⊏ AMBIGUOUS`
-(`AMBIGUOUS` is **top**):
+`traceParamSlot(Varnode)` classifies an operand over an explicit lattice ordered
+`NONPARAM, PARAM ⊏ MEM ⊏ AMBIGUOUS` (`AMBIGUOUS` is **top**):
 
 - **`NONPARAM`** — proven to carry no formal-parameter value (local, global, constant, or a value all of whose
   inputs are `NONPARAM`).
 - **`PARAM(slot, width, full)`** — carries formal parameter `slot`'s **entry** value; `full == true` only when
   the **whole** storage of the parameter participates and no non-value-preserving op intervened.
+- **`MEM`** — the value is a `LOAD` from memory whose stored provenance W-2 does not resolve (store-to-load
+  forwarding is W-2.1). It **may or may not** carry a parameter (a spilled/`volatile`-round-tripped param, *or*
+  a genuine global), so W-2 treats it as a non-pinnable, non-constant operand — distinct from `AMBIGUOUS`
+  (which is param-*derived*) so the compare classifier can tell `gate_reload` (`MEM` vs const) from
+  `gate_nonconst` (`PARAM` vs `MEM`). See the `LOAD` transfer row.
 - **`AMBIGUOUS`** (top) — param-derived but slot/slice/value not pinnable.
 
 **Entry-value guard (closes B1).** A varnode is `PARAM(slot, size, full=true)` **only** when it is the formal
@@ -183,8 +219,8 @@ input itself (`v.isInput() && v.getHigh() instanceof HighParam && v.getSize() ==
 varnode covers the parameter's full storage), **or** it is reached from such an input through a chain of **only
 value-preserving ops**. A `HighParam`-labelled varnode with any **other** defining op is `AMBIGUOUS`.
 
-Transfer functions (a true lattice join: any op not listed, with a `PARAM`/`AMBIGUOUS` input, → `AMBIGUOUS`;
-closes B2):
+Transfer functions (a true lattice join: any op not listed, with a `PARAM`/`MEM`/`AMBIGUOUS` input, →
+`AMBIGUOUS` — `MEM ⊏ AMBIGUOUS`, so arithmetic/logic over a loaded value joins up to top; closes B2):
 
 | opcode | result |
 |---|---|
@@ -192,26 +228,36 @@ closes B2):
 | `COPY` of `PARAM(full)`; `CAST` **iff width-preserving** | pass through unchanged |
 | `INT_ZEXT`/`INT_SEXT` of `PARAM(full)` | `PARAM(slot, extended_width, full=true)` **iff** the compared constant survives a canonical round-trip: truncate to source width, re-extend (zero/sign per op), require bit-equality with the comparison-width constant; else `AMBIGUOUS`. (Corpus 31-bit `CONST_RANGE`, `payoff_source.py:81`, satisfies this.) |
 | `SUBPIECE` (partial slice) | `AMBIGUOUS` |
-| `LOAD` (value from memory) | `AMBIGUOUS` — the P-code inputs describe the **address**, not the stored value, so "all inputs `NONPARAM`" would wrongly yield `NONPARAM` for `g = a; if (g == X)` via a real memory round-trip (`volatile`/global). Fail closed: a comparison operand defined by `LOAD` is `AMBIGUOUS` unless a bounded same-function store-to-load forward proves the slot was last written exactly a `PARAM(full)` with no aliasing store between (that refinement is optional for W-2; the corpus positives compare the parameter directly, not through a reload — confirmed in de-risk step 2). `gate_reload` is the falsifier. |
+| `LOAD` (value from memory) | **`MEM`** — the P-code inputs describe the **address**, not the stored value, so "all inputs `NONPARAM`" would wrongly yield `NONPARAM` for `g = a; if (g == X)` via a real memory round-trip (`volatile`/global). A `LOAD` result is `MEM` (not `AMBIGUOUS`): W-2 cannot tell a reloaded parameter (`gate_reload`) from a genuine global (`gate_nonconst`'s RHS), so it is a non-pinnable, non-constant operand. Fail closed per the classifier below (`MEM` vs const ⇒ `ambiguous_gate`; `PARAM(full)` vs `MEM` ⇒ `nonconst_gate`) unless a bounded same-function store-to-load forward proves the slot was last written exactly a `PARAM(full)` with no aliasing store between (W-2.1; the corpus positives compare the parameter directly, not through a reload — confirmed in de-risk step 2). `gate_reload` is the falsifier. |
 | `INDIRECT`, `PTRSUB`, `PTRADD` | `AMBIGUOUS` |
 | arithmetic/logic (`INT_ADD/SUB/MULT/AND/OR/XOR/LEFT/RIGHT/…`) with a `PARAM`/`AMBIGUOUS` input | `AMBIGUOUS` |
 | `MULTIEQUAL` (phi) | `PARAM(s,w,full)` **iff every** non-trivial arm is `PARAM` with the **same** slot and `full`; a back-edge arm may be ignored **only when it is exactly the phi's own output unchanged** (a true self-reference) — `phi(param, phi+1)` is `AMBIGUOUS`, not `PARAM`; **all** arms `NONPARAM` → `NONPARAM`; any other mix (`PARAM`+`NONPARAM`, two slots, a partial) → `AMBIGUOUS` |
 | all inputs `NONPARAM` | `NONPARAM` |
 
 Classification of a compare op's two inputs (closes BLOCKER 2 — a comparison that *carries* a parameter is a
-gate unless proven pinnable; the **only** true non-gate is "no operand carries a parameter"). Call an operand
-**param-carrying** if it is `PARAM(…)` or `AMBIGUOUS`. Evaluate in this order (first match wins):
+gate unless proven pinnable; the **only** true non-gate is "no operand carries a parameter or a `MEM` value").
+Call an operand **param-carrying** if it is `PARAM(…)` or `AMBIGUOUS`. Evaluate in this order (first match wins):
 
-- **non-gate** — **neither** operand is param-carrying (both are constants/globals/locals). Only this is skipped
-  as a non-gate (`decoy_sink`).
-- **ambiguous-param** — at least one operand is `AMBIGUOUS` (param-derived, slot/slice/value unpinnable). If it
-  gates, `unknown(reason=ambiguous_gate)` (`gate_arith`, `gate_multieq`).
+- **non-gate** — **neither** operand is `PARAM`/`AMBIGUOUS`/`MEM` (both are constants or register-resident
+  non-param locals). Only this is skipped as a non-gate (`decoy_sink`).
+- **ambiguous-param** — at least one operand is `AMBIGUOUS` (param-*derived*, slot/slice/value unpinnable),
+  **or** a `MEM` operand whose other side is **not** a direct `PARAM(full)` (a reloaded value we cannot pin,
+  compared to a constant/global — `g==X` in `gate_reload`). If it gates a sink, `unknown(reason=ambiguous_gate)`
+  (`gate_arith`, `gate_multieq`, `gate_reload`).
 - **pinnable** — **exactly one** operand is `PARAM(slot, full)` **and** the other `isConstant()`. The only form
-  that can emit a required value.
-- **nonconst-param** — any remaining param-carrying comparison (no `AMBIGUOUS` operand, not pinnable):
-  `PARAM(full)` vs a non-constant (global/memory load, i.e. `NONPARAM` but not `isConstant()`), or two
-  `PARAM(full)` operands (`a==b`). No fixed value exists; if it gates a sink it is `unknown(reason=nonconst_gate)`
-  (`gate_nonconst`, `gate_paramcmp`). **Never a non-gate.**
+  that can emit a required value. (A `MEM` operand is never `isConstant()`, so a `PARAM(full)` vs `MEM` compare
+  is **not** pinnable and falls through to `nonconst-param` below.)
+- **nonconst-param** — any remaining param-carrying comparison not caught above: `PARAM(full)` vs a non-constant
+  — a `MEM` value (`a==global_key` via `LOAD`, `gate_nonconst`), another `PARAM(full)` (`a==b`, `gate_paramcmp`),
+  or a `NONPARAM` that is not `isConstant()`. No fixed value exists; if it gates a sink it is
+  `unknown(reason=nonconst_gate)`. **Never a non-gate.**
+
+(The `MEM` split is what keeps `gate_reload` → `ambiguous_gate` and `gate_nonconst` → `nonconst_gate` consistent
+with §3a/T4, per the Rev-6-review MAJOR. A **global compared to a constant via `LOAD`** — `MEM` vs const with no
+param anywhere — is also `ambiguous_gate` (unknown,[]) under this rule, which is sound: it never emits a spurious
+value, it only costs a `known,[]`→`unknown,[]` on a pathologically global-guarded ungated sink, so the consumer
+abstains. `decoy_sink` therefore uses **register-resident non-param locals**, never a memory global, so it stays
+a clean non-gate → `known,[]`.)
 
 ### 2.2 Requiredness: per-branch outcome test + must-reach value enumeration (BLOCKER 1/3 / B5, B6)
 
@@ -233,22 +279,32 @@ defined over a non-empty sink set; with no sink it would vacuously report "avoid
 **Collect gating param branches — unary-only condition walk (closes BLOCKER 3).** For every `CBRANCH`, resolve
 its governing comparison by walking the condition varnode back through **value-preserving unary ops only**:
 `COPY`, width-preserving `CAST`, `INT_ZEXT`/`INT_SEXT` (per §2.1), and `BOOL_NEGATE` (flipping an inversion-parity
-bit). The walk succeeds only if it terminates at a **single** integer comparison op (`INT_EQUAL`, `INT_NOTEQUAL`,
-`INT_SLESS`, `INT_LESS`, …). It **fails closed** when:
+bit). The walk either **resolves** to a **single** integer comparison op (`INT_EQUAL`, `INT_NOTEQUAL`,
+`INT_SLESS`, `INT_LESS`, …), or it is **unresolved** with a recorded **cause**:
 - the chain contains **any binary boolean/bitwise combinator** — `BOOL_AND`, `BOOL_OR`, `BOOL_XOR`, `INT_AND`,
-  `INT_OR`, `INT_XOR` — feeding the branch condition (it cannot be reduced to one required comparison):
-  `unknown(reason=bool_compose)` (`gate_bool`, `gate_boolor`); **or**
+  `INT_OR`, `INT_XOR` — feeding the branch condition (it cannot be reduced to one required comparison): cause
+  **`bool_compose`** (`gate_bool`); **or**
 - the comparison's boolean result **fans out** to more than one `CBRANCH`, or to a non-branch use
-  (stored/returned/phi) with no single governing branch: `unknown(reason=bool_fanout)`.
+  (stored/returned/phi) with no single governing branch: cause **`bool_fanout`**.
+
+**An unresolved-condition branch is NOT tainted on sight** (Rev-6-review MAJOR: a composed/fanned-out condition
+on a branch that does **not** gate the sink must stay `known` — e.g. `c=(a==X)&flag; if(c) audit(); sink;`, both
+edges rejoin before the unconditional sink). Instead the branch's cause is **recorded** and the branch is treated
+like any other non-enumerable branch: Step 1 emits its cause **only if it individually gates** (edge-cut test
+below), and Step 2 leaves **both its edges adversarial** otherwise. `gate_bool` (`if(c&flag) sink; else return;`)
+individually gates → Step 1 → `bool_compose`; `gate_boolnongate` (`if(c) audit(); sink;`) does not gate → Step 2
+→ both edges rejoin → `known,[]`.
 
 A branch is **param-dependent** if its governing comparison is `pinnable`, `nonconst-param`, or `ambiguous-param`
-(§2.1); all other branches (non-parameter comparisons, unresolved indirect) are **uncontrolled**. A branch is
-**enumerable** iff it is a `pinnable` equality (`PARAM(full)` vs constant); everything else — `nonconst-param`,
-`ambiguous-param`, relational, and every uncontrolled branch — is **non-enumerable** and is treated
-**adversarially** in Step 2 (its outcome is not fixed; the sink must be reached regardless of it). This is what
-catches a short-circuit `||`/`&&` **lowered to control flow** rather than a `BOOL_*` op (`a==X || global_flag`
-compiles at `-O0` to two `CBRANCH`es, no `BOOL_OR` — the bool-compose rule above would not fire, so the
-uncontrolled `global_flag` branch must instead be adversarial; `gate_boolor` is the falsifier).
+(§2.1); an unresolved-condition branch (`bool_compose`/`bool_fanout`) is also carried through Step 1/Step 2 even
+though its operands could not be classified; all other branches (non-parameter comparisons, unresolved indirect)
+are **uncontrolled**. A branch is **enumerable** iff it is a `pinnable` equality (`PARAM(full)` vs constant);
+everything else — `nonconst-param`, `ambiguous-param`, relational, unresolved-condition, and every uncontrolled
+branch — is **non-enumerable** and is treated **adversarially** in Step 2 (its outcome is not fixed; the sink
+must be reached regardless of it). This is what catches a short-circuit `||`/`&&` **lowered to control flow**
+rather than a `BOOL_*` op (`a==X || global_flag` compiles at `-O0` to two `CBRANCH`es, no `BOOL_OR` — the
+bool-compose cause would not fire, so the uncontrolled `global_flag` branch must instead be adversarial;
+`gate_boolor` is the falsifier).
 
 **Step 1 — per-branch required outcome (emit or taint).** For each param-dependent branch `b`: cut each of `b`'s
 two out-edges in turn and test sink reachability from `Entry`. If exactly one cut disconnects **every** sink
@@ -256,6 +312,9 @@ block, that is `b`'s **required edge** `r_b` (`b` individually gates the sinks).
 Classify `b` by §2.1 operand roles **first** (so the reason is unambiguous when several descriptions fit — e.g.
 `if(a==global_key) return` is both inverted and non-constant; it is `nonconst_gate`, matching the §2.2
 precedence, not `avoidance_gate`):
+- `b` has an **unresolved condition** (its recorded cause `bool_compose`/`bool_fanout`) → `unknown(reason=`cause`)`
+  (`gate_bool`). (A gating composed/fanned-out condition genuinely cannot be pinned; a *non-gating* one never
+  reaches this bullet — it falls to Step 2.)
 - `b` is `ambiguous-param` → `unknown(reason=ambiguous_gate)` (`gate_arith`, `gate_multieq`).
 - `b` is `nonconst-param` → `unknown(reason=nonconst_gate)` (`gate_nonconst`, `gate_paramcmp`).
 - `b` is a **relational** `pinnable`/param comparison → `unknown(reason=relational_gate)` (`gate_relational`).
@@ -280,28 +339,46 @@ uncontrolled branch (`global_flag`) is **not** guaranteed.
 Let the **enumerable set** be every `pinnable`-equality branch; **free params** `F` = the params compared in
 enumerable branches that were **not** emitted in Step 1.
 - **Interesting-value domain** per free param `p`, built in `p`'s **source-width bitvector space** (MAJOR, Rev-5
-  `:225`): `D(p) = { each constant p is compared against (inverse-normalized through any `ZEXT`/`SEXT` to the
-  source width, de-duplicated) }`, plus **one sentinel `⊥`** (an unrepresented value) **only when**
-  `|D(p)| < 2^width(p)` (so an exhaustive 8-bit cascade covering all 256 values adds no phantom 257th case).
+  `:225`; Rev-6-review width-units fix). Let `width_bits(p) = 8 * v.getSize()` — Ghidra's `Varnode.getSize()` is
+  in **bytes**, so the domain cardinality uses **bits**, never the raw byte count. `D(p) = { each constant p is
+  compared against, inverse-normalized through any `ZEXT`/`SEXT` to the source width (the §2.1 SEXT canonical
+  round-trip, so a sign-extended constant maps to its source-width bit pattern and de-duplicates correctly) }`,
+  plus **one sentinel `⊥`** (an unrepresented value) **only when `D(p)` is not already exhaustive**. The
+  exhaustiveness test is **overflow-safe** (Java `1L << 64` is undefined; `ENUM_CAP = 4096 = 2^12`): add `⊥`
+  **iff** `width_bits(p) > 12 || |D(p)| < (1L << width_bits(p))`. (For an 8-bit formal, `2^8 = 256`, so a
+  cascade covering all 256 constants adds no phantom 257th case; `a==0||a==1` has `|D|=2 < 256` and **does** get
+  `⊥`.)
 - **Bound:** if `∏_{p∈F} |D(p)|` exceeds `ENUM_CAP = 4096` → `unknown(reason=unresolved_gate)` (fail closed).
 - For each assignment `σ` in the cartesian product, build the **pruned CFG**: fix every `pinnable`-equality
   branch whose param is bound by `σ` (emitted or free) to its determined edge (remove the other); leave **both**
-  edges of every **non-enumerable** branch — relational, `nonconst-param`, `ambiguous-param`, and every
-  **uncontrolled** (non-parameter) branch — in place (**adversarial**). Then test **sink-avoidability**: delete
-  the sink blocks and BFS from `Entry`; if any **return/terminal** block (a `RETURN`, or a block with no
-  successors that is not a sink) is reachable, the sink is **avoidable** under `σ`.
+  edges of every **non-enumerable** branch — relational, `nonconst-param`, `ambiguous-param`, unresolved-condition
+  (`bool_compose`/`bool_fanout`, §2.2 walk), and every **uncontrolled** (non-parameter) branch — in place
+  (**adversarial**). Then test **sink-avoidability** by a backward **must-reach fixed point** (not a forward
+  BFS-to-terminal, which is unsound on cyclic CFGs — an infinite loop reaches no terminal yet still avoids the
+  sink). Compute the least fixed point over the pruned graph:
+  > `MustReachSink = sinkBlocks ∪ { v | succ(v) ≠ ∅ ∧ ∀ s ∈ succ(v): s ∈ MustReachSink }`
+  (iterate to convergence; a block with **no** successors, or **any** successor not in the set — including a
+  block whose only successor is a non-must-reach loop — is **excluded**). The sink is **avoidable under `σ`**
+  **iff `Entry ∉ MustReachSink`** (some path from `Entry` reaches a non-sink terminal **or** stays in a cycle
+  that never must-reaches a sink).
   - If **some** `σ` makes the sink avoidable ⇒ a residual constraint `L` does not capture (a disjunction, an
-    `a==X || a!=Z`, a `global_flag` the caller can't set) ⇒ `unknown(reason=unresolved_gate)` — **the
-    emitted-so-far list is discarded; W-2 never returns a partial `known`.**
-  - If **no** `σ` makes the sink avoidable (the sink is unavoidable for every assignment) ⇒ `known` with the
+    `a==X || a!=Z`, a `global_flag` the caller can't set, an uncontrolled infinite loop) ⇒
+    `unknown(reason=unresolved_gate)` — **the emitted-so-far list is discarded; W-2 never returns a partial
+    `known`.**
+  - If **no** `σ` makes the sink avoidable (`Entry ∈ MustReachSink` for every assignment) ⇒ `known` with the
     emitted list (possibly empty — a truly ungated sink: `exec`/`file`/`decoy_sink`/`gate_audit`, and a
     non-gating uncontrolled branch such as `if(a>K) audit(); sink;`, whose both edges rejoin before the
     unconditional sink).
 
 The must-reach formulation **subsumes** Rev-5's "fail closed on any non-enumerable branch in U": a non-gating
-relational/uncontrolled branch no longer forces `unknown` (its two edges rejoin before the sink, so no `σ` can
-avoid the sink through it), while a *gating* one (a disjunction arm, a `global_flag`) does expose an avoid-path
-and correctly yields `unknown`.
+relational/uncontrolled branch no longer forces `unknown` (its two edges rejoin before the sink, so `Entry`
+still must-reaches the sink), while a *gating* one (a disjunction arm, a `global_flag`, an unconditional loop)
+leaves `Entry ∉ MustReachSink` and correctly yields `unknown`. **Conservative limitation (R11):** because the
+fixed point is purely control-flow, it cannot prove a **terminating** loop terminates — a win function with a
+loop on *every* path to its sink has `Entry ∉ MustReachSink` and is classified `unknown` ⇒ the consumer
+**abstains** (safe: never a wrong arg; the directive-W `--win`/manual path still covers it). The corpus
+positives (`arg1`/`arg3`) are loop-free straight-line guards, so this never regresses them; `gate_loop` is the
+falsifier proving the unbounded-loop case is `unknown`.
 
 **Reason precedence (MINOR 1).** When several apply, the function's `reason` is the first of:
 `irreducible_cflow` ▸ `analysis_exception` ▸ `conflict` ▸ `abi_class` ▸ `bool_compose` ▸ `bool_fanout`
@@ -386,12 +463,18 @@ Additive; **no change to the W-1 evidence fields**:
   // or by index: hf.getLocalSymbolMap().getParam(i); getNumParams() bounds i.
   ```
   The corpus deliberately includes `int`/`unsigned int` params (`payoff_source.py:74`), whose 4-byte storage
-  yields `EDI`/`ESI`/`EDX`; the `reg` field records the **base** register `br`. A parameter at or below the
-  highest required position makes the function `unknown(reason=abi_class)` when its storage is **not a single
-  simple register** (`!simpleReg` — stack/aggregate/**compound multi-register**, so `r == null`) or whose base
-  is **not** a SysV integer argument register `{RDI,RSI,RDX,RCX,R8,R9}` (xmm/float). This closes both the MAJOR 5
-  "position ≠ register" case (`f(double x, long a)`, where `a` is position 2 but uses `RDI`) and the Rev-5
-  compound-storage case (a `{RDI,RSI}` 16-byte struct-by-value must **not** be accepted as `RDI`).
+  yields `EDI`/`ESI`/`EDX`; the `reg` field records the **base** register `br`. **Storage is validated only for
+  the formals W-2 actually emits a required value for** (Rev-6-review MAJOR) — an **emitted** required arg makes
+  the function `unknown(reason=abi_class)` when **its own** storage is **not a single simple register**
+  (`!simpleReg` — stack/aggregate/**compound multi-register**, so `r == null`) or whose base is **not** a SysV
+  integer argument register `{RDI,RSI,RDX,RCX,R8,R9}` (xmm/float). A **non-emitted** parameter is never checked:
+  Ghidra's per-parameter storage already reflects the whole prototype's register assignment, so in
+  `void win(double unused, long key){ if(key==X) sink; }`, `key` is **position 2** yet `p.getSymbol().getStorage()`
+  is `RDI` (the leading `double` consumed `XMM0`, not an integer register) — W-2 emits `(2, X)` with `reg=rdi`
+  and delivers it, and the un-compared `double` is irrelevant. This closes the MAJOR "position ≠ register" case
+  (`f(double x, long a)`, where `a` is position 2 but uses `RDI` — now **delivered**, not rejected) and the Rev-5
+  compound-storage case (a `{RDI,RSI}` 16-byte struct-by-value emitted as a required arg must **not** be accepted
+  as `RDI`). The mixed-class positive is proven by T13; the compound case by the `gate_abicompound` falsifier.
 - **CFG API:** `hf.getBasicBlocks()` returns an `ArrayList<PcodeBlockBasic>` — entry is `.get(0)`, **not** `[0]`;
   successors via `getOut(i)`/`getOutSize()` and the conditional `getTrueOut()`/`getFalseOut()`; reachability-with-
   edges-cut is a BFS over a copy with the cut edge(s) masked. Accessors verified live (de-risk step 2).
@@ -407,7 +490,7 @@ Each shape has a **real const-string sink** (so W-1 still promotes it, and the r
 
 | shape | source sketch | truth `args_status` | `required_args` | kills |
 |---|---|---|---|---|
-| `decoy_sink` | real sink; all compares are **globals/locals vs const** (no param) | `known` | `[]` | non-param constant hallucination (the real T3′ control) |
+| `decoy_sink` | real sink; all compares are **register-resident non-param locals / call-returns vs const** (no param, **no memory global** — a `LOAD`-vs-const would be `MEM`→`ambiguous_gate`, §2.1) | `known` | `[]` | non-param constant hallucination (the real T3′ control) |
 | `gate_audit` | `if (a==X) benign(); sink;` | `known` | `[]` | unconditional-sink false positive (equality branch does not gate) |
 | `gate_relaudit` | `if (a > K) benign(); sink;` | `known` | `[]` | **must-reach regression** — a non-gating *relational* branch must NOT force `unknown` (Rev-5 `:220`) |
 | `gate_invert` | `if (a==X) return; sink;` | `unknown` (`avoidance_gate`) | `[]` | inverted-guard: a!=X is not a required value |
@@ -416,17 +499,19 @@ Each shape has a **real const-string sink** (so W-1 still promotes it, and the r
 | `gate_relational` | `if (a > K) sink;` | `unknown` (`relational_gate`) | `[]` | relational gate |
 | `gate_arith` | `b=a*2; if (b==X) sink;` | `unknown` (`ambiguous_gate`) | `[]` | redefined-param wrong value (also assert **no emit == X**) |
 | `gate_mixed` | `if (a==X && (b==Y\|\|b==Z)) sink;` | `unknown` (`unresolved_gate`) | `[]` | **partial-known** (must NOT return `[a=X]`) (BLOCKER 1) |
-| `gate_bool` | `c=(a==X); if (c & flag) sink;` | `unknown` (`bool_compose`) | `[]` | binary `INT_AND` **P-code op** in condition (Rev-5 BLOCKER 3); T4 asserts the op form is `INT_AND`/`BOOL_AND` |
+| `gate_bool` | `c=(a==X); if (c & flag) sink; else return;` (**gating** composed branch) | `unknown` (`bool_compose`) | `[]` | binary `INT_AND` **P-code op** in a **gating** condition (Rev-5 BLOCKER 3; Step 1 emits the cause); T4 asserts the op form is `INT_AND`/`BOOL_AND` |
+| `gate_boolnongate` | `c=(a==X)&flag; if (c) audit(); sink;` (**non-gating** composed branch) | `known` | `[]` | an unresolved-condition branch that does **not** gate the sink must stay `known,[]`, not taint `bool_compose` (Rev-6-review MAJOR; both edges rejoin before the unconditional sink) |
 | `gate_boolor` | `if ((a==X) \|\| global_flag) sink;` **short-circuit → two `CBRANCH`es** | `unknown` (`unresolved_gate`) | `[]` | CFG-form `\|\|` (no `BOOL_OR` op) — the uncontrolled `global_flag` branch is adversarial, `a=⊥` avoids (Rev-5 new-BLOCKER); T4 asserts the P-code is **two `CBRANCH`es, no `BOOL_OR`** |
 | `gate_reload` | `volatile int g; g = a; if (g == X) sink;` | `unknown` (`ambiguous_gate`) | `[]` | parameter round-tripped through a real memory `LOAD` (Rev-5 new-BLOCKER); operand `LOAD`→`AMBIGUOUS` |
 | `gate_nonconst` | `if (a == global_key) sink;` | `unknown` (`nonconst_gate`) | `[]` | param-vs-global false `known` (Rev-4 BLOCKER 2) |
 | `gate_paramcmp` | `if (a == b) sink;` (two params) | `unknown` (`nonconst_gate`) | `[]` | param-vs-param false `known` (Rev-4 BLOCKER 2) |
 | `gate_multieq` | phi merging two different param slots, then `== X` | `unknown` (`ambiguous_gate`) | `[]` | mixed-slot MULTIEQUAL mis-assignment (MAJOR 1) |
 | `gate_abicompound` | `struct pair{long a,b;}; void win(struct pair p){ if(p.a==X) sink; }` — a ≤16B all-integer struct gets **compound storage** `{RDI,RSI}` | `unknown` (`abi_class`) | `[]` | compound/multi-varnode storage must NOT be accepted as its first register `RDI` (silent half-value delivery) — Rev-5 MAJOR `:303`; T4 asserts the HighParam storage is `isCompoundStorage()` / `getVarnodeCount()>1` so the §3 `simpleReg` guard fires |
+| `gate_loop` | `if (nondet()) for(;;){} sink;` — unconditional sink behind an **uncontrolled infinite loop** on one path | `unknown` (`unresolved_gate`) | `[]` | must-reach is a **backward fixed point**, not forward-BFS-to-terminal: the loop reaches no terminal yet still avoids the sink, so `Entry ∉ MustReachSink` ⇒ `unknown` (Rev-6-review BLOCKER); T4 asserts a real cyclic CFG (a back-edge SCC with no exit) |
 
 Emitted as a **separate `role:"falsifier"` category** in `benchmark/gen/payoff/`, **not** added to `SHAPES`, so
 the merged W-1 denominators (parent §128) are **unchanged**. Matrix (R6): one non-PIE unstripped ELF per shape
-(**16 units**) + a `gate_disj` stripped twin + a `gate_disj` PE variant = **18 units** (one representative twin/PE
+(**18 units**) + a `gate_disj` stripped twin + a `gate_disj` PE variant = **20 units** (one representative twin/PE
 is enough — every falsifier shares the same P-code requiredness pass, so strip/PE robustness is a property of the
 pass, not of each shape). `index.json` lists each with `role:"falsifier"`, truth
 `args_status`/`required_args`/`reason`, and (for `gate_arith`) the literal compared constant. **Generator
@@ -629,17 +714,18 @@ the discovery result type and the delivery control flow (BLOCKER 4):
   - `known_empty` → deliver win with an empty chain and verify (the current ungated behavior, now reached only
     when the extractor *proved* the sink ungated).
   - `unknown` or `rva_miss`; **or** `known_args` naming a required `reg` **outside the builder-supported set**
-    `{rdi, rsi, rdx}` (MAJOR `profile_stage.py:77`: the extractor's integer-ABI set is `{rdi,rsi,rdx,rcx,r8,r9}`
-    but `_build_arg_chain` (`:303-329`) emits pops only for `rdi/rsi/rdx` — a 4th–6th integer arg at `rcx/r8/r9`
-    is correctly *extracted* yet **undeliverable** by this builder); **or** `known_args` whose needed
-    pop-gadget (`pop rdi`/`pop rsi`/`pop rdx`) is **absent** → **do not call `verify_payload`**; return a
-    skipped/abstain result carrying the reason (`required args unresolved — provide via --win / manual values`,
-    the directive-W PASS path), so the pipeline moves to the next technique without delivering a payload that
-    cannot work. (Extending the builder to `rcx/r8/r9` — discover those gadget keys and add their `pop` chains —
-    is the **W-2.1** follow-up; W-2 abstains loudly rather than silently truncating a 4-arg win.)
+    `{rdi, rsi, rdx}`. (The **§3 extractor contract** records a `reg` for the full SysV integer set
+    `{rdi,rsi,rdx,rcx,r8,r9}`, but `_build_arg_chain` (`stack_techniques.py:303-329`) emits pops only for
+    `rdi/rsi/rdx`, and gadget discovery (`profile_stage.py:77-80`) only searches `rdi/rsi/rdx/rax` — so a 4th–6th
+    integer arg at `rcx/r8/r9` is correctly *extracted* yet **undeliverable** by the current builder.) **Or**
+    `known_args` whose needed pop-gadget (`pop rdi`/`pop rsi`/`pop rdx`) is **absent** → **do not call
+    `verify_payload`**; return a skipped/abstain result carrying the reason (`required args unresolved — provide
+    via --win / manual values`, the directive-W PASS path), so the pipeline moves to the next technique without
+    delivering a payload that cannot work. (Extending the builder *and* gadget discovery to `rcx/r8/r9` is the
+    **W-2.1** follow-up; W-2 abstains loudly rather than silently truncating a 4-arg win.)
   - `unavailable` → the extractor had no opinion, so fall back to the legacy `find_required_args` (its `List[int]`
     normalized to `(reg, value)` pairs via the positional SysV map) and deliver as today, for compatibility.
-- **Register from provenance, loud on unsupported (MAJOR 5; builder subset, Rev-5 `:77`).** `_build_arg_chain`
+- **Register from provenance, loud on unsupported (MAJOR 5; builder subset).** `_build_arg_chain`
   consumes `(reg, value)` pairs and emits the pop-gadget for each `reg` directly (no position→reg guess). Two
   distinct exclusions apply, at two layers: a parameter whose `reg` is non-integer/stack/xmm is already
   `unknown(abi_class)` at **extraction** (§3) and never produces a `known_args`; a parameter at a valid integer
@@ -659,7 +745,7 @@ the discovery result type and the delivery control flow (BLOCKER 4):
 | T2 | all three styles | real-Ghidra | ≥1 `and`, ≥1 `nest`, ≥1 `early` unit in T1 passes |
 | T3 | `exec`/`file` positives (16) | real-Ghidra | `known` **and `required_args == ()` exactly** |
 | T3′ | `decoy_sink` (const-sink non-param) | real-Ghidra | the requiredness pass **runs** and emits `known, ()` — non-parameter constants are rejected (the real anti-hallucination control; sink-less decoys/fillers additionally checked for default `[]` serialization but are not the control) |
-| T4 | falsifiers, per shape (§3a, 16 shapes) | real-Ghidra | each shape's exact `(args_status, required_args, reason)` per the §3a table; `gate_mixed`/`gate_disjineq`/`gate_boolor` yield `unknown(unresolved_gate)` with **no `[a=X]`**; `gate_audit`/`gate_relaudit` yield `known, []` (non-gating branch must NOT force `unknown`); `gate_arith` emits no value == its literal constant; `gate_bool`→`bool_compose` (assert op form `INT_AND`/`BOOL_AND`); `gate_boolor` P-code is **two `CBRANCH`es, no `BOOL_OR`**; `gate_reload` operand is a real `LOAD`→`ambiguous_gate`; `gate_nonconst`/`gate_paramcmp`→`nonconst_gate`; `gate_abicompound`→`abi_class` (assert storage `isCompoundStorage()`/`getVarnodeCount()>1`) |
+| T4 | falsifiers, per shape (§3a, 18 shapes) | real-Ghidra | each shape's exact `(args_status, required_args, reason)` per the §3a table; `gate_mixed`/`gate_disjineq`/`gate_boolor`/`gate_loop` yield `unknown(unresolved_gate)` with **no `[a=X]`**; `gate_audit`/`gate_relaudit`/`gate_boolnongate` yield `known, []` (a non-gating branch — relational, loop-free rejoin, or composed — must NOT force `unknown`); `gate_arith` emits no value == its literal constant; `gate_bool` (gating composed)→`bool_compose` (assert op form `INT_AND`/`BOOL_AND`); `gate_boolor` P-code is **two `CBRANCH`es, no `BOOL_OR`**; `gate_loop` has a real back-edge SCC with no exit (assert `Entry ∉ MustReachSink`); `gate_reload` operand is a real `LOAD`→`ambiguous_gate`; `gate_nonconst`/`gate_paramcmp`→`nonconst_gate`; `gate_abicompound`→`abi_class` (assert storage `isCompoundStorage()`/`getVarnodeCount()>1`) |
 | T5 | rename + strip twins | real-Ghidra | truth on 16/16 rename + 16/16 strip positives; `gate_disj` strip twin stays `unknown, ()` |
 | T6 | PE | real-Ghidra | truth on **all four** PE arg binaries; 32-bit agreement; `gate_disj` PE variant stays `unknown, ()` |
 | T7 | malformed records | mock | an **envelope** record with a bad field / non-unique position / same-slot conflict / **`position != slot + 1`** / `bool` in **any** integer field (`position`/`value`/`slot`/`width`/`src_width`/`op_addr`/a `sink_addrs` element) / empty `sink_addrs` / `unknown`+non-empty / missing reason → report `ERROR`, raised as a **`ValueError`** (not `AssertionError`) from `RequiredArg`/`FunctionEvidence.__post_init__` **inside** the envelope `try`, so it is caught and converted; a malformed **cache** row — a bad per-arg field, **or** a cross-field breach that bypasses `FunctionEvidence` (two `RequiredArg`s at the **same position**, **or** `unknown` with a **non-empty** list), caught by the explicit `_validate_required_args(...)` inside `report_from_json`'s `try` — → cache **miss** (not `ERROR`) |
@@ -667,38 +753,42 @@ the discovery result type and the delivery control flow (BLOCKER 4):
 | T9 | cache round-trip | mock | miss→hit preserves `required_args` (incl. provenance+`reg`), `args_status`, `args_reason`; a v1 row misses |
 | T10 | reason precedence | mock/crafted | each `unknown` reason (`irreducible_cflow`/`analysis_exception`/`conflict`/`abi_class`/`bool_compose`/`bool_fanout`/`ambiguous_gate`/`nonconst_gate`/`avoidance_gate`/`relational_gate`/`unresolved_gate`) is produced with the **exact** expected code under the §2.2 precedence (incl. a crafted case where two reasons apply and the higher-precedence one wins — e.g. `abi_class` over `unresolved_gate`); a decompile failure → report `DEGRADED`; an args-pass exception → `unknown(analysis_exception)` for that record without downgrading the report. (The **production** of `abi_class` from real compound storage is proven by the real-Ghidra `gate_abicompound` falsifier in T4, since a Python mock cannot synthesize Ghidra compound `VariableStorage`; T10 covers only the reason's envelope round-trip and precedence ordering.) |
 | T11 | inventory | unit | 27 entries `allowed`+justification; 42 still `open` **and matching live hits** (not stale); frozen fields unchanged; 0 `migrated`; no class-B consumer edit; the ret2win rewire is the only non-inventory edit |
-| T12 | ret2win arg path (§5.4) | seam=always-run; e2e=gated | **seam** (patch `rank_payoffs`; assert on a **spied `verifier.verify_payload`**): `known_args` at **random, non-contiguous positions** with recorded `reg`s ⇒ `_discover_args` (normalized-RVA lookup) → `_build_arg_chain` pops each value into **its recorded `reg`**; **every** delivery is **arg-bearing** and the call count equals **(offsets × applicable alignment variants)** — the `for use_align in (True,False)` exploration at `:227-244` is **retained** (one aligned + one unaligned arg-bearing pass per offset), while the separate `"(no args)"` retry at `:262-289` is **removed** (asserted: zero deliveries whose chain omits the arg pops); `known_empty` ⇒ arg-free deliveries, same **(offsets × alignment variants)** count, no arg pops; `COMPLETE`+`unknown` ⇒ **abstain: zero `verify_payload` calls**, no legacy call; `rva_miss` (normalized `win_rva` matches no candidate) ⇒ **zero `verify_payload` calls**; `known_args` but a required `pop` gadget absent ⇒ **zero `verify_payload` calls**; `known_args` naming a required `reg` **outside `{rdi,rsi,rdx}`** (e.g. a 4th arg at `rcx`, within the extractor's integer set but beyond the builder, §5.4) ⇒ **zero `verify_payload` calls** (abstain, not a truncated chain); non-`COMPLETE` report ⇒ `unavailable` → legacy fallback (normalized to pairs), delivered. Image base: one case with `pwntools_load_state==SUCCESS` (uses `base_address`) and one with `!=SUCCESS` (derives lowest `PT_LOAD`); one **no-base/PE** case ⇒ `unavailable` (not `rva_miss`). **end-to-end (gated):** on a dedicated overflowable non-PIE no-canary `arg1` **and** `arg3` fixture (§7 step 1; offsets provided, directive-W PASS criterion b; `arg3` has a `pop rdx` gadget), the win call is reached with each param set; the **stripped** variant supplies `--win <link-time VADDR>` (normalized to RVA for lookup, used absolute for the jump — an override-assisted stripped path, **not** automatic stripped win discovery, PASS criterion a) |
+| T12 | ret2win arg path (§5.4) | seam=always-run; e2e=gated | **seam** (patch `rank_payoffs`; assert on a **spied `verifier.verify_payload`**): `known_args` at **random, non-contiguous positions** with recorded `reg`s ⇒ `_discover_args` (normalized-RVA lookup) → `_build_arg_chain` pops each value into **its recorded `reg`**; **every** delivery is **arg-bearing** and the call count equals **(offsets × applicable alignment variants)** — the `for use_align in (True,False)` exploration at `:227-244` is **retained** (one aligned + one unaligned arg-bearing pass per offset), while the separate `"(no args)"` retry at `:262-289` is **removed** (asserted: zero deliveries whose chain omits the arg pops); `known_empty` ⇒ arg-free deliveries, same **(offsets × alignment variants)** count, no arg pops; `COMPLETE`+`unknown` ⇒ **abstain: zero `verify_payload` calls**, no legacy call; `rva_miss` (normalized `win_rva` matches no candidate) ⇒ **zero `verify_payload` calls**; `known_args` but a required `pop` gadget absent ⇒ **zero `verify_payload` calls**; `known_args` naming a required `reg` **outside `{rdi,rsi,rdx}`** (e.g. a 4th arg at `rcx`, within the §3 extractor contract set but beyond the builder, §5.4) ⇒ **zero `verify_payload` calls** (abstain, not a truncated chain); non-`COMPLETE` report ⇒ `unavailable` → legacy fallback (normalized to pairs), delivered. Image base: one case with `pwntools_load_state==SUCCESS` (uses `base_address`) and one with `!=SUCCESS` (derives lowest `PT_LOAD`); one **no-base/PE** case ⇒ `unavailable` (not `rva_miss`). **Count subcase uses an always-failing spy verifier** (MINOR, Rev-6-review `stack_techniques.py:245-260`: the delivery loop `return`s on the first `receipt.success`, so the exact `(offsets × alignment variants)` call count only holds when every verify fails); a **separate** case with a verifier that succeeds on the first aligned pass asserts the loop **early-exits** (one call, `AttemptOutcome.SUCCESS`). **end-to-end (gated):** on a dedicated overflowable non-PIE no-canary `arg1` **and** `arg3` fixture (§7 step 1; offsets provided, directive-W PASS criterion b; `arg3` has a `pop rdx` gadget), the win call is reached with each param set; the **stripped** variant supplies `--win <link-time VADDR>` (normalized to RVA for lookup, used absolute for the jump — an override-assisted stripped path, **not** automatic stripped win discovery, PASS criterion a) |
+| T13 | mixed float/int ABI positive (§3 MAJOR) | real-Ghidra | a dedicated `win(double unused, long key){ if(key==X) sink; }` fixture ⇒ `required_args == [(2, X)]` with `reg=="rdi"` (position 2, but the leading `double` took `XMM0`, so `key`'s storage is `RDI`); the un-compared `double` does **not** trigger `abi_class`; the seam delivers it (pops `X` into `rdi`) |
 
-T1–T6 + T3′ extend `tests/test_payoff_ranker.py` (same `index.json` driver, module-scoped cache). T7–T10 + the
-T12 seam are always-run mocks. T12's end-to-end leg is gated.
+T1–T6 + T3′ + T13 extend `tests/test_payoff_ranker.py` (same `index.json` driver, module-scoped cache). T7–T10
++ the T12 seam are always-run mocks. T12's end-to-end leg and T13 are gated.
 
 **Optimization note (R7):** the dev corpus is `-O0` (`generate.py:101`); W-2 makes **no** optimized-binary
-soundness claim and ships no optimization detector. The `and`/`nest`/`early` positives plus the 16 falsifier
+soundness claim and ships no optimization detector. The `and`/`nest`/`early` positives plus the 18 falsifier
 shapes are the robustness envelope W-2 proves; optimized fixtures are future work.
 
 ## 7. Execution order (one commit per step, RED test first; execute on Sonnet)
 
-1. **Corpus falsifiers + e2e fixture** — add the `falsifier` category + the **16 shapes** (§3a) and the
-   overflowable `arg1`/`arg3` ret2win fixture (§6 T12) to `benchmark/gen/payoff/`; regenerate dev; confirm
-   `index.json` carries the **18** `role:"falsifier"` units (16 ELF + `gate_disj` strip twin + `gate_disj` PE)
-   with truth `args_status`/`required_args`/`reason`, and **diff the positive/twin/negative/PE rows against the
-   W-1 baseline to prove them byte-unchanged**.
-2. **Extractor args pass** — `SupwngoPayoff.java`: `traceParamSlot` lattice with the entry-value/size/SEXT/
-   back-edge/CAST guards (§2.1), the **unary-only** condition walk (fail closed on binary boolean/bitwise ops,
-   §2.2), per-branch required-outcome (Step 1) + **bounded parameter-value enumeration** (Step 2, `ENUM_CAP`),
-   `p.getSymbol().getStorage().getRegister().getBaseRegister()`-derived `reg` + `abi_class` taint,
-   `getBasicBlocks().get(0)` entry, own `try/catch`, dedup/order, provenance (§2.4), `SCRIPT_VERSION → w2.0`.
-   De-risk by running `analyzeHeadless` by hand on one each of `arg3`, `gate_invert`, `gate_disj`,
-   `gate_disjineq`, `gate_mixed`, `gate_bool`, `gate_boolor` (confirm the short-circuit lowers to **two
-   `CBRANCH`es, no `BOOL_OR`**), `gate_reload` (confirm the operand is a real `LOAD`), `gate_nonconst`,
-   `gate_arith`, and `gate_abicompound` (confirm the HighParam storage is compound / `getVarnodeCount()>1`),
-   verifying the conditional-successor accessors, the `ArrayList` entry index, and the
-   `getSymbol().getStorage()` + `isCompoundStorage()` + `getBaseRegister()` API **live** (MAJOR 1).
+1. **Corpus falsifiers + e2e fixture** — add the `falsifier` category + the **18 shapes** (§3a), the
+   overflowable `arg1`/`arg3` ret2win fixture (§6 T12), and the mixed float/int ABI positive (§6 T13) to
+   `benchmark/gen/payoff/`; regenerate dev; confirm `index.json` carries the **20** `role:"falsifier"` units
+   (18 ELF + `gate_disj` strip twin + `gate_disj` PE) with truth `args_status`/`required_args`/`reason`, and
+   **diff the positive/twin/negative/PE rows against the W-1 baseline to prove them byte-unchanged**.
+2. **Extractor args pass** — `SupwngoPayoff.java`: `traceParamSlot` lattice (incl. the `MEM` state for `LOAD`,
+   §2.1) with the entry-value/size/SEXT/back-edge/CAST guards, the **unary-only** condition walk (unresolved →
+   per-branch `bool_compose`/`bool_fanout` cause, **not** an on-sight taint, §2.2), per-branch required-outcome
+   (Step 1) + **must-reach enumeration** (Step 2: `width_bits`-correct domain, `ENUM_CAP`, backward
+   `MustReachSink` fixed point), `p.getSymbol().getStorage().getRegister().getBaseRegister()`-derived `reg` +
+   per-**emitted**-formal `abi_class` taint, `getBasicBlocks().get(0)` entry, own `try/catch`, dedup/order,
+   provenance (§2.4), `SCRIPT_VERSION → w2.0`. De-risk by running `analyzeHeadless` by hand on one each of
+   `arg3`, `gate_invert`, `gate_disj`, `gate_disjineq`, `gate_mixed`, `gate_bool` (gating composed →
+   `bool_compose`) and `gate_boolnongate` (non-gating composed → `known,[]`), `gate_boolor` (confirm the
+   short-circuit lowers to **two `CBRANCH`es, no `BOOL_OR`**), `gate_loop` (confirm a real back-edge SCC with no
+   exit so `Entry ∉ MustReachSink`), `gate_reload` (operand is a real `LOAD` → `MEM`), `gate_nonconst`,
+   `gate_arith`, and `gate_abicompound` (storage compound / `getVarnodeCount()>1`), verifying the
+   conditional-successor accessors, the `ArrayList` entry index, and the `getSymbol().getStorage()` +
+   `isCompoundStorage()` + `getBaseRegister()` API **live** (MAJOR 1).
 3. **Python model** — `RequiredArg` + `__post_init__`; fields + cross-field invariant on **`FunctionEvidence`**
    (inside the envelope `try`) and pass-through in `score_function`; `required_args_for`/`required_arg_regs`
    (reject non-`COMPLETE`); cache ser/deser both paths + `CACHE_ENVELOPE_VERSION → 2` (cache-miss semantics);
    T7–T10.
-4. **Corpus tests** — T1–T6 + T3′ (gated).
+4. **Corpus tests** — T1–T6 + T3′ + T13 (gated).
 5. **Inventory** — close the 27 `allowed` in the baseline; leave the 42 `open` untouched; T11 green.
 6. **Ret2win rewire** — `_discover_args(binary, win_name, win_addr, context)` returning the `ArgDiscovery`
    tagged union (image-base guard: `pwntools_load_state==SUCCESS` else lowest `PT_LOAD`, else `unavailable` for
@@ -717,38 +807,56 @@ shapes are the robustness envelope W-2 proves; optimized fixtures are future wor
   unresolvable case → `unknown`, never a wrong arg.
 - **R2 — slot coalescing / redefinition / memory round-trip.** The entry-value guard (§2.1) yields `AMBIGUOUS`
   → `unknown` on a redefined or phi-merged slot (`gate_arith`/`gate_multieq`), and a value that reaches the
-  comparison via a memory `LOAD` is `AMBIGUOUS` (the `LOAD` row in §2.1 — its P-code inputs are the address, not
-  the stored value), so a parameter stashed through a global/stack slot cannot be mistaken for a direct compare
-  (`gate_reload` proves it). Bounded store-to-load forwarding is a W-2.1 refinement, not a W-2 claim.
+  comparison via a memory `LOAD` is the distinct `MEM` state (§2.1) — its P-code inputs are the address, not the
+  stored value — so a reloaded parameter (`gate_reload`, `MEM` vs const → `ambiguous_gate`) is never mistaken
+  for a direct compare, and a direct `PARAM` vs a loaded non-constant (`gate_nonconst`, `PARAM` vs `MEM` →
+  `nonconst_gate`) keeps its distinct reason. Bounded store-to-load forwarding is a W-2.1 refinement, not a W-2
+  claim.
 - **R3 — constant side/sign.** `INT_NOTEQUAL`(early) and `INT_EQUAL`(and/nest) map to the same `{position,value}`;
   value is the constant regardless of operand order, masked; SEXT canonical check guards sign. T2/T8.
 - **R4 — cache-key churn.** `w1.1→w2.0` + envelope `1→2`; W-1 rows miss (intended). TOCTOU/COMPLETE-only rules
   unchanged.
 - **R5 — scope.** 27 baseline closures, 0 class-B consumer edits, 1 owner-approved ret2win rewire; reviewer to
   confirm no edit beyond that and no new lifecycle state.
-- **R6 — falsifier/fixture cost.** 18 falsifier units (16 ELF + 1 strip twin + 1 PE) + 1 e2e fixture, separate
+- **R6 — falsifier/fixture cost.** 20 falsifier units (18 ELF + 1 strip twin + 1 PE) + 1 e2e fixture, separate
   category; W-1 denominators untouched.
 - **R7 — optimized binaries.** Out of scope; §5.4 abstains on `unknown`, no optimized guarantee, no detector.
 - **R8 — ABI class.** Register read from Ghidra storage and normalized to the base register
-  (`getBaseRegister()`); a `null`-register (stack/aggregate), **compound/multi-varnode** storage
-  (`isCompoundStorage()` / `getVarnodeCount()>1`, `gate_abicompound`), or non-integer (xmm) param at/below the
-  highest required position → `unknown(abi_class)`, never a mis-placed or half-written value.
+  (`getBaseRegister()`); storage is validated **only for the formals W-2 actually emits** a required value for
+  (§3): an emitted required arg whose **own** storage is a `null`-register (stack/aggregate),
+  **compound/multi-varnode** (`isCompoundStorage()` / `getVarnodeCount()>1`, `gate_abicompound`), or a
+  non-integer (xmm) register → `unknown(abi_class)`, never a mis-placed or half-written value. A **non-emitted**
+  parameter is never checked, so `win(double unused, long key){ if(key==X) sink; }` emits `(2, X)` with
+  `reg=rdi` and delivers it (the leading `double` consumed `XMM0`, not an integer register; T13), rather than
+  being wrongly rejected because position 1 is non-integer.
 - **R9 — must-reach soundness + enumeration domain (Step 2).** Step 2 decides requiredness by **must-reach under
   adversarial branches**: it prunes only the branches an enumeration assignment σ pins (pinnable-equality edges
   fixed by σ), leaves every non-enumerable / uncontrolled branch (relational / `nonconst-param` /
-  `ambiguous-param` / global-reload) **both-edges open**, then asks whether a terminal is reachable with the
-  sink blocks deleted; *any* σ under which the sink is avoidable ⇒ `unknown(unresolved_gate)`. The per-param
-  domain is built in **source-width bitvector space** — constants inverse-normalized to the formal's width and
-  deduped — with `⊥` added **only** when `|D(p)| < 2^width(p)` (so an 8-bit formal whose 256 constants are all
-  present gets no spurious `⊥`), capped at `ENUM_CAP` (4096); over-cap fails closed to `unknown`. It never
-  produces a `known` it could not fully verify, and a non-gating residual branch (`gate_relaudit`, `a>K` then
-  `sink`) correctly stays `known, []` because the sink is must-reached under every σ.
+  `ambiguous-param` / global-reload / unresolved-condition) **both-edges adversarial**, then tests
+  sink-avoidability by the **backward least fixed point**
+  `MustReachSink = sinkBlocks ∪ { v | succ(v)≠∅ ∧ ∀ s∈succ(v): s∈MustReachSink }`, avoidable under σ **iff
+  `Entry ∉ MustReachSink`**. (A forward BFS-to-terminal is unsound on a cyclic CFG: an infinite loop reaches no
+  terminal yet still avoids the sink — the Rev-6-review BLOCKER, `gate_loop`.) *Any* σ under which the sink is
+  avoidable ⇒ `unknown(unresolved_gate)`. The per-param domain is built in **source-width bitvector space** with
+  `width_bits(p) = 8 * getSize()` (Ghidra's `getSize()` is in **bytes**, so cardinality uses **bits**) —
+  constants inverse-normalized to the source width and deduped — adding `⊥` **overflow-safely** iff
+  `width_bits(p) > 12 || |D(p)| < (1L << width_bits(p))` (so an 8-bit formal whose 256 constants are all present
+  gets no spurious `⊥`, and `1L << 64` is never evaluated), capped at `ENUM_CAP` (4096); over-cap fails closed to
+  `unknown`. It never produces a `known` it could not fully verify, and a non-gating residual branch
+  (`gate_relaudit`, `a>K` then `sink`) correctly stays `known, []` because the sink is must-reached under every σ.
 - **R10 — delivery ABI / gadget / image-base gaps.** The extractor's integer set `{rdi,rsi,rdx,rcx,r8,r9}` is
   wider than `_build_arg_chain`'s `{rdi,rsi,rdx}`; a required `rcx/r8/r9` (or an `{rdi,rsi,rdx}` whose gadget is
   missing) is extracted but **undeliverable**, so the consumer **abstains** (zero `verify_payload`, §5.4) rather
   than truncate — extending the builder to `rcx/r8/r9` is W-2.1. The image base is acquired ELF-only
   (`base_address` on pwntools SUCCESS, else lowest `PT_LOAD`); a PE / no-base binary returns `unavailable`
   (→ legacy), never a misreported `rva_miss` (the `Binary` abstraction exposes no populated PE `ImageBase`).
+- **R11 — terminating-loop conservatism (Step-2 limitation).** The must-reach fixed point is purely
+  control-flow, so it cannot prove a **terminating** loop terminates: a win function with a loop on *every* path
+  to its sink has `Entry ∉ MustReachSink` and is classified `unknown(unresolved_gate)` ⇒ the consumer
+  **abstains** — the safe direction (never a wrong arg; the directive-W `--win`/manual path still covers it). The
+  corpus positives (`arg1`/`arg3`) are loop-free straight-line guards, so this never regresses them; `gate_loop`
+  proves the unbounded-loop case is `unknown` while a loop-free control keeps `known`. Bounded-loop termination
+  proof is deferred to W-2.1.
 
 ## 9. Resolved questions and parent amendments
 
@@ -768,16 +876,19 @@ shapes are the robustness envelope W-2 proves; optimized fixtures are future wor
 - **Q4 — versioning:** bump both `SCRIPT_VERSION` to `w2.0` and the cache envelope `1→2`; W-1 rows miss; test
   arg-preserving cache hits (T9).
 
-**Parent amendments required before implementation** (applied in the same PR, re-reviewed):
+**Parent amendments** — amendments 1, 2, and 4 are **already applied to the parent plan in this branch**
+(`2026-11-13-retire-hardcoded-target-values-plan.md:56,87,133`, each tagged *"Amended per W-2 design §9,
+2026-11-14"*), closing the Rev-6-review MINOR that the parent was still unamended; amendment 3 is the scope note
+recorded in §5 / R5 of this design. All ship in the same implementation PR:
 
 1. **§82-84 / §130 status semantics** — replace "Otherwise the result is `args: unknown`" / "decoys give
    `args: unknown` on 32/32" with the two-state semantics (§2.3): an *ungated* payoff is `known + []`;
    `unknown + reason` is reserved for a detected-but-unresolvable parameter gate (inequality / range /
    disjunction / correlated predicates / transformed / ambiguous / non-constant operand / boolean composition);
    decompile failure is report-level `DEGRADED`. The W-2 Done-when asserts `required_args == ()` on the 16
-   exec/file positives + the **three** `known`-ungated falsifiers (`decoy_sink`, `gate_audit`, `gate_relaudit`);
-   `unknown, ()` with the stated reason on the **thirteen** unresolvable-gate falsifiers; and `== truth` with
-   provenance on the 16 arg positives.
+   exec/file positives + the **four** `known`-ungated falsifiers (`decoy_sink`, `gate_audit`, `gate_relaudit`,
+   `gate_boolnongate`); `unknown, ()` with the stated reason on the **fourteen** unresolvable-gate falsifiers;
+   and `== truth` with provenance on the 16 arg positives.
 2. **§130 inventory** — replace "Class-B baseline entries are all `migrated`" with: "W-2 closes the class-B
    **ABI/infrastructure** constants as `allowed` (with justifications); the class-B **per-binary target-guess**
    entries remain `open` (ratchet-valid, matching live hits) with their owning phase recorded in the W-2
