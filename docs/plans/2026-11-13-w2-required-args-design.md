@@ -1,11 +1,40 @@
-# W-2 — required-args extraction: constants from the binary (class B) (2026-11-13, Rev 8)
+# W-2 — required-args extraction: constants from the binary (class B) (2026-11-13, Rev 9)
 
 Detailed design for **directive W, phase W-2**. Parent plan:
 `docs/plans/2026-11-13-retire-hardcoded-target-values-plan.md` (§3 principle 3 / §82-84, §4 row W-2 / §130,
 §12 class-B notes / §240). Builds directly on **W-1** (`supwngo/analysis/payoff.py` + `SupwngoPayoff.java`,
 merged PR #39, `9f543bb`). Branch `feat/w2-required-args` off `main` `9f543bb`.
 
-> **Rev 8 — reworked after the Tier-2 (cyber) re-review of Rev 7 returned REWORK (1 BLOCKER / 3 MAJOR / 2
+> **Rev 9 — reworked after the Tier-2 (cyber) re-review of Rev 8 returned REWORK (0 BLOCKER / 1 MAJOR / 1
+> MINOR; everything else CONFIRMED FIXED).** The reviewer confirmed the Rev-8 *algorithm* is sound across the
+> board — the `edge_means_equal` parity algebra for all four `{INT_EQUAL,INT_NOTEQUAL}×{parity 0,1}` cases and
+> the exact `BOOL_NEGATE(a==X)` counterexample (→ `avoidance`), the `MEM`-through-`COPY`/`CAST` lattice (no
+> `AMBIGUOUS` downgrade), the `gate_abistack` reachability (a stack-passed 7th integer formal stays an input
+> `HighParam`, is emitted, then rejected), the bit-width cardinality for 8/16/64-bit, all 25/27 counts, the
+> arg-bearing `gate_negeq` special-case, and the parent amendments. Rev 9 closes the two remaining **test-
+> construction / documentation** holes (the algorithm is unchanged), each grounded against the build/test setup:
+> - **The `BOOL_NEGATE` parity is now exercised against the *implementation*, not just asserted semantically**
+>   (§6 T14, closing the MAJOR that GCC `-O0` — `generate.py:101` — constant-folds the `gate_negeq`/`gate_neginv`
+>   C fixtures `!(a!=X)`/`!(a==X)` into direct `je`/`jne` branches, so Ghidra sees `negateParity==0` on both and
+>   they pass even against a Rev-7-style implementation that *records but ignores* parity). The extractor is
+>   required to factor the parity into **pure, Ghidra-state-free static helpers** — `edgeMeansEqual(boolean
+>   isTrueEdge, int negateParity, int cmpOpcode)` and a `flipParity(int)` accumulator (§2.2, §3) — and **T14**
+>   adds (a) an **always-run Python mirror** of the §2.2 truth table over all **eight** `{opcode}×{parity 0,1}×
+>   {true/false edge}` combinations plus 0/1/2 `BOOL_NEGATE`s (double-negate → parity 0), a spec change-detector;
+>   and (b) a **gated real-Ghidra self-test** (a companion GhidraScript run under `analyzeHeadless`) that invokes
+>   the **actual Java `edgeMeansEqual`/`flipParity`** across the same table — the leg that kills the
+>   "records-but-ignores-parity" mutant, since there is **no JUnit harness** (the Java is a GhidraScript, only
+>   reachable through Ghidra's classpath). The T4 corpus `gate_negeq`/`gate_neginv` fixtures are **downgraded to a
+>   semantic end-to-end check** (with a structural P-code probe: if a `BOOL_NEGATE` survived, parity-consumption
+>   is asserted; if `-O0` folded it, that is recorded and the guarantee rests on T14) — they no longer claim to
+>   prove parity "regardless of lowering."
+> - **The `1L << 64` rationale is corrected** (§2.2 ~§2.4, closing the MINOR that the doc called the shift
+>   "undefined"). Java **masks** a shift distance mod 64 (JLS §15.19), so `1L << 64` evaluates to `1L << 0 == 1`,
+>   which — without a guard — would make `|D| < 1` false and wrongly omit `⊥`, falsely turning `gate_u64_sparse`
+>   into `known,[]`. The `width_bits(p) > 12` term short-circuits **before** the shift, so it is never evaluated;
+>   the guard is correct, only its justification was misstated.
+>
+> **Rev 8 (lineage) — reworked after the Tier-2 (cyber) re-review of Rev 7 returned REWORK (1 BLOCKER / 3 MAJOR / 2
 > MINOR).** The reviewer confirmed Rev 7 closed every big Rev-6 item (backward must-reach fixed point with the
 > nonempty-successor guard and `gate_loop`; `gate_mixed`/`gate_disjineq` enumeration composition; per-branch
 > `bool_compose`; T12 vs the real delivery loop; gadget citation; parent/ratchet agreement; all counts). Rev 8
@@ -334,10 +363,18 @@ result and the `CBRANCH` condition — or it is **unresolved** with a recorded *
 `INT_NOTEQUAL` flip and every `BOOL_NEGATE` flip into one parity). **Both Step 1 (emit vs avoidance) and Step 2
 (the determined edge under an assignment σ) decide polarity through `edge_means_equal`, never through the raw
 `INT_EQUAL`/`INT_NOTEQUAL` edge.** So `CBRANCH(sink, BOOL_NEGATE(a==X))` — sink reached iff `a != X` — is
-correctly `avoidance_gate`, not a false `known,[X]`. Falsifiers: `gate_negeq` (a `BOOL_NEGATE` chain composing
-to an *equality* gate → emit the value) and `gate_neginv` (composing to an *avoidance* gate → `avoidance_gate`);
-T4 asserts both polarities regardless of whether Ghidra lowers the negation to a `BOOL_NEGATE` op or a flipped
-branch.
+correctly `avoidance_gate`, not a false `known,[X]`. **`edge_means_equal` and the walk's parity accumulation
+are factored as pure, Ghidra-state-free static helpers** — `edgeMeansEqual(boolean isTrueEdge, int negateParity,
+int cmpOpcode)` and `flipParity(int p) { return p ^ 1; }`, the latter applied once per `BOOL_NEGATE` traversed
+(so a double negation returns to parity 0) — **specifically so the parity decision can be exercised against the
+implementation without a Ghidra program** (§6 T14, Rev-8-review MAJOR: the corpus fixtures alone cannot, because
+GCC `-O0` folds the C-level negation away). Falsifiers: `gate_negeq` (a `BOOL_NEGATE` chain composing to an
+*equality* gate → emit the value) and `gate_neginv` (composing to an *avoidance* gate → `avoidance_gate`). **T14
+is the parity-consumption guarantor** — an always-run Python mirror of this truth table over all eight
+`{opcode}×{parity}×{edge}` combinations (plus 0/1/2 negations) and a gated real-Ghidra self-test invoking the
+actual Java `edgeMeansEqual`/`flipParity`; **T4's `gate_negeq`/`gate_neginv` are a semantic end-to-end check
+only** (with a structural P-code probe), because at `-O0` both fixtures may present to Ghidra with
+`negateParity==0`.
 
 **An unresolved-condition branch is NOT tainted on sight** (Rev-6-review MAJOR: a composed/fanned-out condition
 on a branch that does **not** gate the sink must stay `known` — e.g. `c=(a==X)&flag; if(c) audit(); sink;`, both
@@ -397,7 +434,10 @@ enumerable branches that were **not** emitted in Step 1.
   compared against, inverse-normalized through any `ZEXT`/`SEXT` to the source width (the §2.1 SEXT canonical
   round-trip, so a sign-extended constant maps to its source-width bit pattern and de-duplicates correctly) }`,
   plus **one sentinel `⊥`** (an unrepresented value) **only when `D(p)` is not already exhaustive**. The
-  exhaustiveness test is **overflow-safe** (Java `1L << 64` is undefined; `ENUM_CAP = 4096 = 2^12`): add `⊥`
+  exhaustiveness test is **overflow-safe** (Java **masks** a shift distance mod 64 per JLS §15.19, so `1L << 64`
+  would wrap to `1L << 0 == 1` — making `|D| < 1` false and wrongly omitting `⊥` for a 64-bit formal; the
+  `width_bits(p) > 12` term short-circuits **before** the shift, so `1L << width_bits` is never evaluated at a
+  width ≥ 64. `ENUM_CAP = 4096 = 2^12`): add `⊥`
   **iff** `width_bits(p) > 12 || |D(p)| < (1L << width_bits(p))`. (For an 8-bit formal, `2^8 = 256`, so a
   cascade covering all 256 constants adds no phantom 257th case; `a==0||a==1` has `|D|=2 < 256` and **does** get
   `⊥`.)
@@ -834,7 +874,7 @@ the discovery result type and the delivery control flow (BLOCKER 4):
 | T2 | all three styles | real-Ghidra | ≥1 `and`, ≥1 `nest`, ≥1 `early` unit in T1 passes |
 | T3 | `exec`/`file` positives (16) | real-Ghidra | `known` **and `required_args == ()` exactly** |
 | T3′ | `decoy_sink` (const-sink non-param) | real-Ghidra | the requiredness pass **runs** and emits `known, ()` — non-parameter constants are rejected (the real anti-hallucination control; sink-less decoys/fillers additionally checked for default `[]` serialization but are not the control) |
-| T4 | falsifiers, per shape (§3a, 25 shapes) | real-Ghidra | each shape's exact `(args_status, required_args, reason)` per the §3a table; `gate_mixed`/`gate_disjineq`/`gate_boolor`/`gate_loop`/`gate_u8_pair`/`gate_u16_sparse`/`gate_u64_sparse` yield `unknown(unresolved_gate)` with **no `[a=X]`**; `gate_audit`/`gate_relaudit`/`gate_boolnongate`/`gate_u8_full` yield `known, []`; `gate_negeq` yields `known, [(1,X)]` (the **BOOL_NEGATE parity** emits the right value, not a false avoidance); `gate_neginv`→`avoidance_gate` with `[]` (the parity counterexample the raw-edge map got wrong); `gate_arith` emits no value == its literal constant; `gate_bool` (gating composed)→`bool_compose` (assert op form `INT_AND`/`BOOL_AND`); `gate_boolor` P-code is **two `CBRANCH`es, no `BOOL_OR`**; `gate_loop` has a real back-edge SCC with no exit (assert `Entry ∉ MustReachSink`); `gate_reload` operand is a real `LOAD`→`MEM`→`ambiguous_gate`; `gate_nonconst_copy` interposes a `COPY(LOAD(...))` that stays `MEM`→`nonconst_gate`; `gate_nonconst`/`gate_paramcmp`→`nonconst_gate`; `gate_u8_pair`/`gate_u8_full`/`gate_u16_sparse`/`gate_u64_sparse` exercise the **bit-width** cardinality (`width_bits=8*getSize()`): the non-exhaustive 8/16/64-bit domains add `⊥`→`unknown`, the exhaustive 8-bit domain adds **no** `⊥`→`known,[]`, and `gate_u64_sparse` confirms the `width_bits>12` short-circuit (no `1L<<64`); `gate_abistack`→`abi_class` (assert `a7`'s storage is stack, `getRegister()==null`, on the *emitted* formal) |
+| T4 | falsifiers, per shape (§3a, 25 shapes) | real-Ghidra | each shape's exact `(args_status, required_args, reason)` per the §3a table; `gate_mixed`/`gate_disjineq`/`gate_boolor`/`gate_loop`/`gate_u8_pair`/`gate_u16_sparse`/`gate_u64_sparse` yield `unknown(unresolved_gate)` with **no `[a=X]`**; `gate_audit`/`gate_relaudit`/`gate_boolnongate`/`gate_u8_full` yield `known, []`; `gate_negeq` yields `known, [(1,X)]` and `gate_neginv`→`avoidance_gate` with `[]` as a **semantic end-to-end** check (parity-consumption itself is guaranteed by **T14**, not by these fixtures — at `-O0` GCC may fold the C negation so both present with `negateParity==0`), with a **structural P-code probe**: assert the decompiled condition's op/edge shape, and **iff** a `BOOL_NEGATE` survived into the high P-code, assert the walk recorded `negateParity==1` and `edge_means_equal` still gave the shown result; record (do not fail) when `-O0` folded it to a plain flipped branch; `gate_arith` emits no value == its literal constant; `gate_bool` (gating composed)→`bool_compose` (assert op form `INT_AND`/`BOOL_AND`); `gate_boolor` P-code is **two `CBRANCH`es, no `BOOL_OR`**; `gate_loop` has a real back-edge SCC with no exit (assert `Entry ∉ MustReachSink`); `gate_reload` operand is a real `LOAD`→`MEM`→`ambiguous_gate`; `gate_nonconst_copy` interposes a `COPY(LOAD(...))` that stays `MEM`→`nonconst_gate`; `gate_nonconst`/`gate_paramcmp`→`nonconst_gate`; `gate_u8_pair`/`gate_u8_full`/`gate_u16_sparse`/`gate_u64_sparse` exercise the **bit-width** cardinality (`width_bits=8*getSize()`): the non-exhaustive 8/16/64-bit domains add `⊥`→`unknown`, the exhaustive 8-bit domain adds **no** `⊥`→`known,[]`, and `gate_u64_sparse` confirms the `width_bits>12` short-circuit (no `1L<<64`); `gate_abistack`→`abi_class` (assert `a7`'s storage is stack, `getRegister()==null`, on the *emitted* formal) |
 | T5 | rename + strip twins | real-Ghidra | truth on 16/16 rename + 16/16 strip positives; `gate_disj` strip twin stays `unknown, ()` |
 | T6 | PE | real-Ghidra | truth on **all four** PE arg binaries; 32-bit agreement; `gate_disj` PE variant stays `unknown, ()` |
 | T7 | malformed records | mock | an **envelope** record with a bad field / non-unique position / same-slot conflict / **`position != slot + 1`** / `bool` in **any** integer field (`position`/`value`/`slot`/`width_bits`/`src_width_bits`/`op_addr`/a `sink_addrs` element) / empty `sink_addrs` / `unknown`+non-empty / missing reason → report `ERROR`, raised as a **`ValueError`** (not `AssertionError`) from `RequiredArg`/`FunctionEvidence.__post_init__` **inside** the envelope `try`, so it is caught and converted; a malformed **cache** row — a bad per-arg field, **or** a cross-field breach that bypasses `FunctionEvidence` (two `RequiredArg`s at the **same position**, **or** `unknown` with a **non-empty** list), caught by the explicit `_validate_required_args(...)` inside `report_from_json`'s `try` — → cache **miss** (not `ERROR`) |
@@ -844,10 +884,11 @@ the discovery result type and the delivery control flow (BLOCKER 4):
 | T11 | inventory | unit | 27 entries `allowed`+justification; 42 still `open` **and matching live hits** (not stale); frozen fields unchanged; 0 `migrated`; no class-B consumer edit; the ret2win rewire is the only non-inventory edit |
 | T12 | ret2win arg path (§5.4) | seam=always-run; e2e=gated | **seam** (patch `rank_payoffs`; assert on a **spied `verifier.verify_payload`**): `known_args` at **random, non-contiguous positions** with recorded `reg`s ⇒ `_discover_args` (normalized-RVA lookup) → `_build_arg_chain` pops each value into **its recorded `reg`**; **every** delivery is **arg-bearing** and the call count equals **(offsets × applicable alignment variants)** — the `for use_align in (True,False)` exploration at `:227-244` is **retained** (one aligned + one unaligned arg-bearing pass per offset), while the separate `"(no args)"` retry at `:262-289` is **removed** (asserted: zero deliveries whose chain omits the arg pops); `known_empty` ⇒ arg-free deliveries, same **(offsets × alignment variants)** count, no arg pops; `COMPLETE`+`unknown` ⇒ **abstain: zero `verify_payload` calls**, no legacy call; `rva_miss` (normalized `win_rva` matches no candidate) ⇒ **zero `verify_payload` calls**; `known_args` but a required `pop` gadget absent ⇒ **zero `verify_payload` calls**; `known_args` naming a required `reg` **outside `{rdi,rsi,rdx}`** (e.g. a 4th arg at `rcx`, within the §3 extractor contract set but beyond the builder, §5.4) ⇒ **zero `verify_payload` calls** (abstain, not a truncated chain); non-`COMPLETE` report ⇒ `unavailable` → legacy fallback (normalized to pairs), delivered. Image base: one case with `pwntools_load_state==SUCCESS` (uses `base_address`) and one with `!=SUCCESS` (derives lowest `PT_LOAD`); one **no-base/PE** case ⇒ `unavailable` (not `rva_miss`). **Count subcase uses an always-failing spy verifier** (MINOR, Rev-6-review `stack_techniques.py:245-260`: the delivery loop `return`s on the first `receipt.success`, so the exact `(offsets × alignment variants)` call count only holds when every verify fails); a **separate** case with a verifier that succeeds on the first aligned pass asserts the loop **early-exits** (one call, `AttemptOutcome.SUCCESS`). **end-to-end (gated):** on a dedicated overflowable non-PIE no-canary `arg1` **and** `arg3` fixture (§7 step 1; offsets provided, directive-W PASS criterion b; `arg3` has a `pop rdx` gadget), the win call is reached with each param set; the **stripped** variant supplies `--win <link-time VADDR>` (normalized to RVA for lookup, used absolute for the jump — an override-assisted stripped path, **not** automatic stripped win discovery, PASS criterion a) |
 | T13 | mixed float/int ABI positive (§3 MAJOR) | real-Ghidra | a dedicated `win(double unused, long key){ if(key==X) sink; }` fixture ⇒ `required_args == [(2, X)]` with `reg=="rdi"` (position 2, but the leading `double` took `XMM0`, so `key`'s storage is `RDI`); the un-compared `double` does **not** trigger `abi_class`; the seam delivers it (pops `X` into `rdi`) |
+| T14 | **`BOOL_NEGATE` parity truth table** (§2.2; Rev-8-review MAJOR) | 14a mock/unit (always-run) + 14b real-Ghidra (gated) | **14a (always-run Python mirror, spec change-detector):** a pure Python reimplementation of `edge_means_equal(isTrueEdge, negateParity, cmpOp)` + `flipParity` is asserted against a hand-written table over **all eight** combinations `{INT_EQUAL, INT_NOTEQUAL} × {negateParity 0, 1} × {true-edge, false-edge}` — equality is implied exactly when `isTrueEdge XOR negateParity XOR (cmpOp==INT_NOTEQUAL)` — **plus** `flipParity` over **0, 1, 2** `BOOL_NEGATE`s (single → parity 1, double → parity 0); documents the spec and fails if the design table drifts. **14b (gated real-Ghidra self-test — the implementation guarantor that kills the "records-but-ignores-parity" mutant):** a companion GhidraScript run under `analyzeHeadless` (reusing a throwaway import of any tiny corpus ELF, whose program state it ignores) **invokes the actual Java `SupwngoPayoff.edgeMeansEqual`/`flipParity` static helpers** across the same eight combinations + double negation, exiting non-zero on any mismatch; gated because loading the GhidraScript class needs Ghidra's classpath (there is **no JUnit harness** — the extractor is a GhidraScript). Together they exercise the parity against the real implementation without depending on whether `-O0` preserves a `BOOL_NEGATE` in any corpus fixture |
 
 T1–T6 + T3′ + T13 extend `tests/test_payoff_ranker.py` (same `index.json` driver, module-scoped cache). T7, T9,
-T10 + the T12 seam are always-run mocks; T8's mock assertions are always-run while its behavioral cardinality
-cases are the real-Ghidra T4 width falsifiers. T4–T6/T8-behavioral/T13 and T12's end-to-end leg are gated under
+T10, **T14a** + the T12 seam are always-run mocks; T8's mock assertions are always-run while its behavioral cardinality
+cases are the real-Ghidra T4 width falsifiers. T4–T6/T8-behavioral/T13, **T14b**, and T12's end-to-end leg are gated under
 `SUPWNGO_REQUIRE_GHIDRA=1`.
 
 **Optimization note (R7):** the dev corpus is `-O0` (`generate.py:101`); W-2 makes **no** optimized-binary
@@ -864,11 +905,18 @@ falsifier shapes are the robustness envelope W-2 proves; optimized fixtures are 
    to prove them byte-unchanged**.
 2. **Extractor args pass** — `SupwngoPayoff.java`: `traceParamSlot` lattice (incl. the `MEM` state for `LOAD`,
    §2.1) with the entry-value/size/SEXT/back-edge/CAST guards, the **unary-only** condition walk (unresolved →
-   per-branch `bool_compose`/`bool_fanout` cause, **not** an on-sight taint, §2.2), per-branch required-outcome
+   per-branch `bool_compose`/`bool_fanout` cause, **not** an on-sight taint, §2.2) returning
+   `(cmp_op, negateParity)` via the **pure static helpers** `flipParity(int)` (one flip per `BOOL_NEGATE`) and
+   `edgeMeansEqual(boolean isTrueEdge, int negateParity, int cmpOpcode)` (both free of Ghidra program state, so
+   T14b can call them directly), per-branch required-outcome
    (Step 1) + **must-reach enumeration** (Step 2: `width_bits`-correct domain, `ENUM_CAP`, backward
-   `MustReachSink` fixed point), `p.getSymbol().getStorage().getRegister().getBaseRegister()`-derived `reg` +
+   `MustReachSink` fixed point) — both Step 1's emit/avoidance choice and Step 2's determined edge decide polarity
+   through `edgeMeansEqual`, never the raw edge — `p.getSymbol().getStorage().getRegister().getBaseRegister()`-derived `reg` +
    per-**emitted**-formal `abi_class` taint, `getBasicBlocks().get(0)` entry, own `try/catch`, dedup/order,
-   provenance (§2.4), `SCRIPT_VERSION → w2.0`. De-risk by running `analyzeHeadless` by hand on one each of
+   provenance (§2.4), `SCRIPT_VERSION → w2.0`. Also add the **T14b parity self-test GhidraScript** (asserts the
+   real `edgeMeansEqual`/`flipParity` truth table over the eight combinations + double negation, exits non-zero on
+   mismatch), placed per the Ghidra script-dir constraint (cf. `SupwngoDecompile.java:4` — a GhidraScript dir is
+   near-empty), and author the always-run **T14a** Python mirror. De-risk by running `analyzeHeadless` by hand on one each of
    `arg3`, `gate_invert`, `gate_disj`, `gate_disjineq`, `gate_mixed`, `gate_bool` (gating composed →
    `bool_compose`) and `gate_boolnongate` (non-gating composed → `known,[]`), `gate_boolor` (confirm the
    short-circuit lowers to **two `CBRANCH`es, no `BOOL_OR`**), `gate_loop` (confirm a real back-edge SCC with no
@@ -882,8 +930,8 @@ falsifier shapes are the robustness envelope W-2 proves; optimized fixtures are 
 3. **Python model** — `RequiredArg` + `__post_init__`; fields + cross-field invariant on **`FunctionEvidence`**
    (inside the envelope `try`) and pass-through in `score_function`; `required_args_for`/`required_arg_regs`
    (reject non-`COMPLETE`); cache ser/deser both paths + `CACHE_ENVELOPE_VERSION → 2` (cache-miss semantics);
-   T7–T10.
-4. **Corpus tests** — T1–T6 + T3′ + T13 (gated).
+   T7–T10 + the always-run **T14a** parity mirror.
+4. **Corpus tests** — T1–T6 + T3′ + T13 + the gated **T14b** parity self-test (gated).
 5. **Inventory** — close the 27 `allowed` in the baseline; leave the 42 `open` untouched; T11 green.
 6. **Ret2win rewire** — `_discover_args(binary, win_name, win_addr, context)` returning the `ArgDiscovery`
    tagged union (image-base guard: `pwntools_load_state==SUCCESS` else lowest `PT_LOAD`, else `unavailable` for
@@ -899,7 +947,11 @@ falsifier shapes are the robustness envelope W-2 proves; optimized fixtures are 
 
 - **R1 — CFG/storage API drift.** Conditional-successor accessors, the `ArrayList` entry index, `BOOL_NEGATE`
   parity, and `p.getSymbol().getStorage()` + `Register.getBaseRegister()` verified live (de-risk step 2); an
-  unresolvable case → `unknown`, never a wrong arg.
+  unresolvable case → `unknown`, never a wrong arg. The `BOOL_NEGATE` parity is additionally pinned by **T14**:
+  an always-run Python mirror of the §2.2 truth table and a gated self-test that calls the real Java
+  `edgeMeansEqual`/`flipParity` across all eight `{opcode}×{parity}×{edge}` combinations + double negation — so a
+  "records-but-ignores-parity" regression is caught even though GCC `-O0` can fold the `gate_negeq`/`gate_neginv`
+  corpus fixtures to `negateParity==0` (Rev-8-review MAJOR).
 - **R2 — slot coalescing / redefinition / memory round-trip.** The entry-value guard (§2.1) yields `AMBIGUOUS`
   → `unknown` on a redefined or phi-merged slot (`gate_arith`/`gate_multieq`), and a value that reaches the
   comparison via a memory `LOAD` is the distinct `MEM` state (§2.1) — its P-code inputs are the address, not the
