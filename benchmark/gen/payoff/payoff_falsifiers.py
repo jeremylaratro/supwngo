@@ -287,16 +287,24 @@ def _build_gate_reload(rng, ns, consts) -> dict:
     name = ns.fresh()
     x = consts.drawn()
     g_name = ns.fresh()
-    params = "int a"
+    params = "long a"
+    # A plain local round-trip is forwarded by the decompiler straight back
+    # to param_1 (no memory-backed def), which would wrongly resolve to a
+    # pinnable PARAM(full). Routing the value through a genuine global and
+    # across an intervening external call forces Ghidra to mark the reload
+    # as an INDIRECT-defined varnode, which the slot lattice maps to
+    # AMBIGUOUS -- exactly the "can't tell a reloaded param from a global"
+    # case this falsifier is meant to exercise.
     body = [
-        "volatile int %s;" % g_name,
         "%s = a;" % g_name,
+        "(void)getpid();",
         "if (%s == %s) {" % (g_name, x),
         *_indent(_sink(rng)),
         "}",
     ]
+    gdef = "long %s;" % g_name
     func = _function("payoff", "void", name, params, body)
-    return dict(func=func, globals_text=[], globals_names=[], status="unknown",
+    return dict(func=func, globals_text=[gdef], globals_names=[g_name], status="unknown",
                 required=[], reason="ambiguous_gate")
 
 
