@@ -1006,10 +1006,13 @@ def test_budget_is_the_configured_limit_on_miss_and_hit(monkeypatch, tmp_path):
 
 
 @pytest.mark.skipif(not _PAYOFF_ENTRIES, reason="dev payoff corpus not built")
-def test_jvm_user_home_override_reaches_runner_and_completes(monkeypatch, corpus_db):
+def test_jvm_user_home_override_reaches_runner_and_completes(monkeypatch):
     """End-to-end with REAL Ghidra: the per-call JVM ``user.home`` override is
     threaded all the way to ``proc.run``, and the pass completes on Ghidra (a
-    silent degrade to a different backend would fail the backend assertion)."""
+    silent degrade to a different backend would fail the backend assertion).
+
+    ``use_cache=False`` forces a fresh Ghidra pass so the spy always fires,
+    independent of whether another test already cached this binary."""
     need_ghidra()
     captured = {}
     real = Decompiler._run_ghidra_headless
@@ -1019,11 +1022,11 @@ def test_jvm_user_home_override_reaches_runner_and_completes(monkeypatch, corpus
         return real(self, cmd, timeout, env=env)
 
     monkeypatch.setattr(Decompiler, "_run_ghidra_headless", spy)
-    report = payoff.rank_payoffs(str(_bin_for(_PAYOFF_ENTRIES[0])), db=corpus_db)
+    report = payoff.rank_payoffs(str(_bin_for(_PAYOFF_ENTRIES[0])), use_cache=False)
 
     assert report.status is payoff.PayoffStatus.COMPLETE
     assert report.backend == "ghidra"
-    assert captured["env"] is not None
+    assert captured.get("env") is not None
     assert "-Duser.home=" in captured["env"].get("JAVA_TOOL_OPTIONS", "")
 
 
