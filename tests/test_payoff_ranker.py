@@ -570,6 +570,125 @@ def test_payoff_corpus_negative_is_complete_and_empty(entry, corpus_db):
     assert report.counts["enumerated"] > 0
 
 
+# =========================================================================== #
+# W-2 step 1 -- falsifier + fixture corpus categories (design doc §3a, §6 T12/T13)
+#
+# These are structural checks on the generator's output (index.json + truth
+# files), not real-Ghidra extraction -- they confirm the corpus itself has the
+# shape the design specifies, before the extractor exists to be tested
+# against it (T4/T12/T13 in later steps run the real extractor against this
+# same corpus). Always-run (no need_ghidra()).
+# =========================================================================== #
+
+# (args_status, args_reason) truth per the §3a table. required_args is always
+# () except gate_negeq, whose seed-drawn literal is checked for shape only
+# here (position == 1, an int value) -- the exact value vs. the extractor's
+# output is T4's job, not step 1's.
+_FALSIFIER_TRUTH = {
+    "decoy_sink": ("known", None),
+    "gate_audit": ("known", None),
+    "gate_relaudit": ("known", None),
+    "gate_invert": ("unknown", "avoidance_gate"),
+    "gate_disj": ("unknown", "unresolved_gate"),
+    "gate_disjineq": ("unknown", "unresolved_gate"),
+    "gate_relational": ("unknown", "relational_gate"),
+    "gate_arith": ("unknown", "ambiguous_gate"),
+    "gate_mixed": ("unknown", "unresolved_gate"),
+    "gate_bool": ("unknown", "bool_compose"),
+    "gate_boolnongate": ("known", None),
+    "gate_boolor": ("unknown", "unresolved_gate"),
+    "gate_reload": ("unknown", "ambiguous_gate"),
+    "gate_nonconst": ("unknown", "nonconst_gate"),
+    "gate_paramcmp": ("unknown", "nonconst_gate"),
+    "gate_multieq": ("unknown", "ambiguous_gate"),
+    "gate_abistack": ("unknown", "abi_class"),
+    "gate_loop": ("unknown", "unresolved_gate"),
+    "gate_negeq": ("known", None),
+    "gate_neginv": ("unknown", "avoidance_gate"),
+    "gate_nonconst_copy": ("unknown", "nonconst_gate"),
+    "gate_u8_pair": ("unknown", "unresolved_gate"),
+    "gate_u8_full": ("known", None),
+    "gate_u16_sparse": ("unknown", "unresolved_gate"),
+    "gate_u64_sparse": ("unknown", "unresolved_gate"),
+}
+
+_FALSIFIER_ARG_BEARING_SHAPES = {"gate_negeq"}
+
+
+@pytest.mark.skipif(not _index_entries(), reason="dev payoff corpus not built")
+def test_falsifier_corpus_has_27_units_with_table_truth():
+    """Sec 3a: 25 falsifier shapes + the gate_disj strip twin + the gate_disj
+    PE variant = 27 role:"falsifier" index entries, each with the exact
+    (args_status, required_args-shape, args_reason) the sec 3a table specifies."""
+    entries = _entries_of("falsifier", "falsifier_strip_twin", "falsifier_pe")
+    role_entries = [e for e in _index_entries() if e.get("role") == "falsifier"]
+    assert len(role_entries) == 27, _ids(role_entries)
+    assert len(entries) == 27, _ids(entries)
+    assert {e["id"] for e in entries} == {e["id"] for e in role_entries}
+
+    by_shape = {}
+    for e in entries:
+        truth = _truth_for(e)
+        assert truth["role"] == "falsifier", e["id"]
+        by_shape.setdefault(truth["shape"], []).append(truth)
+
+    assert set(by_shape) == set(_FALSIFIER_TRUTH), set(by_shape) ^ set(_FALSIFIER_TRUTH)
+    for shape, truths in by_shape.items():
+        status, reason = _FALSIFIER_TRUTH[shape]
+        for truth in truths:
+            assert truth["args_status"] == status, (truth["id"], shape)
+            assert truth["args_reason"] == reason, (truth["id"], shape)
+            if shape in _FALSIFIER_ARG_BEARING_SHAPES:
+                assert len(truth["required_args"]) == 1, truth["id"]
+                assert truth["required_args"][0]["position"] == 1, truth["id"]
+                assert isinstance(truth["required_args"][0]["value"], int), truth["id"]
+            else:
+                assert truth["required_args"] == [], (truth["id"], shape)
+
+    # gate_disj's strip twin and PE variant carry the base shape's truth
+    # unchanged (only id/kind/stripped/binary/twin_of/built_from differ).
+    disj_truths = by_shape["gate_disj"]
+    assert len(disj_truths) == 3  # base ELF + strip twin + PE
+    assert {t["kind"] for t in disj_truths} == {
+        "falsifier",
+        "falsifier_strip_twin",
+        "falsifier_pe",
+    }
+
+
+@pytest.mark.skipif(not _index_entries(), reason="dev payoff corpus not built")
+def test_fixture_corpus_has_3_units_with_table_truth():
+    """Sec 6 T12/T13: the two overflowable ret2win e2e fixtures and the mixed
+    float/int ABI positive are present with the exact truth the design
+    specifies (ret offset, required regs, required args)."""
+    entries = [e for e in _index_entries() if e.get("role") == "fixture"]
+    assert len(entries) == 3, _ids(entries)
+    by_fixture = {_truth_for(e)["fixture"]: _truth_for(e) for e in entries}
+    assert set(by_fixture) == {"e2e_arg1", "e2e_arg3", "abimix"}
+
+    arg1 = by_fixture["e2e_arg1"]
+    assert arg1["required_args"] == [{"position": 1, "value": 0x1337}]
+    assert arg1["required_regs"] == ["rdi"]
+    assert arg1["ret_offset"] == 88
+    assert arg1["gadgets"]["gadget_stub_rva"] is not None
+
+    arg3 = by_fixture["e2e_arg3"]
+    assert arg3["required_args"] == [
+        {"position": 1, "value": 0x1111},
+        {"position": 2, "value": 0x2222},
+        {"position": 3, "value": 0x3333},
+    ]
+    assert arg3["required_regs"] == ["rdi", "rsi", "rdx"]
+    assert arg3["ret_offset"] == 88
+    assert arg3["gadgets"]["gadget_stub_rva"] is not None
+
+    abimix = by_fixture["abimix"]
+    assert abimix["required_args"] == [{"position": 2, "value": 0x4242}]
+    assert abimix["required_regs"] == ["rdi"]
+    assert abimix["ret_offset"] is None
+    assert abimix["gadgets"] is None
+
+
 def _extract_envelope(bin_path):
     """Run the real extractor and return its parsed envelope, reusing the
     driver's own JVM-home and envelope-reading helpers (only the command list is

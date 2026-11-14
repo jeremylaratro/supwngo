@@ -86,6 +86,8 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
+import payoff_falsifiers  # noqa: E402
+import payoff_fixtures  # noqa: E402
 import payoff_names  # noqa: E402
 import payoff_source  # noqa: E402
 
@@ -658,6 +660,281 @@ def synthesize_unit(ctx: Context, unit: Unit) -> payoff_source.Program:
     return program
 
 
+# ---------------------------------------------------------------------------
+# W-2 falsifiers (design doc §3a): 25 adversarial control-flow shapes that
+# probe the required-args extractor's classification directly, plus a strip
+# twin and a PE variant of ``gate_disj`` (27 units total). Dev-set only. Each
+# falsifier id lives in its own "fal-" namespace and draws from its own
+# unit-seeded RNG via ``unit_seed()`` -- same mechanism as every other unit --
+# so adding these changes nothing about any pre-existing unit's random
+# stream, and no pre-existing truth or index row gains a new key (``role`` is
+# only ever set on these rows; ``_index`` below adds it conditionally).
+
+FALSIFIER_BASE_IDS: Dict[str, str] = {
+    s: "fal-%s" % s for s in payoff_falsifiers.FALSIFIER_SHAPES
+}
+FALSIFIER_DISJ_STRIP_TWIN_ID = "fal-gate_disj-twin-stripped"
+FALSIFIER_DISJ_PE_ID = "fal-pe-gate_disj"
+
+
+@dataclasses.dataclass(frozen=True)
+class FalsifierUnit:
+    id: str
+    shape: str
+
+
+def plan_falsifiers() -> List[FalsifierUnit]:
+    return [
+        FalsifierUnit(FALSIFIER_BASE_IDS[s], s)
+        for s in payoff_falsifiers.FALSIFIER_SHAPES
+    ]
+
+
+def synthesize_falsifier_unit(
+    ctx: Context, unit: FalsifierUnit
+) -> payoff_falsifiers.FalsifierProgram:
+    rng = random.Random(unit_seed(ctx.master, unit.id))
+    ns = payoff_names.Namespace(rng, ctx.deps)
+    program = payoff_falsifiers.synthesize_falsifier(rng, ns, unit.shape)
+    bad = payoff_names.check_names(ctx.deps, program.names)
+    if bad:
+        raise BuildError("%s: names violate the namespace: %s" % (unit.id, bad))
+    hits = ctx.deps.lint_source(program.source)
+    if hits:
+        raise BuildError("%s: source contains forbidden tokens: %s" % (unit.id, hits))
+    return program
+
+
+def _falsifier_truth(
+    ctx: Context,
+    *,
+    id: str,
+    kind: str,
+    fmt: str,
+    program: payoff_falsifiers.FalsifierProgram,
+    image: Image,
+    rva: int,
+    stripped: bool,
+    binary_rel: str,
+    source_rel: str,
+    flags: List[str],
+    post: Optional[str],
+    binary_seed: int,
+    twin_of: Optional[str] = None,
+    built_from: Optional[str] = None,
+) -> dict:
+    base = image.image_base
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "id": id,
+        "set": ctx.set_name,
+        "kind": kind,
+        "role": "falsifier",
+        "format": fmt,
+        "arch": "x86_64",
+        "shape": program.shape,
+        "pie": image.pie,
+        "stripped": stripped,
+        "twin_of": twin_of,
+        "built_from": built_from,
+        "image_base": base,
+        "payoff_vaddr": rva + base,
+        "payoff_rva": rva,
+        "payoff_symbol": None if stripped else program.function_name,
+        "args_status": program.args_status,
+        "required_args": program.required_args,
+        "args_reason": program.args_reason,
+        "names": program.names,
+        "program": program.detail,
+        "binary": binary_rel,
+        "source": source_rel,
+        "build": {"flags": flags, "post": post},
+        "seed": ctx.seed_text,
+        "binary_seed": "%x" % binary_seed,
+        "tools": ctx.tools.versions,
+        "generator_version": GENERATOR_VERSION,
+    }
+
+
+def _resolve_falsifier_rva(
+    tools: Tools, path: Path, function_name: str, image_base: int, label: str
+) -> int:
+    symbols = function_symbols(tools, path)
+    if function_name not in symbols:
+        raise BuildError("%s: no symbol for %s" % (label, function_name))
+    rva = symbols[function_name] - image_base
+    if rva <= 0:
+        raise BuildError("%s: %s is below the image base" % (label, function_name))
+    return rva
+
+
+def build_falsifier_unit(
+    ctx: Context, unit: FalsifierUnit, program: payoff_falsifiers.FalsifierProgram
+) -> List[dict]:
+    source_rel = "src/%s.c" % unit.id
+    (ctx.out / source_rel).write_text(program.source, encoding="utf-8", newline="\n")
+    seed = unit_seed(ctx.master, unit.id)
+    final = ctx.out / "bin" / unit.id
+    flags = compile_elf(ctx.tools, program.source, final, pie=False)
+    image = read_image(final)
+    rva = _resolve_falsifier_rva(
+        ctx.tools, final, program.function_name, image.image_base, unit.id
+    )
+    truths = [
+        _falsifier_truth(
+            ctx,
+            id=unit.id,
+            kind="falsifier",
+            fmt="elf",
+            program=program,
+            image=image,
+            rva=rva,
+            stripped=False,
+            binary_rel="bin/" + unit.id,
+            source_rel=source_rel,
+            flags=flags,
+            post=None,
+            binary_seed=seed,
+        )
+    ]
+    if unit.shape == "gate_disj":
+        twin_id = FALSIFIER_DISJ_STRIP_TWIN_ID
+        twin_path = ctx.out / "bin" / twin_id
+        run([ctx.tools.strip, "-o", str(twin_path), str(final)])
+        twin_image = read_image(twin_path)
+        assert_same_image(image, twin_image, twin_id, exact=True)
+        if function_symbols(ctx.tools, twin_path):
+            raise BuildError("%s: strip left symbols behind" % twin_id)
+        truths.append(
+            _falsifier_truth(
+                ctx,
+                id=twin_id,
+                kind="falsifier_strip_twin",
+                fmt="elf",
+                program=program,
+                image=twin_image,
+                rva=rva,
+                stripped=True,
+                binary_rel="bin/" + twin_id,
+                source_rel=source_rel,
+                flags=flags,
+                post="strip",
+                binary_seed=seed,
+                twin_of=unit.id,
+            )
+        )
+        if ctx.tools.mingw_gcc:
+            pe_id = FALSIFIER_DISJ_PE_ID
+            pe_path = ctx.out / "bin" / (pe_id + ".exe")
+            pe_flags = compile_pe(ctx.tools, program.source, pe_path)
+            pe_image = read_image(pe_path)
+            pe_rva = _resolve_falsifier_rva(
+                ctx.tools, pe_path, program.function_name, pe_image.image_base, pe_id
+            )
+            truths.append(
+                _falsifier_truth(
+                    ctx,
+                    id=pe_id,
+                    kind="falsifier_pe",
+                    fmt="pe",
+                    program=program,
+                    image=pe_image,
+                    rva=pe_rva,
+                    stripped=False,
+                    binary_rel="bin/" + pe_id + ".exe",
+                    source_rel=source_rel,
+                    flags=pe_flags,
+                    post=None,
+                    binary_seed=seed,
+                    built_from=unit.id,
+                )
+            )
+    return truths
+
+
+# ---------------------------------------------------------------------------
+# W-2 bespoke fixtures (design §6 T12, T13): not part of the blind-ID or
+# falsifier namespaces (literal ``win`` is correct here -- see
+# payoff_fixtures.py's module docstring). Dev-set only, fixed (unseeded)
+# constants -- there is nothing to hide and re-deriving the ROP math per
+# seed would add nothing.
+
+FIXTURE_IDS = {"e2e_arg1": "fix-e2e-arg1", "e2e_arg3": "fix-e2e-arg3", "abimix": "fix-abimix"}
+
+
+def _fixture_truth(
+    ctx: Context,
+    *,
+    id: str,
+    fixture: payoff_fixtures.FixtureProgram,
+    image: Image,
+    symbols: Dict[str, int],
+    source_rel: str,
+    flags: List[str],
+) -> dict:
+    base = image.image_base
+    win_rva = symbols[fixture.win_name] - base
+    gadgets = None
+    if fixture.gadget_stub_name:
+        stub_rva = symbols[fixture.gadget_stub_name] - base
+        gadgets = {"gadget_stub_rva": stub_rva}
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "id": id,
+        "set": ctx.set_name,
+        "kind": "fixture",
+        "role": "fixture",
+        "format": "elf",
+        "arch": "x86_64",
+        "fixture": fixture.detail.get("fixture"),
+        "shape": None,
+        "pie": image.pie,
+        "stripped": False,
+        "twin_of": None,
+        "win_vaddr": win_rva + base,
+        "win_rva": win_rva,
+        "win_symbol": fixture.win_name,
+        "required_args": fixture.required_args,
+        "required_regs": fixture.required_regs,
+        "ret_offset": fixture.ret_offset,
+        "gadgets": gadgets,
+        "program": fixture.detail,
+        "binary": "bin/" + id,
+        "source": source_rel,
+        "build": {"flags": flags, "post": None},
+        "seed": "fixed",
+        "binary_seed": "0",
+        "tools": ctx.tools.versions,
+        "generator_version": GENERATOR_VERSION,
+    }
+
+
+def build_fixture_unit(ctx: Context, fixture_key: str) -> dict:
+    fid = FIXTURE_IDS[fixture_key]
+    fixture = (
+        payoff_fixtures.build_e2e_fixture(fixture_key.split("_", 1)[1])
+        if fixture_key.startswith("e2e_")
+        else payoff_fixtures.build_abimix_fixture()
+    )
+    source_rel = "src/%s.c" % fid
+    (ctx.out / source_rel).write_text(fixture.source, encoding="utf-8", newline="\n")
+    final = ctx.out / "bin" / fid
+    flags = compile_elf(ctx.tools, fixture.source, final, pie=False)
+    image = read_image(final)
+    symbols = function_symbols(ctx.tools, final)
+    if fixture.win_name not in symbols:
+        raise BuildError("%s: no symbol for %s" % (fid, fixture.win_name))
+    return _fixture_truth(
+        ctx,
+        id=fid,
+        fixture=fixture,
+        image=image,
+        symbols=symbols,
+        source_rel=source_rel,
+        flags=flags,
+    )
+
+
 def _dump(obj: object) -> str:
     return json.dumps(obj, indent=2, sort_keys=True) + "\n"
 
@@ -698,6 +975,19 @@ def build_corpus(
         programs = {u.id: synthesize_unit(ctx, u) for u in units}
         tasks = [(build_elf_unit, u, programs[u.id]) for u in units]
         tasks += [(build_pe_unit, p, programs[p.base.id]) for p in pes]
+        falsifier_units = plan_falsifiers() if set_name == "dev" else []
+        falsifier_programs = {
+            u.id: synthesize_falsifier_unit(ctx, u) for u in falsifier_units
+        }
+        tasks += [
+            (build_falsifier_unit, u, falsifier_programs[u.id])
+            for u in falsifier_units
+        ]
+        fixture_keys = list(FIXTURE_IDS) if set_name == "dev" else []
+        tasks += [
+            (lambda c, k, _unused: [build_fixture_unit(c, k)], key, None)
+            for key in fixture_keys
+        ]
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
             results = list(pool.map(lambda t: t[0](ctx, t[1], t[2]), tasks))
     finally:
@@ -713,8 +1003,9 @@ def build_corpus(
 
 
 def _index(ctx: Context, truths: List[dict], with_pe: bool) -> dict:
-    entries = [
-        {
+    entries = []
+    for t in sorted(truths, key=lambda t: t["id"]):
+        entry = {
             "id": t["id"],
             "kind": t["kind"],
             "format": t["format"],
@@ -726,8 +1017,9 @@ def _index(ctx: Context, truths: List[dict], with_pe: bool) -> dict:
             "truth": "truth/%s.json" % t["id"],
             "source": t["source"],
         }
-        for t in sorted(truths, key=lambda t: t["id"])
-    ]
+        if t.get("role"):  # only ever set on W-2 falsifier rows (never old rows)
+            entry["role"] = t["role"]
+        entries.append(entry)
     by_kind: Dict[str, int] = {}
     for t in truths:
         by_kind[t["kind"]] = by_kind.get(t["kind"], 0) + 1
