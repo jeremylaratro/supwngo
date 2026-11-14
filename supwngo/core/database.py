@@ -121,6 +121,20 @@ class Database:
                     UNIQUE(binary_sha256, name, address)
                 );
 
+                -- Payoff ("win function") ranker cache (directive W / W-1).
+                -- Keyed by (sha256, script_version, backend_version) so a changed
+                -- extractor or backend invalidates the entry. report_json is an
+                -- opaque, versioned PayoffReport envelope serialized by
+                -- supwngo.analysis.payoff; the DB stores it verbatim.
+                CREATE TABLE IF NOT EXISTS payoff_analysis (
+                    sha256 TEXT NOT NULL,
+                    script_version TEXT NOT NULL,
+                    backend_version TEXT NOT NULL,
+                    report_json TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (sha256, script_version, backend_version)
+                );
+
                 -- Create indexes
                 CREATE INDEX IF NOT EXISTS idx_gadgets_binary ON gadgets(binary_sha256);
                 CREATE INDEX IF NOT EXISTS idx_crashes_binary ON crashes(binary_sha256);
@@ -583,14 +597,63 @@ class Database:
                         break
 
                 if match:
-                    matches.append({
-                        "libc_id": row["libc_id"],
-                        "version": row["version"],
-                        "symbols": cached_symbols,
-                        "path": row["path"],
-                    })
+                    matches.append(
+                        {
+                            "libc_id": row["libc_id"],
+                            "version": row["version"],
+                            "symbols": cached_symbols,
+                            "path": row["path"],
+                        }
+                    )
 
             return matches
+
+    # Payoff ranker cache (directive W / W-1)
+    def save_payoff_analysis(
+        self,
+        sha256: str,
+        script_version: str,
+        backend_version: str,
+        report_json: str,
+    ) -> None:
+        """Store an opaque PayoffReport envelope under the versioned key."""
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO payoff_analysis
+                (sha256, script_version, backend_version, report_json, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    sha256,
+                    script_version,
+                    backend_version,
+                    report_json,
+                    datetime.now().isoformat(),
+                ),
+            )
+
+    def get_payoff_analysis(
+        self, sha256: str, script_version: str, backend_version: str
+    ) -> Optional[str]:
+        """Return the stored envelope string for this exact version key, or None."""
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT report_json FROM payoff_analysis
+                WHERE sha256 = ? AND script_version = ? AND backend_version = ?
+                """,
+                (sha256, script_version, backend_version),
+            ).fetchone()
+            return row["report_json"] if row else None
+
+    def clear_payoff_analysis(self, sha256: str) -> None:
+        """Payoff-scoped invalidation: drop every version-keyed entry for a binary."""
+        with self._connection() as conn:
+            conn.execute(
+                "DELETE FROM payoff_analysis WHERE sha256 = ?",
+                (sha256,),
+            )
 
     # Utility methods
     def clear_cache(self, binary_sha256: Optional[str] = None) -> None:
@@ -622,12 +685,17 @@ class Database:
                     "DELETE FROM binaries WHERE sha256 = ?",
                     (binary_sha256,),
                 )
+                conn.execute(
+                    "DELETE FROM payoff_analysis WHERE sha256 = ?",
+                    (binary_sha256,),
+                )
             else:
                 conn.execute("DELETE FROM gadgets")
                 conn.execute("DELETE FROM crashes")
                 conn.execute("DELETE FROM exploits")
                 conn.execute("DELETE FROM symbols")
                 conn.execute("DELETE FROM binaries")
+                conn.execute("DELETE FROM payoff_analysis")
 
     def stats(self) -> Dict[str, int]:
         """Get database statistics."""

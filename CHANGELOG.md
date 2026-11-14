@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add `supwngo.analysis.payoff.rank_payoffs`, a static-evidence ranker that
+  identifies a binary's candidate win/payoff functions per-binary rather than
+  by a hardcoded name list (directive W). A shipped Ghidra GhidraScript
+  extracts per-function evidence (sink calls with constant-vs-parameter target
+  tracing, read/stdout reachability, and incoming-call references); the scorer
+  promotes only functions whose evidence is hypothesis-tier. Results are keyed
+  and cached by `(sha256, script_version, backend_version)` in a dedicated
+  `payoff_analysis` table, and only a provably complete pass is ever cached.
+  When Ghidra is unavailable, a single angr CFG pass reports `DEGRADED` (never
+  an authoritative result) so an angr-only environment cannot silently pass.
 - Add a late-seated `fsop_stdout_read` executor and three-variant
   `benchmark/corpus_fsop/` family. The executor wires the existing FSOP and
   modern House-of-X libraries into the canonical pipeline, verifies the

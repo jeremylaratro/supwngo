@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from supwngo.core import fileformat, proc
 from supwngo.core.binary import Binary
@@ -421,7 +421,9 @@ class Decompiler:
             return f"addr:{hex(func_addr)}"
         return ""
 
-    def _run_ghidra_headless(self, cmd: List[str], timeout: float) -> GhidraRun:
+    def _run_ghidra_headless(
+        self, cmd: List[str], timeout: float, *, env: Optional[Mapping[str, str]] = None
+    ) -> GhidraRun:
         """Run ``analyzeHeadless`` in its own process group, killable on timeout.
 
         Returns a :class:`GhidraRun` carrying the process state, bounded
@@ -430,12 +432,18 @@ class Decompiler:
         code is unreliable); a timeout or a failed launch did not. The runner
         (``supwngo.core.proc.run``) SIGKILLs and reaps the whole process group on
         timeout, so no JVM or native-decompiler descendant is left behind.
+
+        ``env`` is passed straight to ``proc.run``; ``env=None`` (the default)
+        preserves the exact behaviour every existing caller relies on. The
+        payoff ranker passes a merged environment carrying a writable JVM
+        ``user.home`` (``JAVA_TOOL_OPTIONS=-Duser.home=...``) so Ghidra's
+        launcher does not silently fall back to angr.
         """
         try:
             cwd = os.getcwd()
         except OSError:
             cwd = tempfile.gettempdir()
-        result = proc.run(cmd, cwd=cwd, timeout=timeout)
+        result = proc.run(cmd, cwd=cwd, timeout=timeout, env=env)
 
         stdout = result.stdout.decode("utf-8", errors="replace")
         stderr = result.stderr.decode("utf-8", errors="replace")
