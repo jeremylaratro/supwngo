@@ -1080,3 +1080,9 @@ and recorded here as an amendment.
 - Bet 1 held, with zero wrong answers: P-code distance was exact on 8 of 23 new fixtures and abstained on 15.
   The abstentions were fortified `-O2` sinks, callee sinks (no depth-1 summary yet) and a stripped static
   binary. This is input to SP-03A and SP-04a.
+
+#### Sprint-map reconciliation and living status board (2026-11-14)
+
+| ID | Amendment | Status |
+|---|---|---|
+| AMD-23 | **A living execution-status board now tracks the focus path.** `docs/roadmaps/2026-11-14-sprint-status-board.md` is the companion that records where each focus-path sprint and W-phase stands; this roadmap keeps owning the definitions. It records three facts durably: **(a)** "the full sprint map" means the directive-F focus path (SP-01 → SP-06 focus slices, SP-04b pulled forward) — SP-07 → SP-16 stay as table-rows by directive F + the DEC-26 horizon, and are not detailed now; **(b)** the **SP-04b ↔ W-0 … W-6** mapping (W-0/W-1 merged via PR #38/#39, W-2 in flight with its design Rev 11 ACCEPTED, W-3 … W-6 pending); **(c)** the §0/§1.6 "Today" scorecard is stale (`1741b34`, corrected by AMD-1), the live baseline is the post-SP-01b passcard (`10272bf`), and a **fresh capability measurement is deferred** — a passcard run at the current host load is invalid under §1.2 TIME (load threshold + quorum) and §1.6 ("quiet host"), so it runs on a quiet host and its numbers are then folded back here and into the board. | ADOPTED |
