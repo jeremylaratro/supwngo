@@ -15,6 +15,30 @@ independent review rounds converged, the architecture and scope are confirmed, a
 concrete reviewer-prescribed fix (now applied) whose correctness is proven by the RED tests in §4 — so
 implementation proceeds without a third review round.
 
+## Implementation status (2026-11-13 — COMPLETE, gate green)
+
+W-1 is implemented on `feat/w1-payoff-ranker` following the §7 commit order:
+
+| step | commit | contents |
+| --- | --- | --- |
+| 1 | `0331bf3` | RVA normalization primitive (`to_corpus_rva`) |
+| 2 | `b01dacd` | evidence model + scorer |
+| 3 | `b4626f6` | versioned `payoff_analysis` cache table + trio |
+| 4a | `3127e4b` | additive `env=` seam through `_run_ghidra_headless` |
+| 4b | `a1cae7f` | `SupwngoPayoff.java` extractor + `rank_payoffs` driver |
+| 5 | `b629ed7` | corpus tests (positives / twins / PE / negatives) |
+| 6–7 | `214c4ef` | failure-injection, cache-safety and cache-integration tests |
+| 8 | `de07e87` | angr fallback (Ghidra-absent → `DEGRADED`, never authoritative) |
+| fix | `d3154c8` | JVM-home gate test forces a fresh pass (order-independent) |
+
+**Gate result (full suite under `SUPWNGO_REQUIRE_GHIDRA=1`, 133 tests, 0 skips,
+~27 min):** every Done-when criterion met — corpus top-1 equals truth on
+**72/72** (32 positive + 16 rename twin + 16 strip twin + 8 PE), **0/32** decoy
+top-1, **8/8** negatives `complete` with an empty candidate list, cache
+miss→hit (1 Ghidra spawn then 0), and the per-call JVM `user.home` override
+reaching `proc.run` on real Ghidra. The angr-only path is `DEGRADED` end-to-end
+and never meets the gate, as designed (§3.2).
+
 ## 0. Goal (exact, from the parent plan's Done-when)
 
 Build `supwngo/analysis/payoff.py` (plus one Ghidra script) that, given a binary, returns a **ranked**
