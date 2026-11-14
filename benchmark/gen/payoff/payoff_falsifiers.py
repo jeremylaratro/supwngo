@@ -355,29 +355,59 @@ def _build_gate_multieq(rng, ns, consts) -> dict:
 def _build_gate_abistack(rng, ns, consts) -> dict:
     name = ns.fresh()
     x = consts.drawn()
+    sink_g = ns.fresh()
+    # `(void)aN;` on an otherwise-unused formal compiles to nothing (no P-code
+    # at all), so Ghidra never sees a read of RDI/RSI/RDX/RCX/R8/R9 and
+    # therefore never infers a register-ABI signature for this (uncalled, so
+    # no call-site to infer from either) function -- a1..a6 end up with
+    # *zero* HighParams, and a7's read of [rsp+8] decompiles as a bare
+    # unrecognized `HighLocal` (isParam=false), not a stack-passed HighParam,
+    # so it never reaches the PARAM(full) path at all and the falsifier can't
+    # exercise `abi_class`. Routing a1..a6 through a genuine arithmetic use
+    # (stored to a global so -O0 keeps it) forces Ghidra to see all six
+    # integer-register reads, so it correctly infers the full 7-arg ABI shape
+    # and promotes a7's stack read to the 7th formal (R8).
     params = ", ".join("long a%d" % i for i in range(1, 8))
-    body = [*["(void)a%d;" % i for i in range(1, 7)],
-            "if (a7 == %s) {" % x,
-            *_indent(_sink(rng)),
-            "}"]
+    body = [
+        "%s = a1 + a2 + a3 + a4 + a5 + a6;" % sink_g,
+        "if (a7 == %s) {" % x,
+        *_indent(_sink(rng)),
+        "}",
+    ]
     func = _function("payoff", "void", name, params, body)
-    return dict(func=func, globals_text=[], globals_names=[], status="unknown",
-                required=[], reason="abi_class")
+    gdef = "long %s;" % sink_g
+    return dict(func=func, globals_text=[gdef], globals_names=[sink_g],
+                status="unknown", required=[], reason="abi_class")
 
 
 def _build_gate_loop(rng, ns, consts) -> dict:
     name = ns.fresh()
-    gate_g = ns.fresh()
+    # The design's worked case is `if (nondet()) for(;;){} sink;` -- an
+    # UNCONTROLLED branch (no parameter anywhere) that must stay a non-gate
+    # compare so it bypasses Step 1 entirely and is left adversarial for
+    # Step 2's must-reach fixed point (the real point of this falsifier:
+    # proving `Entry notin MustReachSink` on a cyclic CFG, R9/R11). A bare
+    # global fails that: Ghidra 12.1.3 represents an unwritten global read as
+    # a bare RAM-address input varnode with no LOAD op (the design's MEM
+    # substitute for LOAD, §2.1), so `global != 0` classifies MEM-vs-const ==
+    # ambiguous-param, and since this is the *only* branch in the function it
+    # individually gates -> Step 1 taints it `ambiguous_gate` before Step 2
+    # ever runs, which is correct per §2.1's own MEM rule but not what this
+    # falsifier is meant to exercise. A niladic external call's return value
+    # traces through CALL's own inputs to NONPARAM (the call target is a bare
+    # "ram"-space reference with no HighVariable, so it is NONPARAM too, not
+    # MEM -- a hardcoded code address is not a memory-resident *value*), so
+    # `rand() != 0` is NONPARAM vs NONPARAM == non-gate == truly uncontrolled,
+    # matching `nondet()`.
     body = [
-        "if (%s) {" % gate_g,
+        "if (rand() != 0) {",
         "    for (;;) {",
         "    }",
         "}",
         *_sink(rng),
     ]
     func = _function("payoff", "void", name, "void", body)
-    gdef = "int %s;" % gate_g
-    return dict(func=func, globals_text=[gdef], globals_names=[gate_g],
+    return dict(func=func, globals_text=[], globals_names=[],
                 status="unknown", required=[], reason="unresolved_gate")
 
 

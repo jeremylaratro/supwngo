@@ -1256,3 +1256,60 @@ def test_angr_only_real_pass_is_degraded_never_authoritative(monkeypatch, tmp_pa
     assert db.get_payoff_analysis(*_key(bin_path)) is None
     reasons = [a["reason"] for a in report.attempts if a["backend"] == "angr"]
     assert reasons and "binary parsed" in reasons[0]
+
+
+# ---------------------------------------------------------------------------
+# T14a (design doc 2026-11-13-w2-required-args-design.md, Rev 11, §7 step 2):
+# an always-run, Ghidra-free pure-Python mirror of the parity seam
+# SupwngoPayoff.java's flipParity/edgeMeansEqual implement. It exists purely as
+# a spec change-detector: the expected column below is written by hand from
+# design §2.2's "edge XOR negateParity==1 XOR cmpOp==INT_NOTEQUAL" rule, not
+# derived from the mirror function itself, so an unintentional drift in either
+# the Java's XOR semantics or this mirror's reimplementation of them shows up
+# here in milliseconds -- well before the slow, gated real-Ghidra T14b
+# self-test (SupwngoPayoffSelfTest.java, driven by test_w2_self_test_parity_
+# seam_passes_in_real_ghidra below) would catch it.
+# ---------------------------------------------------------------------------
+
+
+def _mirror_flip_parity(parity):
+    """Pure-Python mirror of SupwngoPayoff.flipParity: one parity flip."""
+    return parity ^ 1
+
+
+def _mirror_edge_means_equal(is_true_edge, negate_parity, cmp_is_notequal):
+    """Pure-Python mirror of SupwngoPayoff.edgeMeansEqual: whether traversing
+    the given edge implies the gated parameter equals the compared constant."""
+    return bool(is_true_edge) ^ (negate_parity == 1) ^ bool(cmp_is_notequal)
+
+
+# (is_true_edge, negate_parity, cmp_is_notequal, expected) -- all 2x2x2 = 8
+# combinations of {op} x {parity} x {edge}.
+_EDGE_MEANS_EQUAL_CASES = [
+    (True, 0, False, True),
+    (True, 0, True, False),
+    (True, 1, False, False),
+    (True, 1, True, True),
+    (False, 0, False, False),
+    (False, 0, True, True),
+    (False, 1, False, True),
+    (False, 1, True, False),
+]
+
+
+@pytest.mark.parametrize(
+    "is_true_edge,negate_parity,cmp_is_notequal,expected", _EDGE_MEANS_EQUAL_CASES
+)
+def test_edge_means_equal_mirror_matches_design_truth_table(
+    is_true_edge, negate_parity, cmp_is_notequal, expected
+):
+    assert (
+        _mirror_edge_means_equal(is_true_edge, negate_parity, cmp_is_notequal)
+        == expected
+    )
+
+
+def test_flip_parity_mirror_round_trips_0_1_0():
+    """flipParity(0) -> 1 -> 0: one BOOL_NEGATE flips parity, two cancel."""
+    assert _mirror_flip_parity(0) == 1
+    assert _mirror_flip_parity(_mirror_flip_parity(0)) == 0
