@@ -560,9 +560,8 @@ def _real_context(binary_path, truth, *, as_stripped):
     from supwngo.core.context import ExploitContext
     from supwngo.exploit.pipeline.profile_stage import find_gadgets
 
-    binary = Binary(path=Path(binary_path))
-    binary.load()
-    ctx = ExploitContext(binary=binary)
+    binary = Binary.load(str(binary_path))
+    ctx = ExploitContext.from_binary(binary)
     # the stripped run names the win function the way ``--win <VADDR>`` does;
     # the unstripped run uses the symbol the pipeline's own search would find.
     name = "operator-supplied" if as_stripped else truth["win_symbol"]
