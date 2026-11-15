@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add per-candidate required-argument extraction to the payoff report
+  (directive W, phase W-2). Each candidate now carries `required_args`,
+  `args_status` and `args_reason`, produced by a Ghidra P-code args pass in
+  `SupwngoPayoff.java` (script `w2.0`) instead of a guessed constant list. A
+  `RequiredArg` records its provenance, including the SysV register the
+  parameter was assigned; a sink gate whose parameter condition does not pin a
+  single required value is reported `unknown` with a reason, never guessed. `required_args_for`
+  and `required_arg_regs` are authoritative only on a `COMPLETE` report, and the
+  cache envelope moves to v2 so older rows miss. The `ret2win` executor now
+  reads the win function's required args from the extractor by RVA and abstains
+  before delivery on `unknown`, an RVA miss, an unsupported register or a
+  missing pop gadget; the legacy scan is used only when no authoritative report
+  exists.
 - Add `supwngo.analysis.payoff.rank_payoffs`, a static-evidence ranker that
   identifies a binary's candidate win/payoff functions per-binary rather than
   by a hardcoded name list (directive W). A shipped Ghidra GhidraScript
@@ -73,6 +86,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Make amd64 stack shellcode independent of the target's incoming `rax` value,
   and sweep stack-parity alignment for canary-preserving returns into functions
   that call libc.
+
+### Deprecated
+
+- `WinFunctionFinder.find_required_args` is deprecated in favour of
+  `payoff.required_args_for`; it now emits a `DeprecationWarning`. Removal is
+  tracked as W-5.
 
 ### Removed
 

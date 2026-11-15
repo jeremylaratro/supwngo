@@ -53,7 +53,7 @@ Legend: ✅ merged · 🚧 in flight · ⬜ not started · 🔒 frozen (directiv
 | directive-W plan | Retire hardcoded target values (SP-04b breakdown) | ✅ | PR #35 | Plan ACCEPTED (Daybreak Blue r4) |
 | **W-0** | Inventory manifest, payoff corpus v0 + truth, reusable sandboxed runner, twin harness, `check_htb_rescore.py` | ✅ | PR #38; exec log in W-plan §10 (`a0f5fc9` etc.) | Met: inventory red-gates live; corpus 32 pos + 32 twins + 8 neg + 8 PE |
 | **W-1** | Static payoff evidence, ranking, cache (`payoff.py` + Ghidra script) | ✅ | PR #39 (`a1cae7f` … `ed38d8e`) | Met at merge; re-confirm top-1 on corpus under PENDING-M |
-| **W-2** | Required-args / constants from the binary (class B) | 🚧 | `feat/w2-required-args` @ `e6dc1fe`; design **Rev 11 ACCEPTED**; steps 1–5 committed | Steps 6–7 (ret2win rewire + docs/gate/PR) pending; **gate unverified (load)** |
+| **W-2** | Required-args / constants from the binary (class B) | 🚧 | `feat/w2-required-args` @ `2979bb0` (pushed); design **Rev 11 ACCEPTED**; steps 1–6 committed | Step 7 docs done; full gate handed off to wks0 (net0srv too loaded); merge after gate |
 | **W-3** | Success detection (class C); planted-marker oracle; platform-token lint | ⬜ | — | Not started |
 | **W-4** | Dynamic confirmation (gdb-in-sandbox receipts) | ⬜ | — | Not started |
 | **W-5** | Migrate class A/A′ consumers to `payoff.py`; delete the name lists; scripts take payoff as input | ⬜ | — | Not started — **this is where W-1/W-2 reach the scored CLI surfaces** |
@@ -127,10 +127,15 @@ iterate: each measured gap feeds the next focus-path slice.
 
 ## E. Next active work item
 
-**W-2 steps 6–7** (ret2win rewire in `stack_techniques.py` per design §5.4; docs/CHANGELOG; full gate under
-`SUPWNGO_REQUIRE_GHIDRA=1`; push; draft PR incl. parent-plan amendments), gated on a quiet host for the gate run —
-then merge with worktree/branch cleanup. After W-2: **W-3 → W-4 → W-5 → W-6**, then **SP-02 → SP-03A → SP-03 →
-SP-04a → SP-05 → SP-06 → gate F**. SP-07 → SP-16 stay frozen.
+**W-2 gate and merge.** Steps 1–6 are committed and pushed (`feat/w2-required-args` @ `2979bb0`; the ret2win rewire
+is in `stack_techniques.py` per design §5.4) and the step-7 docs/CHANGELOG are done. What remains is the full gate
+under `SUPWNGO_REQUIRE_GHIDRA=1` (handed off to wks0; net0srv was too loaded for a valid run) and the draft PR incl.
+parent-plan amendments — then merge with worktree/branch cleanup. After W-2: **W-3 → W-4 → W-5 → W-6**, then
+**SP-02 → SP-03A → SP-03 → SP-04a → SP-05 → SP-06 → gate F**. SP-07 → SP-16 stay frozen.
 
-Open reconciliation item before W-2 merge: cross-check claude-mem #65889 ("w2-required-args code review: 9 major
-defects") against the Rev-11 design and the committed steps 1–5.
+Reconciliation item before W-2 merge — **closed (2026-11-15):** cross-check claude-mem #65889 ("w2-required-args
+code review: 9 major defects") against the Rev-11 design and the committed steps. #65889 was written 2026-11-14T06:22Z,
+before any W-2 code existed (step 1 landed 11:08Z), and reviews design Rev 2; Rev 3 is the rework. Rev 11 closes each
+item — by its label for B1/B2 (§2.1), B5/B6 (§2.2), B3 (§2.3/§5.4), B7 (§3a), B8 (§3), and by content for the three it
+does not label: B4 fan-out fail-open (§2.2 `bool_fanout` cause), B9 top-candidate assumption (§5.4 RVA lookup, never
+`candidates[0]`), C1 optimized-binary claim (§5.4/R7: no soundness claim; mis-analysis lands in `unknown` → abstain).

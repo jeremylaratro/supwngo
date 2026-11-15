@@ -226,6 +226,35 @@ merged PR #39, `9f543bb`). Branch `feat/w2-required-args` off `main` `9f543bb`.
 > avoidance_gate`; RVA normalization; no new inventory state; `FunctionEvidence` try-boundary) is retained.
 > Parent amendments in §9.
 
+## Implementation status (2026-11-15)
+
+W-2 is implemented on `feat/w2-required-args` following the §7 commit order:
+
+| step | commit | contents |
+| --- | --- | --- |
+| 1 | `093294b` (+ fix `9cbdb60`) | falsifier + fixture corpus (§3a, §6 T12/T13); `gate_reload` routed through a global + external call |
+| 2 | `61d9a56` | extractor args pass in `SupwngoPayoff.java` (`w2.0`) + T14 parity seam |
+| 3 | `8750ab5` | Python model, args fields, cache v2 |
+| 4 | `12db67a` | corpus tests T1–T6, T3′, T13, T14b |
+| 5 | `89b45cb` | close the 27 ABI class-B inventory entries |
+| 6 | `62f6eba` | rewire the ret2win arg path onto `required_args_for` |
+| e2e fix | `2979bb0` | fix the T12 e2e harness; assert the extractor path is taken |
+
+**Gate result: PENDING** — the full gate (whole `tests/` suite under
+`SUPWNGO_REQUIRE_GHIDRA=1`, branch vs `origin/main` baseline) is handed off
+to wks0; net0srv was too loaded for a valid run.
+
+**Observed under load (15 Nov, net0srv load 20–34)** — not gate evidence:
+
+- T12 seam: 43 passed, 4 skipped (the 4 are the gated e2e).
+- Gated e2e: `fix-e2e-arg3` stripped PASSED via the extractor (`known_args`,
+  three registers, operator-supplied win address). The other three cases got a
+  `TIMEOUT` payoff report, which routes to `unavailable` and so to the legacy
+  scan. The legacy scan reached a shell on both unstripped fixtures — a false
+  green the original assertions would have accepted; commit `2979bb0` now
+  asserts the extractor path — and failed on stripped `arg1`. These three are
+  invalid under load, not genuine failures.
+
 ## 0. Goal (exact, from the parent plan's Done-when, as amended in §9)
 
 Given a binary and the payoff RVA that W-1's `rank_payoffs` already identifies, recover the payoff's
