@@ -3,7 +3,10 @@
 from types import SimpleNamespace
 
 from supwngo.exploit.pipeline.contracts import AttemptOutcome
-from supwngo.exploit.pipeline.executors.stack_techniques import Ret2WinExecutor
+from supwngo.exploit.pipeline.executors.stack_techniques import (
+    ArgDiscovery,
+    Ret2WinExecutor,
+)
 
 
 class _Verifier:
@@ -27,7 +30,9 @@ def _context():
 
 def test_ret2win_sweeps_both_stack_parities_and_accepts_unaligned(monkeypatch):
     executor = Ret2WinExecutor()
-    monkeypatch.setattr(executor, "_discover_args", lambda *_args: [])
+    monkeypatch.setattr(
+        executor, "_discover_args", lambda *_args: ArgDiscovery.known_empty()
+    )
     aligned = b"A" * 40 + (0x40101A).to_bytes(8, "little")
     bare = b"A" * 40
     win = (0x401234).to_bytes(8, "little")
@@ -43,7 +48,9 @@ def test_ret2win_sweeps_both_stack_parities_and_accepts_unaligned(monkeypatch):
 
 def test_ret2win_keeps_first_verified_parity(monkeypatch):
     executor = Ret2WinExecutor()
-    monkeypatch.setattr(executor, "_discover_args", lambda *_args: [])
+    monkeypatch.setattr(
+        executor, "_discover_args", lambda *_args: ArgDiscovery.known_empty()
+    )
     aligned = (
         b"A" * 40
         + (0x40101A).to_bytes(8, "little")
