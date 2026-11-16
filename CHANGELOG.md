@@ -106,6 +106,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reconcile the payoff-corpus invariant tests with the W-2 `fal-`/`fix-`
+  namespaces so `tests/test_payoff_corpus.py` is green again. The W-2 generator
+  adds 27 falsifier entries (`role: falsifier`) and keeps 3 `fix-` fixtures
+  (`role: fixture`), both of which deliberately carry a reduced truth schema (no
+  `decoys`; fixtures also omit `image_base`/`payoff_*`). Five universal
+  invariants assumed every entry had the full standard schema and broke on them:
+  the required-keys, symbol-table, function-RVA, forbidden-token and same-seed
+  tests now scope the payoff/decoy/symbol assertions to standard entries while
+  still token-checking generated falsifier/fixture names, and the same-seed file
+  count is derived from the corpus structure rather than a hardcoded source
+  total. Test-only change; the generator is unchanged.
 - `offset` no longer crashes under load or reports a fabricated result. Every run of the target and of
   gdb now goes through the bubblewrap sandbox from the binary's own directory,
   with a private `/tmp/supwngo-offset-*` workspace for the pattern and gdb
