@@ -31,9 +31,48 @@ captured and trustworthy; its gaps are structural and unambiguous), then B1.
 ## B2 — VULN-axis identification
 
 **Closes:** G2a (structural exclusion), G2b (under-detection), G3 (baseline).
-**Benefit baseline (captured now, HEAD `1b117a2`, `detect_all` any-match, 30
-targets):** overall 19/30=63%; `stack_bof` 14/15, `format_string` 5/5,
-`heap_overflow` 0/2, `integer` 0/3, `uaf` 0/2, `off_by_one` 0/3.
+
+**FROZEN benefit baseline (`measured` 16NOV2026, base SHA `374836c`, product
+unchanged).** Instrument: `benchmark/score_vuln_ident.py` over
+`benchmark/vuln_ident_truth.yaml` (73 targets: 65 positive, 8 control), the exact
+`detect_all` production path. Metric = per-family precision AND recall (R3). Raw:
+`scratchpad/b2_benefit_baseline_99c29d8.json`. Command:
+`python3 benchmark/score_vuln_ident.py --json <out>`.
+
+| family | positives | recall | precision | gate |
+|---|---|---|---|---|
+| `stack_bof` | 32 | 18/32 = **56%** | 18/52 = **35%** | FAIL |
+| `format_string` | 5 | 5/5 = 100% | 5/31 = **16%** | FAIL |
+| `integer` | 3 | 0/3 = **0%** | n/a | FAIL |
+| `heap_overflow` | 5 | 0/5 = **0%** | n/a | FAIL |
+| `uaf` | 7 | 0/7 = **0%** | n/a | FAIL |
+| `off_by_one` | 13 | 0/13 = **0%** | n/a | FAIL |
+
+Overall verdict **RED** (scorer exit 2) — this is also the Phase-7c RED proof of
+the new gate at base. The precision+recall metric exposes what the old "63%
+any-match" hid: `format_string` fires on 31 targets but only 5 are right (16%
+precision), `stack_bof` on 52 with 18 right (35%). **This is new, larger scope
+than the approved detector-wiring** — see G2c/G2d. B2 is therefore re-scoped to
+the structural + under-detection gap it was reviewed for; the existing-detector
+precision recalibration is sequenced as a follow-on (B2b) rather than silently
+absorbed.
+
+### New Phase-1 findings surfaced by the frozen metric (16NOV2026)
+- **G2c — production-detector precision collapse** `measured`. `FormatStringDetector`
+  precision 16% (fires on 31/73, 5 correct); `StackBufferOverflow` precision 35%
+  (52 firings, 18 correct). The any-match baseline hid both. Type: **gap (quality)**;
+  **not** in the originally-approved B2 scope. Lane: follow-on sprint **B2b**
+  (existing-detector calibration — a different seam from wiring the excluded two).
+- **G2d — `stack_bof` recall 56%** `measured`. 14/32 stack_bof positives are not
+  emitted at all (independent of the precision collapse). Lane: **B2b**.
+
+### B2 (this sprint) scope — confirmed
+Add `VulnType.OFF_BY_ONE` (+CVSS vector), refactor & negatively-calibrate
+`UAFDetector` + `OffByOneDetector` onto the adapter contract, wire into
+`static_detectors()`, and lift `integer`/`heap_overflow` under-detection (G2b).
+Target: `uaf`, `off_by_one`, `integer`, `heap_overflow` each to ≥90% precision+recall.
+B2 does **not** turn the overall gate GREEN (format_string/stack_bof remain B2b);
+its Phase-8 benefit is those four families' deltas.
 
 ### Open decisions (need the 2nd-model review + possibly user)
 
@@ -160,8 +199,12 @@ edit (not the recall-only 63% spike).
 Discharges R4: the complete denominator and exclusion policy are fixed **before**
 measurement, so the gate cannot be inflated by post-hoc shrinking. Inventory
 `measured` 16NOV2026 (`benchmark/`, 185 built binaries; 123 manifested across 16
-corpora; zero `role: negative` targets, so **precision is cross-corpus** — a
-detector emitting family F on a truth-G target is an F false positive).
+corpora). **Negative precision controls** are encoded as `role: control` (and a
+`_NN_neg_` slug), truth = ∅: a detector emitting ANY in-scope family on one is a
+false positive. The frozen truth carries 8 such controls. Precision is also
+**cross-corpus**: a detector emitting family F on a truth-G positive is an F false
+positive. Truth artifact: `benchmark/vuln_ident_truth.yaml` (generator
+`benchmark/gen_vuln_ident_truth.py`); 73 in-scope targets (65 positive, 8 control).
 
 **IN-SCOPE families (the VULN-identification gate; a detector targets each):**
 
@@ -170,7 +213,7 @@ detector emitting family F on a truth-G target is an F false positive).
 | `stack_bof` | StackBufferOverflow (prod) | core stack targets, `corpus_scanf` (7), `corpus_variants` (6), `corpus_vectors` (8) |
 | `format_string` | FormatString (prod) | core fmtstr targets |
 | `integer` | IntegerOverflow (prod) | core integer targets |
-| `heap_overflow` | HeapVulnerability (prod) | core heap targets, `corpus_bon` (4), `corpus_fsop` (3) |
+| `heap_overflow` | HeapVulnerability (prod) | core heap targets, `corpus_bon` (4) |
 | `uaf` | UAFDetector (**B2 adds**) | `corpus_uafread` (6), core `heap_uaf*` targets |
 | `off_by_one` | OffByOneDetector (**B2 adds**) | `corpus_offbynul` (6), `corpus_offbyone` (6), core `off_by_one*` targets |
 
@@ -181,9 +224,12 @@ otherwise recorded as *no-positives → not gated* (not a pass, not a fail).
 **OUT-OF-SCOPE / VOID (declared now; documented, NOT in the gate denominator):**
 - **No-detector-by-design families:** `corpus_typeconf` (→ `logic`, TypeConfusion
   deferred per R1), `corpus_toctou` (→ `race_condition`), `corpus_traversal`
-  (→ `path_traversal`), `corpus_uninit` (no `VulnType`), `corpus_objptr` (12) /
-  `corpus_envpath` (5) / `corpus_libhijack` (6, 3 built) (method/`logic`, not a
-  memory-safety defect the detector set targets). Rationale: the gap analysis
+  (→ `path_traversal`), `corpus_uninit` (no `VulnType`), `corpus_fsop` (3, an
+  `_IO_FILE` arbitrary-read primitive — two qword writes, no overflow/UAF — so a
+  method/`logic` shape, not a `heap_overflow` the detector set targets),
+  `corpus_objptr` (12) / `corpus_envpath` (5) / `corpus_libhijack` (6, 3 built)
+  (method/`logic`, not a memory-safety defect the detector set targets).
+  Rationale: the gap analysis
   scopes the detector set to memory-safety defect classes; these are METHOD/logic
   families, scored on the METHOD axis (B1), never the VULN detector axis.
 - **Unmanifested build dirs (62 bins, no per-target truth):** `corpus_allocsize`,
