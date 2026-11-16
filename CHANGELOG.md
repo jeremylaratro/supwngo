@@ -88,6 +88,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Close directive W phase W-3 (class C): every class-C success/flag-pattern
+  entry is `migrated` to the success oracle, and the tree-wide platform-token
+  lint (`scripts/check_platform_tokens.py`) is now a test gate over all of
+  `supwngo/`. A new `test_w3_inventory_closure` pins the 54-entry disposition,
+  and a lingering generated-script comment token (`heap_strlen_ofb1`) is
+  neutralised so no platform name appears in any non-comment product string.
 - Route verification and tester success detection through the success oracle
   (directive W, phase W-3 batch 1). `ExploitVerifier.FLAG_PATTERNS` /
   `SUCCESS_PATTERNS` are removed; `verify_output` (now taking an optional

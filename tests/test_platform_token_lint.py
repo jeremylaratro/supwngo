@@ -1,7 +1,10 @@
-"""Fixture-level self-tests of the platform-token lint grammar (W-3 step 2).
+"""Platform-token lint: fixture self-tests (W-3 step 2) plus the tree-wide
+gate (W-3 step 4).
 
-Deliberately does NOT assert the real tree is clean; the tree-wide gate is
-enabled in a later step once literals are migrated.
+The grammar self-tests below pin the lint's behaviour on synthetic fixtures.
+``test_product_tree_has_no_platform_tokens`` is the real gate, enabled now that
+every class-C literal is migrated: the product tree must carry no platform
+token in any non-comment string constant.
 """
 import importlib.util
 import textwrap
@@ -101,3 +104,14 @@ def test_neutral_oracle_shape_carries_no_token():
         f"x = {success_oracle.NEUTRAL_FLAG_SHAPE!r}\n"
     ) == []
     assert all(just for _, just in EXEMPTIONS)
+
+
+def test_product_tree_has_no_platform_tokens():
+    """W-3 step 4 gate: the whole ``supwngo/`` product tree is free of platform
+    tokens in non-comment string constants. Docstrings and comments may still
+    reference a platform by name; emitted/product strings may not."""
+    product = Path(__file__).resolve().parent.parent / "supwngo"
+    violations = lint.scan_paths([product])
+    assert violations == [], "platform token(s) in product strings:\n" + "\n".join(
+        f"  {v.path}:{v.line}: {v.token!r} in {v.value!r}" for v in violations
+    )
