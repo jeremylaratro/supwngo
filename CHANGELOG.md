@@ -114,6 +114,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   platforms. Baseline entries W-0001..W-0006 and W-0141 close `migrated`
   (`phase: W-3`); no product behaviour is weakened and no scanner exemption is
   added.
+- Route the auto-family in-process success checks through the success oracle
+  (directive W, phase W-3 batch 2). The platform flag/word literals in
+  `AutoExploiter` (UAF, scanf-canary, manual format-string, integer-overflow,
+  double-free and the generic exploit test), `EnhancedAutoExploiter`'s
+  negative-size test, the `WinFunctionFinder` bruteforce/exploit verifiers in
+  `offset_finder`, and the heap/bypass executors (`_test_scanf_bypass`,
+  `_execute_uaf_exploit`, `_try_double_free_tcache`) are deleted; each now
+  decides success via `success_oracle.check(output, sent)` with the full
+  transmitted transcript as the anti-echo reference. **Echo-foolable fix
+  (W-0018):** the ret2libc shell test's bare `echo PWNED` / `PWNED in output`
+  is replaced by the shell-proof probe set (strict marker, shell arithmetic,
+  `id`); success is credited only for the oracle's SHELL tier, so a target that
+  merely reflects the probe bytes is no longer counted as a shell. Bare success
+  words no longer count as success (B3). Baseline entries W-0012, W-0013,
+  W-0018..W-0022, W-0027..W-0033, W-0046, W-0047, W-0051, W-0055 and
+  W-0074..W-0079 are now `migrated`.
 - Construct production FSOP plans with the locally resolved glibc release
   instead of `DEFAULT_LIBC_VERSION`, so glibc 2.34+ no longer selects removed
   malloc/free hook routes. Inconclusive libc/layout measurements are reported
