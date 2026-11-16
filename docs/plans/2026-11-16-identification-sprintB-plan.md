@@ -155,7 +155,51 @@ run; later widening needs evidence + an audit trail.
 **complete recall+precision baseline at B2's real branch base** before the first
 edit (not the recall-only 63% spike).
 
-### Status after round 1
+## B2 frozen target manifest + scope/VOID policy (R4 deliverable — pre-registered 16NOV2026)
+
+Discharges R4: the complete denominator and exclusion policy are fixed **before**
+measurement, so the gate cannot be inflated by post-hoc shrinking. Inventory
+`measured` 16NOV2026 (`benchmark/`, 185 built binaries; 123 manifested across 16
+corpora; zero `role: negative` targets, so **precision is cross-corpus** — a
+detector emitting family F on a truth-G target is an F false positive).
+
+**IN-SCOPE families (the VULN-identification gate; a detector targets each):**
+
+| Family | Detector | Corpora (truth source) |
+|---|---|---|
+| `stack_bof` | StackBufferOverflow (prod) | core stack targets, `corpus_scanf` (7), `corpus_variants` (6), `corpus_vectors` (8) |
+| `format_string` | FormatString (prod) | core fmtstr targets |
+| `integer` | IntegerOverflow (prod) | core integer targets |
+| `heap_overflow` | HeapVulnerability (prod) | core heap targets, `corpus_bon` (4), `corpus_fsop` (3) |
+| `uaf` | UAFDetector (**B2 adds**) | `corpus_uafread` (6), core `heap_uaf*` targets |
+| `off_by_one` | OffByOneDetector (**B2 adds**) | `corpus_offbynul` (6), `corpus_offbyone` (6), core `off_by_one*` targets |
+
+`double_free` is a 7th family with **no dedicated detector**; HeapVulnerability may
+emit it. It is **IN-SCOPE only if a positive target exists** in the frozen truth;
+otherwise recorded as *no-positives → not gated* (not a pass, not a fail).
+
+**OUT-OF-SCOPE / VOID (declared now; documented, NOT in the gate denominator):**
+- **No-detector-by-design families:** `corpus_typeconf` (→ `logic`, TypeConfusion
+  deferred per R1), `corpus_toctou` (→ `race_condition`), `corpus_traversal`
+  (→ `path_traversal`), `corpus_uninit` (no `VulnType`), `corpus_objptr` (12) /
+  `corpus_envpath` (5) / `corpus_libhijack` (6, 3 built) (method/`logic`, not a
+  memory-safety defect the detector set targets). Rationale: the gap analysis
+  scopes the detector set to memory-safety defect classes; these are METHOD/logic
+  families, scored on the METHOD axis (B1), never the VULN detector axis.
+- **Unmanifested build dirs (62 bins, no per-target truth):** `corpus_allocsize`,
+  `corpus_eintr`, `corpus_finiarray`, `corpus_g23`, `corpus_heap_variants`,
+  `corpus_inject`, `corpus_objptr_libc`, `corpus_prng`, `corpus_srop`,
+  `corpus_symlink`, `corpus_r2_reference` (0 built). **VOID = no truth manifest**;
+  a corpus is promoted into the gate only by authoring its per-target truth first.
+- **`07_static_ret2syscall`** stays a **miss** inside `stack_bof` (R4): a `-static`
+  ELF the detectors return empty on; not excluded.
+- **`corpus_libhijack`** is OUT regardless of the 3/6 `.so` build gap (G4).
+
+**Exclusion changes are a pre-registered, re-baselined act** — never a measurement-time
+edit. Promoting a VOID corpus or an OUT family requires authoring its truth and
+recapturing the baseline. This policy is itself an input to the round-2 review.
+
+## Status after round 1
 Plan is **FIX-FIRST → revised, not yet re-reviewed**. The revisions expand B2
 beyond the original scope (real detector refactor + FP calibration; a precision+recall
 metric on multi-label truth; a frozen full-corpus manifest). A round-2 review (verify
