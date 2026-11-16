@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from enum import Enum, auto
 
 from supwngo.core.binary import Binary
+from supwngo.core.success_oracle import is_flag_shaped_text
 from supwngo.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -433,17 +434,13 @@ class StringAnalyzer:
         return any(re.search(p, value, re.IGNORECASE) for p in patterns)
 
     def _is_flag_pattern(self, value: str) -> bool:
-        """Check if string matches CTF flag patterns."""
-        patterns = [
-            r'flag\{[^}]+\}',
-            r'CTF\{[^}]+\}',
-            r'HTB\{[^}]+\}',
-            r'picoCTF\{[^}]+\}',
-            r'CSAW\{[^}]+\}',
-            r'ASIS\{[^}]+\}',
-            r'FLAG_[A-Za-z0-9]+',
-        ]
-        return any(re.search(p, value, re.IGNORECASE) for p in patterns)
+        """Check if string matches a captured-flag pattern.
+
+        Delegates to the platform-neutral classifier in the success oracle:
+        a word-prefixed brace flag (``<word>{<4+ non-space>}``) or a
+        ``FLAG_<alnum>`` token. No platform name is hardcoded here.
+        """
+        return is_flag_shaped_text(value)
 
     def _check_encoding(self, value: str) -> Optional[Dict[str, Any]]:
         """Check if string is encoded data."""

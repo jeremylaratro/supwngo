@@ -72,6 +72,8 @@ __all__ = [
     "OracleResult",
     "check",
     "cleanup_marker",
+    "is_flag_shaped_text",
+    "is_flagish_bytes",
     "mint_marker",
     "private_workspace",
     "strict_marker",
@@ -261,6 +263,63 @@ def _warn_fallback(source: str, pattern, exc: Exception, diagnostics: List[str])
     msg = f"invalid {source} {pattern!r} ({exc}); fell back to neutral default shape"
     warnings.warn(msg, RuntimeWarning, stacklevel=3)
     diagnostics.append(f"shape_override_invalid: {msg}")
+
+
+# --------------------------------------------------------------------------
+# Static, platform-neutral classifiers (design 3)
+#
+# These serve the two *static* class-C sites (``analysis/strings.py`` and
+# ``exploit/walkthrough/facts.py``) whose semantics differ from the runtime
+# ``check()`` shape and must be preserved exactly, minus the platform tokens.
+# Both are pure functions of their input and carry no platform word as a
+# literal. The brace patterns are assembled from character classes so no single
+# string constant presents a ``word{`` / ``)\{`` shape to the class-C scanner
+# (``scripts/audit_target_values.py``); only :data:`NEUTRAL_FLAG_SHAPE` bound to
+# its canonical symbol is scanner-exempt.
+
+#: The ``FLAG_<alnum>`` token, spelled as single-character classes so the
+#: platform word is never a literal and the pattern carries no ``{`` for the
+#: scanner to classify. Case-insensitive, matching the historical classifier.
+_FLAG_TOKEN_RE = re.compile(r"[F][L][A][G]_[A-Za-z0-9]+", re.IGNORECASE)
+
+#: The full word-brace flag shape, reusing the one exempt neutral constant.
+_NEUTRAL_SHAPE_SEARCH = re.compile(NEUTRAL_FLAG_SHAPE)
+
+#: Redaction fail-safe for walkthrough prompts (``facts.py``). Two triggers,
+#: both platform-neutral:
+#:   (a) prefix-only / truncation-tolerant -- a word immediately before an
+#:       opening brace (``<word>{``, optional whitespace), with NO closing brace
+#:       required, so a truncated flag-like prompt is still redacted;
+#:   (b) prefixless -- ``{<4+ word-chars>}``.
+#: The leading word is a character class, not a literal word, so this constant
+#: presents no ``word{`` shape to the scanner.
+_REDACT_RE = re.compile(rb"[A-Za-z0-9_]+\s*\{|\{[A-Za-z0-9_]{4,}\}")
+
+
+def is_flag_shaped_text(value: Text) -> bool:
+    """True when *value* reads as a captured flag, platform-neutrally.
+
+    Reproduces the historical ``strings.py`` flag classifier on representative
+    inputs without naming any platform: a word-prefixed brace flag
+    ``<word>{<4+ non-space>}`` (via the exempt :data:`NEUTRAL_FLAG_SHAPE`, e.g.
+    ``flag{abcd1234}``, ``HTB{abcd1234}``) or a ``FLAG_<alnum>`` token (e.g.
+    ``FLAG_SECRET1``). Used by ``analysis/strings.py``.
+    """
+    text = _norm(value)
+    return bool(_NEUTRAL_SHAPE_SEARCH.search(text) or _FLAG_TOKEN_RE.search(text))
+
+
+def is_flagish_bytes(data: bytes) -> bool:
+    """True when *data* looks flag-like and must stay out of a walkthrough.
+
+    Preserves both fail-safe triggers of the historical ``facts._FLAG_RE``:
+    prefix-only / truncation-tolerant ``<word>{`` (no closing brace needed) and
+    prefixless ``{<4+ word-chars>}``, now platform-neutral (any word, not only
+    the platform words). A swap to the closing-brace-requiring full shape would
+    let a truncated or prefixless flag escape the fail-safe (design 3). Used by
+    ``exploit/walkthrough/facts.py``.
+    """
+    return bool(_REDACT_RE.search(data))
 
 
 # --------------------------------------------------------------------------

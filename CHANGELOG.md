@@ -104,6 +104,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serialised; only the success credit is removed. Previously recorded
   receipts are not rewritten. Baseline entries W-0130..W-0139 are now
   `migrated`.
+- Route the two static flag classifiers through the success oracle (directive
+  W, phase W-3 step 3, batch 5). `analysis/strings.py` flag detection and
+  `exploit/walkthrough/facts.py` prompt redaction now call platform-neutral
+  helpers `success_oracle.is_flag_shaped_text` / `is_flagish_bytes` instead of
+  hardcoded `flag{`/`CTF{`/`HTB{`/`picoCTF{`/`CSAW{`/`ASIS{` patterns; the
+  redaction stays truncation-tolerant (`<word>{` with no closing brace) and
+  prefixless (`{<4+ word-chars>}`), now for any word rather than only named
+  platforms. Baseline entries W-0001..W-0006 and W-0141 close `migrated`
+  (`phase: W-3`); no product behaviour is weakened and no scanner exemption is
+  added.
 - Construct production FSOP plans with the locally resolved glibc release
   instead of `DEFAULT_LIBC_VERSION`, so glibc 2.34+ no longer selects removed
   malloc/free hook routes. Inconclusive libc/layout measurements are reported

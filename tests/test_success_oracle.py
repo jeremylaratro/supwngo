@@ -19,6 +19,8 @@ from supwngo.core.success_oracle import (
     TIER_SHELL,
     check,
     cleanup_marker,
+    is_flag_shaped_text,
+    is_flagish_bytes,
     mint_marker,
     private_workspace,
     strict_probe,
@@ -236,3 +238,38 @@ def test_banner_words_are_not_success():
     assert {"banner:welcome", "banner:congratulations", "banner:success"} <= set(
         res.diagnostics
     )
+
+
+# --- static, platform-neutral classifiers (design 3) -----------------------
+
+
+def test_oracle_static_string_classifier():
+    """Word-brace flags (any platform prefix) and FLAG_<alnum> tokens match;
+    ordinary text and ``stage3_basis`` do not. No platform token is a literal."""
+    for good in ("flag{abcd1234}", "HTB{abcd1234}", "picoCTF{deadbeef}",
+                 "myapp{deadbeef}", "FLAG_SECRET1", "flag_secret1"):
+        assert is_flag_shaped_text(good), good
+    for bad in ("flag{ab}", "just ordinary text", "stage3_basis",
+                "a truncated X{", "nothing here"):
+        assert not is_flag_shaped_text(bad), bad
+    # bytes/text parity and no platform literal in the constant.
+    assert is_flag_shaped_text(b"HTB{abcd1234}")
+    assert "flag" not in so.NEUTRAL_FLAG_SHAPE.lower()
+
+
+def test_oracle_redaction_filter():
+    """Both historical fail-safe triggers survive, platform-neutrally:
+    truncation-tolerant ``<word>{`` (no close) and prefixless ``{4+word}``;
+    ordinary brace text is not over-redacted."""
+    # Prefix-only / truncation-tolerant: no closing brace required, any word.
+    assert is_flagish_bytes(b"someword{")
+    assert is_flagish_bytes(b"flag{")
+    assert is_flagish_bytes(b"CTF {")  # whitespace tolerated, as before
+    # Prefixless.
+    assert is_flagish_bytes(b"{abcd}")
+    assert is_flagish_bytes(b"{abcd1234}")
+    # Not over-redacted.
+    assert not is_flagish_bytes(b"{abc}")  # prefixless body < 4
+    assert not is_flagish_bytes(b"value = { 1 }")
+    assert not is_flagish_bytes(b"plain output line")
+    assert not is_flagish_bytes(b"FLAG_SECRET1")  # bare token, no brace

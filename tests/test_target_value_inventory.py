@@ -601,18 +601,20 @@ def test_w2_the_42_open_entries_still_match_live_hits_not_stale(hits, baseline):
 
 
 def test_w2_nothing_is_migrated_and_other_classes_are_untouched(baseline):
-    # W-3 batch 1 closed exactly W-0130..W-0139 (class C); W-2 itself still
-    # migrates nothing, and every other non-B entry stays open.
-    w3_closed = {f"W-{n:04d}" for n in range(130, 140)}
+    # W-2 closed exactly the 27 class-B ABI constants as `allowed` and migrated
+    # nothing. That disposition is still pinned here. W-3 (class C) then migrates
+    # success/flag-pattern entries, so the only non-W-2 movement allowed is a
+    # class-C entry going `migrated` with `phase: W-3`; class A/A'/B are untouched.
     statuses = [e["status"] for e in baseline["entries"]]
-    assert statuses.count("migrated") == len(w3_closed)
     assert statuses.count("allowed") == 27
-    assert statuses.count(OPEN) == len(statuses) - 27 - len(w3_closed)
     for entry in baseline["entries"]:
-        if entry["id"] in w3_closed:
-            assert entry["status"] == "migrated" and entry["phase"] == "W-3"
+        if entry["status"] == "migrated":
+            assert entry["class"] == "C", entry["id"]
+            assert entry.get("phase") == "W-3", entry["id"]
         elif entry["class"] != "B":
             assert entry["status"] == OPEN, entry["id"]
+    # W-2 itself migrated nothing: no class-B entry is `migrated`.
+    assert not [e for e in baseline["entries"] if e["class"] == "B" and e["status"] == "migrated"]
 
 
 def test_w2_lifecycle_rule_accepts_exactly_this_closure(baseline):
