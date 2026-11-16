@@ -50,7 +50,15 @@ BENCH_FLAG="${SUPWNGO_BENCH_FLAG:-}"
 #  -Wno-format-security -Wno-format
 #                        the format-string targets pass a non-literal,
 #                        user-controlled string to printf() on purpose
-COMMON_FLAGS=(-m64 -D_FORTIFY_SOURCE=0 -Wno-format-security -Wno-format -g)
+#  -Wno-error=implicit-function-declaration
+#                        Fedora gcc 14+ makes an implicit declaration a hard
+#                        error; this corpus's sources target Ubuntu 22.04 gcc
+#                        (where it is a warning). A few deliberately-terse
+#                        targets call system()/getenv() without the header on
+#                        purpose; keep that a warning so the corpus builds
+#                        portably without editing the committed vuln sources.
+COMMON_FLAGS=(-m64 -D_FORTIFY_SOURCE=0 -Wno-format-security -Wno-format \
+              -Wno-error=implicit-function-declaration -g)
 
 build_one() {
     local dir="$1"

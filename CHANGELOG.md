@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Wire `UAFDetector` and `OffByOneDetector` into the reporting adapter's
+  `static_detectors()` (directive W, identification Sprint-B2). Both previously
+  broke the `detect(crash=None) -> List[Vulnerability]` adapter contract and
+  were deliberately excluded; they now honour it, implement
+  `get_exploit_primitive`, and emit their dedicated `VulnType` on a cheap,
+  precision-first body-level signal over `objdump -d -M intel`
+  (`supwngo/vulns/_disasm.py`, new): a `free()` call-site that writes a non-zero
+  state tag without NULLing the freed pointer slot -> `USE_AFTER_FREE`; a call
+  to a length-terminating copy (`snprintf`/`strncpy`/`strncat`) -> `OFF_BY_ONE`.
+  Adds `VulnType.OFF_BY_ONE` and its CVSS vector. Recall is partial by design
+  (uaf 1/7, off_by_one 1/13) at 100% precision within the 73-binary vuln-ident
+  corpus (0 false positives there). The presence-based signals cannot separate
+  safe from unsafe uses, so on unrelated binaries they do fire (off_by_one on
+  ~3/27 negative controls in other corpora, all via safe `snprintf`); that
+  positive-vs-control discrimination is the scoped dataflow follow-on (see
+  `docs/plans/2026-11-16-identification-sprintB-plan.md`, G2e). When objdump
+  cannot run (absent, not executable, timed out, or non-zero exit) the detectors
+  raise so the report is marked incomplete rather than silently clean.
+  `TypeConfusionDetector` stays excluded.
 - Add `supwngo.core.success_oracle`, a pure-standard-library success oracle
   (directive W, phase W-3 step 1). One `check()` ranks PLANTED > SHELL-PROVEN >
   SHAPE evidence with per-match anti-echo against everything sent to the
