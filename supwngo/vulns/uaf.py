@@ -13,7 +13,20 @@ from enum import Enum, auto
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from supwngo.core.binary import Binary
-from supwngo.vulns.detector import Vulnerability, VulnerabilityDetector
+from supwngo.fuzzing.crash_triage import CrashCase
+from supwngo.vulns.detector import (
+    ExploitPrimitive,
+    Vulnerability,
+    VulnerabilityDetector,
+    VulnSeverity,
+    VulnType,
+)
+from supwngo.vulns._disasm import (
+    DisassemblyUnavailable,
+    IMM_STORE,
+    NULL_QWORD_STORE,
+    objdump_intel,
+)
 from supwngo.utils.helpers import p64, p32
 from supwngo.utils.logging import get_logger
 
@@ -69,230 +82,88 @@ class UAFDetector(VulnerabilityDetector):
         self.binary = binary
         self.vulnerabilities: List[UAFVuln] = []
 
-    def detect(self) -> List[UAFVuln]:
-        """
-        Detect UAF vulnerabilities.
+    def detect(
+        self,
+        crash: Optional[CrashCase] = None,
+    ) -> List[UAFVuln]:
+        """Detect use-after-free via a cheap body-level signal (Sprint-B2, bounded).
 
-        Returns:
-            List of detected vulnerabilities
+        Precision-first heuristic: a ``free`` call-site whose immediate
+        continuation writes a *non-zero* value to memory without clearing a
+        pointer-sized slot to NULL -- i.e. the freed object is retired with a
+        state tag while its pointer is left dangling. This separates the
+        corpus_uafread positives (mark state, keep the pointer) from the
+        ``*_neg_cleared_on_free`` control (NULLs the pointer slot). The shapes it
+        misses need intra-function dataflow -- a scoped follow-on (see
+        docs/plans/2026-11-16-identification-sprintB-plan.md, G2e). Does not
+        crash on odd input, but propagates :class:`DisassemblyUnavailable` when
+        objdump could not run so ``detect_all`` records an honest
+        ``DetectorFailure`` instead of a silent zero-finding pass.
         """
         self.vulnerabilities = []
-
-        # Check for heap functions
-        self._check_heap_patterns()
-
-        # Check for C++ patterns
-        self._check_cpp_patterns()
-
-        # Check for function pointers
-        self._check_function_pointers()
-
+        try:
+            self._scan_free_without_null()
+        except DisassemblyUnavailable:
+            # The binary was never disassembled -> surface as a DetectorFailure
+            # (honest "could not analyze"), not a silent zero-finding pass.
+            raise
+        except Exception as e:  # noqa: BLE001 -- contract: don't crash on odd input
+            logger.debug(f"UAF scan failed: {e}")
         return self.vulnerabilities
 
-    def _check_heap_patterns(self):
-        """Check for dangerous heap usage patterns."""
-        try:
-            elf = self.binary._elf if hasattr(self.binary, '_elf') else self.binary
-            plt = elf.plt if hasattr(elf, 'plt') else {}
+    def get_exploit_primitive(
+        self,
+        vuln: Vulnerability,
+    ) -> Optional[ExploitPrimitive]:
+        """A confirmed UAF yields a controllable use of freed memory: once the
+        slot is reallocated with attacker data, it is a write over the reused
+        chunk (target and value controllable)."""
+        return ExploitPrimitive(
+            primitive_type="write",
+            target_controllable=True,
+            value_controllable=True,
+        )
 
-            has_malloc = 'malloc' in plt
-            has_free = 'free' in plt
-            has_calloc = 'calloc' in plt
-            has_realloc = 'realloc' in plt
-
-            if has_malloc and has_free:
-                # Basic heap exploitation potential
-                vuln = UAFVuln(
-                    name="heap-uaf-potential",
-                    description="Binary uses malloc/free - potential UAF if pointers not cleared",
-                    severity="medium",
-                    uaf_type=UAFType.HEAP_UAF,
-                )
-                vuln.exploitation_notes = """
-UAF Exploitation:
-1. Allocate object A with function pointer/vtable
-2. Free object A (pointer not nulled)
-3. Allocate object B of same size (reuses A's memory)
-4. Use stale pointer to A -> operates on B's data
-5. Control function pointer -> code execution
-
-Key requirements:
-- Pointer to freed object must remain accessible
-- Must be able to allocate same-size chunk after free
-- Object must contain controllable function pointer or data
-"""
-                self.vulnerabilities.append(vuln)
-
-            if has_realloc:
-                vuln = UAFVuln(
-                    name="realloc-uaf",
-                    description="realloc() can free and return new pointer - old pointer becomes dangling",
-                    severity="medium",
-                    uaf_type=UAFType.HEAP_UAF,
-                )
-                self.vulnerabilities.append(vuln)
-
-        except Exception as e:
-            logger.debug(f"Heap pattern check failed: {e}")
-
-    def _check_cpp_patterns(self):
-        """Check for C++ virtual function patterns."""
-        try:
-            elf = self.binary._elf if hasattr(self.binary, '_elf') else self.binary
-
-            # Check for C++ indicators
-            cpp_indicators = [
-                '__cxa_pure_virtual',
-                '__cxa_throw',
-                '__gxx_personality_v0',
-                '_ZTV',  # vtable prefix
-                '_ZTI',  # typeinfo prefix
-            ]
-
-            is_cpp = False
-            symbols = elf.symbols if hasattr(elf, 'symbols') else {}
-
-            for indicator in cpp_indicators:
-                if any(indicator in str(sym) for sym in symbols):
-                    is_cpp = True
+    def _scan_free_without_null(self) -> None:
+        """Flag a ``free`` whose window writes a non-zero tag but no NULL pointer
+        store (see ``detect`` for the rationale)."""
+        rows = objdump_intel(self.binary)
+        if not rows:
+            return
+        n = len(rows)
+        for i, ins in enumerate(rows):
+            if not (ins.startswith("call") and "<free@plt>" in ins):
+                continue
+            # Window: instructions up to the next control-flow boundary.
+            window: List[str] = []
+            for j in range(i + 1, min(i + 8, n)):
+                r = rows[j]
+                if r.startswith(("ret", "call", "jmp", "leave")):
                     break
-
-            if is_cpp:
-                vuln = UAFVuln(
-                    name="cpp-vtable-uaf",
-                    description="C++ binary with vtables - UAF can hijack virtual calls",
-                    severity="high",
-                    uaf_type=UAFType.VTABLE_UAF,
-                )
-                vuln.exploitation_notes = """
-C++ Vtable UAF:
-1. Object layout: [vtable_ptr][member1][member2]...
-2. Free object (pointer not nulled)
-3. Allocate same-size chunk with controlled data
-4. First 8 bytes become fake vtable pointer
-5. Virtual call dereferences: *(*(obj))[vtable_idx]()
-6. Control vtable_ptr + create fake vtable = arbitrary call
-
-Exploitation:
-- Need heap leak for ASLR
-- Need code/libc address for target
-- Fake vtable must be at known address
-- Trigger virtual method call on freed object
-"""
-                self.vulnerabilities.append(vuln)
-
-            # Find vtables
-            vtables = self._find_vtables()
-            if vtables:
-                logger.info(f"Found {len(vtables)} vtables")
-
-        except Exception as e:
-            logger.debug(f"C++ pattern check failed: {e}")
-
-    def _find_vtables(self) -> List[VtableInfo]:
-        """Find C++ vtables in binary."""
-        vtables = []
-
-        try:
-            elf = self.binary._elf if hasattr(self.binary, '_elf') else self.binary
-
-            # Look for _ZTV symbols (vtable symbols)
-            symbols = elf.symbols if hasattr(elf, 'symbols') else {}
-
-            for name, addr in symbols.items():
-                name_str = str(name)
-                if name_str.startswith('_ZTV'):
-                    # Demangle name
-                    class_name = self._demangle_vtable(name_str)
-
-                    vtable = VtableInfo(
-                        address=addr if isinstance(addr, int) else addr.address,
-                        class_name=class_name,
-                        num_entries=0,
-                    )
-
-                    # Try to count entries
-                    try:
-                        vtable_data = elf.read(vtable.address, 0x80)
-                        ptr_size = 8 if self.binary.bits == 64 else 4
-
-                        entries = []
-                        for i in range(0, len(vtable_data), ptr_size):
-                            ptr = int.from_bytes(
-                                vtable_data[i:i + ptr_size], 'little'
-                            )
-                            if ptr == 0:
-                                break
-                            entries.append(ptr)
-
-                        vtable.entry_addrs = entries
-                        vtable.num_entries = len(entries)
-
-                    except Exception:
-                        pass
-
-                    vtables.append(vtable)
-
-        except Exception as e:
-            logger.debug(f"Vtable finding failed: {e}")
-
-        return vtables
-
-    def _demangle_vtable(self, mangled: str) -> str:
-        """Demangle C++ vtable name."""
-        # _ZTV followed by length + name
-        # e.g., _ZTV4Test -> vtable for Test
-
-        try:
-            import subprocess
-            result = subprocess.run(
-                ['c++filt', mangled],
-                capture_output=True,
-                text=True,
-                timeout=5,
+                window.append(r)
+            nulls_pointer = any(NULL_QWORD_STORE.match(r) for r in window)
+            tags_nonzero = any(
+                (m := IMM_STORE.match(r)) is not None and int(m.group(1), 16) != 0
+                for r in window
             )
-            if result.returncode == 0:
-                return result.stdout.strip()
-        except Exception:
-            pass
-
-        # Manual basic demangling
-        if mangled.startswith('_ZTV'):
-            rest = mangled[4:]
-            # Extract length prefix
-            length = 0
-            i = 0
-            while i < len(rest) and rest[i].isdigit():
-                length = length * 10 + int(rest[i])
-                i += 1
-            if length > 0 and i + length <= len(rest):
-                return f"vtable for {rest[i:i + length]}"
-
-        return mangled
-
-    def _check_function_pointers(self):
-        """Check for function pointer arrays that could be hijacked."""
-        try:
-            elf = self.binary._elf if hasattr(self.binary, '_elf') else self.binary
-
-            # Look for function pointer patterns in .data/.rodata
-            # This is heuristic-based
-
-            # Check for known function pointer array patterns
-            if hasattr(elf, 'read'):
-                # Check .data section for pointer arrays
-                data_section = elf.get_section_by_name('.data')
-                if data_section:
-                    vuln = UAFVuln(
-                        name="function-pointer-array",
-                        description="Binary has .data section - may contain function pointer arrays",
-                        severity="low",
-                        uaf_type=UAFType.FUNCTION_PTR,
+            if tags_nonzero and not nulls_pointer:
+                self.vulnerabilities.append(
+                    UAFVuln(
+                        vuln_type=VulnType.USE_AFTER_FREE,
+                        severity=VulnSeverity.HIGH,
+                        detection_method="static",
+                        confidence=0.6,
+                        description=(
+                            "free() call-site retires the object with a non-zero "
+                            "state write but does not NULL the freed pointer slot "
+                            "-- the dangling pointer can be used after free"
+                        ),
+                        uaf_type=UAFType.HEAP_UAF,
+                        has_use_after_free=True,
                     )
-                    self.vulnerabilities.append(vuln)
-
-        except Exception as e:
-            logger.debug(f"Function pointer check failed: {e}")
+                )
+                # One finding per binary is sufficient for identification.
+                return
 
 
 class VtableHijacker:

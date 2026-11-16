@@ -236,6 +236,18 @@ class CVSSCalculator:
             integrity=Impact.HIGH,
             availability=Impact.LOW,
         ),
+        "off_by_one": CVSSVector(
+            # A single-byte / missing-NUL overflow: precise memory corruption but
+            # harder to drive to full control than a free-form stack overflow.
+            attack_vector=AttackVector.LOCAL,
+            attack_complexity=AttackComplexity.HIGH,
+            privileges_required=PrivilegesRequired.NONE,
+            user_interaction=UserInteraction.REQUIRED,
+            scope=Scope.UNCHANGED,
+            confidentiality=Impact.HIGH,
+            integrity=Impact.HIGH,
+            availability=Impact.HIGH,
+        ),
         "race_condition": CVSSVector(
             attack_vector=AttackVector.LOCAL,
             attack_complexity=AttackComplexity.HIGH,

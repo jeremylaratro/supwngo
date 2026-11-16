@@ -24,6 +24,7 @@ class VulnType(Enum):
     COMMAND_INJECTION = auto()
     PATH_TRAVERSAL = auto()
     RACE_CONDITION = auto()
+    OFF_BY_ONE = auto()
     UNKNOWN = auto()
 
 

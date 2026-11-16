@@ -52,18 +52,24 @@ class DetectorFailure:
 def static_detectors() -> List[Type[VulnerabilityDetector]]:
     """Detector classes that honour the ``detect(crash=None)`` base contract.
 
-    ``UAFDetector`` and ``OffByOneDetector`` are deliberately excluded: their
-    ``detect()`` takes no ``crash`` argument and they return their own vuln
-    types (``UAFVuln``, ``OffByOneVuln``) rather than ``Vulnerability``, so they
-    do not fit this adapter. Including them would raise ``TypeError`` at call
-    time, which -- because failures are collected rather than raised -- would
-    show up as a permanently failing detector rather than as a crash.
+    ``UAFDetector`` and ``OffByOneDetector`` were formerly excluded because their
+    ``detect()`` took no ``crash`` argument and raised at call time. As of
+    Sprint-B2 both honour the ``detect(crash=None) -> List[Vulnerability]``
+    contract (their ``UAFVuln``/``OffByOneVuln`` are ``Vulnerability``
+    subclasses) and implement ``get_exploit_primitive``, so they are wired in.
+    Their detection is a cheap, precision-first body-level scan (recall is
+    partial by design; the hard positive-vs-control discrimination is a scoped
+    follow-on -- see docs/plans/2026-11-16-identification-sprintB-plan.md).
+    ``TypeConfusionDetector`` remains excluded (still emits an uncalibrated,
+    unconditional finding).
     """
     from supwngo.vulns.canary_bypass import CanaryBypassDetector
     from supwngo.vulns.format_string import FormatStringDetector
     from supwngo.vulns.heap import HeapVulnerabilityDetector
     from supwngo.vulns.integer import IntegerOverflowDetector
+    from supwngo.vulns.off_by_one import OffByOneDetector
     from supwngo.vulns.stack_bof import StackBufferOverflowDetector
+    from supwngo.vulns.uaf import UAFDetector
 
     return [
         StackBufferOverflowDetector,
@@ -71,6 +77,8 @@ def static_detectors() -> List[Type[VulnerabilityDetector]]:
         IntegerOverflowDetector,
         HeapVulnerabilityDetector,
         CanaryBypassDetector,
+        UAFDetector,
+        OffByOneDetector,
     ]
 
 

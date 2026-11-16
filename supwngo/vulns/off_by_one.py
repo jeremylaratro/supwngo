@@ -13,8 +13,16 @@ from enum import Enum, auto
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from supwngo.core.binary import Binary
+from supwngo.fuzzing.crash_triage import CrashCase
 from supwngo.utils.libc import parse_libc_version
-from supwngo.vulns.detector import Vulnerability, VulnerabilityDetector, VulnType, VulnSeverity
+from supwngo.vulns.detector import (
+    ExploitPrimitive,
+    Vulnerability,
+    VulnerabilityDetector,
+    VulnType,
+    VulnSeverity,
+)
+from supwngo.vulns._disasm import DisassemblyUnavailable, objdump_intel
 from supwngo.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -86,173 +94,80 @@ class OffByOneDetector(VulnerabilityDetector):
         self.binary = binary
         self.vulnerabilities: List[OffByOneVuln] = []
 
-    def detect(self) -> List[OffByOneVuln]:
-        """
-        Detect off-by-one vulnerabilities.
+    # Length-terminating copies whose mere presence is a cheap, precision-first
+    # off-by-one signal (classic one-byte / missing-NUL sites). Plain strcpy is
+    # deliberately excluded: it is a generic stack-overflow signal that fires on
+    # non-off-by-one targets and would pollute precision.
+    OFF_BY_ONE_CALL_SIGNALS = ("snprintf", "strncpy", "strncat")
 
-        Returns:
-            List of detected vulnerabilities
+    def detect(
+        self,
+        crash: Optional[CrashCase] = None,
+    ) -> List[OffByOneVuln]:
+        """Detect off-by-one via a cheap body-level signal (Sprint-B2, bounded).
+
+        Precision-first: emit OFF_BY_ONE only when the binary actually *calls* a
+        length-terminating copy (snprintf/strncpy/strncat), the classic site of a
+        one-byte / missing-NUL error. It never fires on the symbol-identical
+        loop-bound shapes whose positive and control differ only by a single
+        ``cmp`` operand order (see plan G2e); that discrimination is a scoped
+        follow-on. Maps exclusively to VulnType.OFF_BY_ONE, so it cannot perturb
+        stack_bof / heap_overflow precision. Does not crash on odd input, but
+        propagates :class:`DisassemblyUnavailable` when objdump could not run so
+        ``detect_all`` records an honest ``DetectorFailure``.
         """
         self.vulnerabilities = []
-
-        # Check dangerous string functions
-        self._check_string_functions()
-
-        # Check for common patterns
-        self._check_loop_patterns()
-
-        # Check heap chunk corruption potential
-        self._check_heap_corruption()
-
-        # Check stack canary bypass potential
-        self._check_canary_bypass()
-
+        try:
+            self._scan_terminating_copy_calls()
+        except DisassemblyUnavailable:
+            # The binary was never disassembled -> surface as a DetectorFailure
+            # (honest "could not analyze"), not a silent zero-finding pass.
+            raise
+        except Exception as e:  # noqa: BLE001 -- contract: don't crash on odd input
+            logger.debug(f"Off-by-one scan failed: {e}")
         return self.vulnerabilities
 
-    def _check_string_functions(self):
-        """Check for dangerous string function usage."""
-        try:
-            elf = self.binary._elf if hasattr(self.binary, '_elf') else self.binary
+    def get_exploit_primitive(
+        self,
+        vuln: Vulnerability,
+    ) -> Optional[ExploitPrimitive]:
+        """An off-by-one gives a single-byte (often NUL) write just past a buffer
+        boundary: a size-1, non-value-controllable write primitive."""
+        return ExploitPrimitive(
+            primitive_type="write",
+            target_controllable=False,
+            value_controllable=False,
+            write_size=1,
+        )
 
-            # Check PLT for imported functions
-            if hasattr(elf, 'plt'):
-                for func_name in self.RISKY_STRING_FUNCS:
-                    if func_name in elf.plt:
-                        description = f"Uses {func_name}: {self.RISKY_STRING_FUNCS[func_name]}"
-                        obo_type = OffByOneType.ONE_BYTE
-
-                        # Specific analysis per function
-                        if func_name in ("strncpy", "snprintf"):
-                            obo_type = OffByOneType.NULL_BYTE
-                            description += " - may not null-terminate if size equals buffer"
-                        elif func_name == "strncat":
-                            obo_type = OffByOneType.NULL_BYTE
-                            description += " - adds null byte after n characters"
-                        elif func_name == "fgets":
-                            obo_type = OffByOneType.NULL_BYTE
-                            description += " - reads size-1 chars, common off-by-one in size param"
-
-                        vuln = OffByOneVuln(
-                            vuln_type=VulnType.STACK_BUFFER_OVERFLOW,
+    def _scan_terminating_copy_calls(self) -> None:
+        """Emit one OFF_BY_ONE finding if the binary calls a length-terminating
+        copy (see ``detect`` for the rationale)."""
+        rows = objdump_intel(self.binary)
+        if not rows:
+            return
+        for r in rows:
+            if not r.startswith("call"):
+                continue
+            for fn in self.OFF_BY_ONE_CALL_SIGNALS:
+                if f"<{fn}@plt>" in r:
+                    self.vulnerabilities.append(
+                        OffByOneVuln(
+                            vuln_type=VulnType.OFF_BY_ONE,
                             severity=VulnSeverity.MEDIUM,
-                            address=elf.plt[func_name],
-                            description=description,
-                            obo_type=obo_type,
-                            function_name=func_name,
-                            name=f"off-by-one-{func_name}",
+                            detection_method="static",
+                            confidence=0.6,
+                            description=(
+                                f"calls {fn}() -- a length-terminating copy prone "
+                                "to a one-byte / missing-NUL off-by-one"
+                            ),
+                            obo_type=OffByOneType.NULL_BYTE,
+                            function_name=fn,
+                            name=f"off-by-one-{fn}",
                         )
-
-                        self.vulnerabilities.append(vuln)
-
-        except Exception as e:
-            logger.debug(f"String function check failed: {e}")
-
-    def _check_loop_patterns(self):
-        """Check for fence-post errors in loops."""
-        try:
-            # Look for <= comparisons that should be <
-            # This is a simplified heuristic check
-
-            elf = self.binary._elf if hasattr(self.binary, '_elf') else self.binary
-
-            if hasattr(elf, 'read'):
-                # Read .text section
-                text = elf.get_section_by_name('.text')
-                if text:
-                    data = text.data()
-
-                    # Count jbe/jle instructions near array access
-                    # This is very heuristic-based
-                    jbe_count = data.count(b'\x76')  # JBE opcode
-                    jle_count = data.count(b'\x7e')  # JLE opcode
-
-                    if jbe_count + jle_count > 10:
-                        vuln = OffByOneVuln(
-                            vuln_type=VulnType.STACK_BUFFER_OVERFLOW,
-                            severity=VulnSeverity.LOW,
-                            description=f"Multiple <= comparisons found ({jbe_count + jle_count}), check for fence-post errors",
-                            obo_type=OffByOneType.ONE_BYTE,
-                            name="potential-fence-post",
-                        )
-                        self.vulnerabilities.append(vuln)
-
-        except Exception as e:
-            logger.debug(f"Loop pattern check failed: {e}")
-
-    def _check_heap_corruption(self):
-        """Check if off-by-one could corrupt heap metadata."""
-        try:
-            elf = self.binary._elf if hasattr(self.binary, '_elf') else self.binary
-
-            # If binary uses heap and has off-by-one candidates
-            has_malloc = 'malloc' in (elf.plt if hasattr(elf, 'plt') else {})
-            has_risky = any(
-                f in (elf.plt if hasattr(elf, 'plt') else {})
-                for f in ["strcpy", "strncpy", "read", "fgets"]
-            )
-
-            if has_malloc and has_risky:
-                vuln = OffByOneVuln(
-                    vuln_type=VulnType.HEAP_BUFFER_OVERFLOW,
-                    severity=VulnSeverity.HIGH,
-                    description="Heap allocations with risky string functions - poison null byte possible",
-                    obo_type=OffByOneType.HEAP_METADATA,
-                    can_corrupt_size=True,
-                    name="heap-off-by-one",
-                    exploitation_notes="""Poison Null Byte Attack:
-1. Allocate chunks A, B, C contiguously
-2. Off-by-one null byte overflow from A corrupts B's size LSB
-3. If B's size shrinks, free(B) leaves memory in inconsistent state
-4. Overlapping chunks can be created for arbitrary write
-
-Requirements:
-- glibc < 2.29 for easiest exploitation
-- Control over allocation sizes
-- Ability to trigger off-by-one overflow""",
-                )
-                self.vulnerabilities.append(vuln)
-
-        except Exception as e:
-            logger.debug(f"Heap corruption check failed: {e}")
-
-    def _check_canary_bypass(self):
-        """Check if off-by-one could bypass stack canary."""
-        try:
-            # Stack canary's lowest byte is always 0x00
-            # If we can overflow just that byte, canary remains valid
-
-            has_canary = False
-            if hasattr(self.binary, 'protections'):
-                has_canary = self.binary.protections.canary
-            elif hasattr(self.binary, '_elf') and hasattr(self.binary._elf, 'canary'):
-                has_canary = self.binary._elf.canary
-
-            if has_canary:
-                # Check for functions that could allow precise overflow
-                elf = self.binary._elf if hasattr(self.binary, '_elf') else self.binary
-                plt = elf.plt if hasattr(elf, 'plt') else {}
-
-                precise_funcs = ["read", "recv", "fread", "fgets"]
-                has_precise = any(f in plt for f in precise_funcs)
-
-                if has_precise:
-                    vuln = OffByOneVuln(
-                        vuln_type=VulnType.STACK_BUFFER_OVERFLOW,
-                        severity=VulnSeverity.MEDIUM,
-                        description="Stack canary with precise read functions - null byte already matches",
-                        obo_type=OffByOneType.STACK_CANARY,
-                        can_bypass_canary=True,
-                        name="canary-null-byte",
-                        exploitation_notes="""Canary Null Byte Note:
-- Stack canary's LSB is always 0x00 (null byte)
-- If off-by-one writes 0x00, canary check still passes
-- Need to overwrite saved RBP/RIP in separate write
-- May require information leak for full exploitation""",
                     )
-                    self.vulnerabilities.append(vuln)
-
-        except Exception as e:
-            logger.debug(f"Canary bypass check failed: {e}")
+                    # One finding per binary suffices for identification.
+                    return
 
     def analyze_function(
         self,

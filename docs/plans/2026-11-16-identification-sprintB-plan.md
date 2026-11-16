@@ -65,6 +65,20 @@ absorbed.
   (existing-detector calibration — a different seam from wiring the excluded two).
 - **G2d — `stack_bof` recall 56%** `measured`. 14/32 stack_bof positives are not
   emitted at all (independent of the precision collapse). Lane: **B2b**.
+- **G2e — negative controls are symbol/import-identical to their positives**
+  `measured` 16NOV2026 (`nm -C` + `objdump` over the frozen truth). `uafr_90_neg`
+  has the identical defined functions AND identical PLT imports as `uafr_10–14`;
+  likewise `obn_90`≡`obn_10–14`, `obo_90`≡`obo_10–14`, `bon_90`≡`bon_10–12`. The
+  sole difference is in function BODIES (pointer nulled after `free`; loop bound
+  `<` vs `<=`; length clamped; slack byte). **Consequence:** no symbol- or
+  import-level detector can separate a positive from its control — reaching ≥90%
+  precision requires intra-function data-flow / instruction-pattern analysis per
+  vulnerability shape (free-then-use-without-null; `<=` loop writing `buf[len]`;
+  unclamped length into heap buffer). This is research-grade static analysis, far
+  larger than the approved detector-wiring, and naive import-triggered wiring
+  would *lower* precision (two more detectors firing on every heap/string binary).
+  **Escalated to the user 16NOV2026** — the ≥90%-both-metrics objective on this
+  adversarially-built corpus is materially larger/higher-risk than scoped.
 
 ### B2 (this sprint) scope — confirmed
 Add `VulnType.OFF_BY_ONE` (+CVSS vector), refactor & negatively-calibrate
