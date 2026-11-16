@@ -52,8 +52,10 @@ is every hardcoded target value in product behaviour, and generated exploit code
     - **A test enforces both rules** against the W-0 commit's copy of the file (`git show <W-0>:<path>`).
     - A closed entry is a tombstone.
   - **Current hits**: regenerated on every test run by the same pinned scan.
-- **Red at W-0.** A test fails in any of these cases:
-  - a current hit has no matching baseline entry, or a baseline entry is classified only as `open`;
+- **Red at W-0.** A test fails in any of these cases (the "classified only as `open`" red condition was struck —
+  a matching `open` entry is ratchet-valid per `tests/test_target_value_inventory.py:169-175`; amended per W-2
+  design §9, 2026-11-14):
+  - a current hit has no matching baseline entry;
   - an `open` baseline entry no longer matches any current hit, so it is stale and must be closed explicitly.
     Closed tombstones are exempt from the stale check.
 - **Red at W-5 exit.** A test fails while any baseline entry is still `open`, or the current scan has any hit that
@@ -80,8 +82,11 @@ is every hardcoded target value in product behaviour, and generated exploit code
    - It works the same on stripped binaries.
    - Addresses use the SP-01b V-10 convention.
 3. **Constants are read from the binary.** A required argument is emitted only when a compare operand slices back
-   to a formal parameter, and the provenance records that slice. Otherwise the result is `args: unknown` with a
-   reason. Unrelated immediates never become arguments.
+   to a formal parameter as a single required `param == const` value, and the provenance records that slice. An
+   *ungated* payoff is `args: known` with an empty list; `args: unknown` with a reason is reserved for a
+   detected-but-unresolvable parameter gate (inequality / range / disjunction / correlated predicates /
+   transformed / ambiguous / non-constant operand / boolean composition). A decompile failure is report-level
+   `DEGRADED`. Unrelated immediates never become arguments. (Amended per W-2 design §9, 2026-11-14.)
 4. **Success detection without platform patterns.**
    - Where the tool controls the run environment, it plants its own random marker and checks for it.
    - Elsewhere it uses a platform-neutral flag shape that the operator can override.
@@ -127,7 +132,7 @@ All counts refer to the **payoff corpus v0** built in W-0. That corpus is:
 |---|---|---|
 | **W-0** | Inventory manifest (§2). Payoff corpus v0 and its truth (payoff RVA, required args). Reusable sandboxed analysis runner, extracted from SP-01b's `OffsetFinder` runner into `supwngo/core/`. Rename- and strip-twin harness. `scripts/check_htb_rescore.py` (W-6). | The inventory test is red on any unclassified current hit and on any stale `open` baseline entry. Corpus builds 32 positives + 32 twins + 8 negatives + 8 PE, with truth for every binary. The runner passes the SP-01b process and hide tests from its new home. The checker fails on a doctored report (6/7, 20/21, a timeout). |
 | **W-1** | Static evidence, ranking and cache (`payoff.py` plus the Ghidra script). | On every positive (32/32), rename twin (16/16) and strip twin (16/16), top-1 equals the truth RVA, and **no answer is an abstention**. Decoys are top-1 on 0/32. All 8/8 negatives have no hypothesis-tier candidate. PE top-1 equals truth on 8/8. A second call spawns 0 Ghidra processes. The budget is recorded in the output. |
-| **W-2** | Constants from the binary (class B). | `required_args` equal truth on all 16/16 argument-checked positives, with parameter-slice provenance. Unrelated-constant decoys give `args: unknown` on 32/32. Class-B baseline entries are all `migrated`. |
+| **W-2** | Constants from the binary (class B). | `required_args` equal truth on all 16/16 argument-checked positives, with parameter-slice provenance. Ungated payoffs (exec/file positives + const-sink non-param decoys) give `args: known` with an empty list; detected-but-unresolvable parameter gates give `args: unknown` with a reason (never a spurious value). W-2 closes the class-B ABI/infrastructure constants as `allowed` (with justifications) and leaves the class-B per-binary target-guess entries `open` (ratchet-valid, matching live hits) for their owning phase; W-2 migrates 0. (Amended per W-2 design §9, 2026-11-14.) |
 | **W-3** | Success detection (class C). | Every class-C baseline entry is `migrated`, or `allowed` with a justification. Planted-marker oracle: positive control passes; an input-echo decoy fails. No platform token appears in any non-comment product string (lint). |
 | **W-4** | Dynamic confirmation. | Receipts on 32/32 runnable dev positives. 0 receipts on decoys (0/96) and negatives (0/8). 0 surviving processes and 0 writes outside the workspace. Per-binary wall time within the recorded budget. |
 | **W-5** | Migrate every class A/A′ consumer to `payoff.py`; delete the lists; generated scripts require the payoff as an input (`inputs_required`) instead of naming one. | Every class-A/A′ baseline entry is `migrated`, and the current scan has no class-A/A′ hit. A seam test per consumer, counted from the baseline inventory, proves the consumer uses the API. Four planted mutants are each killed by the suite (4/4): exact-name lookup, substring match, name tie-break, and a name scan in an executor that no CLI test reaches. `pwn`, `solve`, `template` and `explain` give the truth RVA (not merely equal outputs) on all 16 rename-twin

@@ -300,12 +300,31 @@ def test_binaries_truth_and_index_agree(dev):
     assert listed == on_disk
     assert sorted(p.stem for p in (dev.root / "truth").iterdir()) == sorted(dev.truth)
     for ident, truth in dev.truth.items():
-        assert REQUIRED_TRUTH_KEYS <= set(truth), ident
+        required = REQUIRED_TRUTH_KEYS
+        role = truth.get("role")
+        if role == "falsifier":
+            # Falsifiers are a minimal negative-control namespace (generate.py
+            # §3a "fal-" shapes): no decoy structure, but they add role/args_*.
+            required = (REQUIRED_TRUTH_KEYS - {"decoys"}) | {
+                "role",
+                "args_status",
+                "args_reason",
+            }
+        elif role == "fixture":
+            # "fix-" fixtures are even more minimal: no decoy or payoff-address
+            # answer key (generate.py: "fixtures ... no role: falsifier").
+            required = (
+                REQUIRED_TRUTH_KEYS
+                - {"decoys", "image_base", "payoff_rva", "payoff_vaddr"}
+            ) | {"role"}
+        assert required <= set(truth), ident
         assert truth["id"] == ident and truth["set"] == "dev"
         assert (dev.root / truth["binary"]).is_file()
         assert (dev.root / truth["source"]).is_file()
         assert truth["tools"]["gcc"], "tool versions are recorded"
-        assert truth["seed"] == "1"
+        # Standard entries draw from the dev seed "1"; "fix-" fixtures pin their
+        # own fixed stream.
+        assert truth["seed"] == ("fixed" if role == "fixture" else "1")
 
 
 def test_truth_is_not_embedded_in_binaries(dev):
@@ -348,6 +367,8 @@ def test_unstripped_elf_truth_matches_the_symbol_table(dev):
     for truth in dev.truth.values():
         if truth["format"] != "elf" or truth["stripped"]:
             continue
+        if truth.get("role"):
+            continue  # falsifiers/fixtures carry no "functions" answer key
         view = elf_view(dev, truth["id"])
         assert view.has_symtab, truth["id"]
         assert view.image_base == truth["image_base"], truth["id"]
@@ -372,6 +393,8 @@ def test_every_elf_function_rva_starts_a_function(dev):
     for truth in dev.truth.values():
         if truth["format"] != "elf":
             continue
+        if truth.get("role"):
+            continue  # falsifiers/fixtures carry no "functions"/"decoys" key
         rvas = [f["rva"] for f in truth["functions"]]
         assert truth["payoff_rva"] is None or truth["payoff_rva"] in rvas
         assert set(truth["decoys"].values()) <= set(rvas)
@@ -485,7 +508,7 @@ def test_decoys_and_references_match_the_binary(dev):
     """The truth's ``called`` flags equal the call targets objdump sees."""
     checked = 0
     for truth in dev.truth.values():
-        symbols_present = truth["symbols_present"] and truth["format"] == "elf"
+        symbols_present = truth.get("symbols_present") and truth["format"] == "elf"
         if not symbols_present or truth["kind"] == "rename_twin":
             continue
         base = truth["image_base"]
@@ -594,9 +617,11 @@ def test_generated_names_avoid_forbidden_tokens_and_product_strings(
     patterns = token_patterns(tokens)
     names = set()
     for truth in dev.truth.values():
-        names.update(truth["names"])
-        names.update(truth["renames"])
-        names.update(truth["renames"].values())
+        # Falsifiers/fixtures carry generated "names" too (still token-checked
+        # below) but no rename map; a fixture may carry no names at all.
+        names.update(truth.get("names", ()))
+        names.update(truth.get("renames", {}))
+        names.update(truth.get("renames", {}).values())
     assert len(names) > 400
     for name in sorted(names):
         for token, pattern in patterns.items():
@@ -664,7 +689,10 @@ def test_same_seed_gives_identical_sources_truth_and_binaries(dev, tmp_path):
     first = sorted(p.relative_to(dev.root) for p in dev.root.rglob("*") if p.is_file())
     second = sorted(p.relative_to(again) for p in again.rglob("*") if p.is_file())
     assert first == second
-    assert len(first) == 2 * len(dev.truth) + 40 + 1  # bin, truth, 40 sources, index
+    # One binary + one truth file per entry, one source file per distinct
+    # source (twins share a source; falsifiers add their own), plus index.json.
+    n_sources = len({t["source"] for t in dev.truth.values()})
+    assert len(first) == 2 * len(dev.truth) + n_sources + 1
     for rel in first:
         assert (dev.root / rel).read_bytes() == (again / rel).read_bytes(), rel
 
