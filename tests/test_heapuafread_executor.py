@@ -73,9 +73,9 @@ CORPUS = BENCH / "corpus_uafread"
 
 from supwngo.exploit.pipeline.contracts import AttemptRecord, AttemptOutcome, Stage
 from supwngo.exploit.pipeline.executors import build_default_registry
+from supwngo.core.success_oracle import check
 from supwngo.exploit.pipeline.executors.heapuafread_techniques import (
     BULK_SINKS,
-    FLAG_RE,
     READ_INDICES,
     SECRET_IDX,
     SHORT_WRITE,
@@ -537,19 +537,27 @@ def test_template_has_no_shell_receipt_bridge():
     assert "/bin/sh" not in _UAFREAD_TEMPLATE
 
 
-def test_flag_regex_matches_what_the_verifier_credits():
-    for good in (b"FLAG{abc}", b"flag{abc}", b"HTB{abc}", b"htb{a_b-c}",
-                 b"CTF{x}", b"ctf{x}"):
-        assert FLAG_RE.search(good), good
-    for bad in (b"FLAG", b"FLAG{", b"{abc}", b"flagabc"):
-        assert not FLAG_RE.search(bad), bad
+def test_recipe_screen_credits_what_the_verifier_credits():
+    """``run_recipe`` now screens disclosed bytes through the neutral success
+    oracle (no platform literal): a word-prefixed brace body of >=4 non-space
+    chars is credited; anything shorter or malformed is not."""
+    for good in (b"FLAG{abcd}", b"flag{abcd}", b"HTB{abcd}", b"htb{a_b-cd}",
+                 b"CTF{wxyz}", b"ctf{wxyz}"):
+        assert check(good, b"").success, good
+    for bad in (b"FLAG", b"FLAG{", b"{abcd}", b"flagabcd", b"FLAG{ab}"):
+        assert not check(bad, b"").success, bad
 
 
-def test_flag_regex_finds_a_flag_inside_a_binary_blob():
-    """The disclosed bytes are raw chunk contents, not a tidy line."""
+def test_recipe_screen_finds_a_flag_inside_a_binary_blob():
+    """The disclosed bytes are raw chunk contents, not a tidy line; the oracle
+    returns the matched value, which ``run_recipe`` re-encodes to bytes."""
     blob = b"\x00\x01\xff" + b"A" * 16 + b"FLAG{deadbeef}" + b"\x00" * 32
-    match = FLAG_RE.search(blob)
-    assert match and match.group(0) == b"FLAG{deadbeef}"
+    result = check(blob, b"")
+    assert result.success
+    # The neutral shape's word prefix may absorb adjacent run bytes, so the
+    # match spans up to and including the flag body rather than being trimmed
+    # to it; what matters for the pre-screen is that it fires on the disclosure.
+    assert result.matched_value.encode("latin-1").endswith(b"FLAG{deadbeef}")
 
 
 # ---------------------------------------------------------------------------
