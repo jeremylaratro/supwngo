@@ -101,7 +101,64 @@ the recommended approach have the gadgets/strings it needs in that binary?
 - Truth authoring is the error-prone core → it is the peer-review focus.
 - Rollback: each sprint is its own branch off `1b117a2`; revert the branch.
 
-## Peer review (Phase 5 gate) — PENDING
-Send THIS plan to a second model (Codex daybreak-blue xhigh via /codex-interop):
-judge the B2 schema-vs-remap decision, the any-match metric, the B1 accept-set
-policy, and whether B2-before-B1 ordering is right. Record findings by class.
+## Peer review round 1 (Codex daybreak-blue xhigh) — VERDICT: FIX-FIRST
+
+Review saved at `docs/reviews/sprintB-plan-review-codex-16NOV2026.md`. All six
+findings were **verified against the source** (not taken on the reviewer's word)
+and **all six accepted** — none rejected. Resolutions by class; these **supersede**
+the "Open decisions" leanings above.
+
+**R1 [BLOCKER, D1 — detector/schema bundle].** Verified: `off_by_one.py` models
+null-byte/one-byte causes across **heap and stack** (`OffByOneType.HEAP_METADATA`,
+`STACK_CANARY`, …) → remap→`stack_bof` is **wrong**; decision (a), `VulnType.OFF_BY_ONE`,
+stands. BUT `get_exploit_primitive` is `@abstractmethod` on the ABC and **neither
+`UAFDetector` nor `OffByOneDetector` implements it** (grep=0); `UAFVuln(name=…,
+severity="medium")` mismatches the `Vulnerability` contract (`vuln_type`/`VulnSeverity`);
+and both fire on **mere PLT presence** of `malloc`/`free`/`read`/`memcpy` (uaf.py:103,
+off_by_one.py:117). → **Revised:** adapting is a *real refactor with negative
+calibration*, not "append to the set": implement the ABC method, fix construction,
+and gate each detector on evidence beyond import-presence (else corpus-wide FPs).
+**TypeConfusion is DEFERRED** (bare class in `uaf.py`, not the ABC; would emit for
+every binary; and it is not even a vuln *family* — see R2).
+
+**R2 [MAJOR, D1 — enum blast radius].** Verified: `passcard_families.py:157` maps
+`type_confusion_tag → _v("logic")` — `TYPE_CONFUSION` is **not** a VULN family, so
+do **not** add that member; type-confusion truth maps to `logic`. Verified:
+`tests/test_reporting_adapter.py:333` pins `unmapped ==
+{"integer_underflow","null_pointer_deref","unknown"}`, so adding `VulnType.OFF_BY_ONE`
+**fails that test** unless it gets a CVSS vector in `CVSSCalculator.VULN_VECTORS`
+(or the pinned set is updated as a recorded decision). → **Revised sub-component
+list names every consumer:** `CVSSCalculator.VULN_VECTORS`, the two
+`test_reporting_adapter` tests, `passcard_families.map_name`, `SARIFExporter`. Sweep
+**string-key registries**, not only `VulnType.` switches.
+
+**R3 [BLOCKER, D2 — metric].** Verified: any-match is **recall** and is gameable
+exactly because R1's detectors fire on imports. → **Revised metric:** the ≥90% gate
+is **per-family precision AND recall** (F-style), on **multi-label accepted truth**
+(a binary may genuinely carry >1 defect). "Dominant" is defined **separately** and
+only informationally — `detect_all` merely appends detector output in registration
+order, so there is no intrinsic dominance to lean on. The captured **63% is a
+recall baseline**, not the gate.
+
+**R4 [MAJOR — denominator].** → **Revised:** freeze a **complete target manifest**
+(core + specialized corpora) and the **exclusion/VOID policy** *before* measuring.
+`07_static_ret2syscall` stays a **miss** unless a supported-domain change is
+pre-registered and re-baselined. No post-hoc denominator shrinking.
+
+**R5 [MAJOR, D3 — B1 accept-set circularity].** → **Revised:** authoring
+`method_accept` from the method the CLI recommended is **label leakage** (gadget/
+string presence is necessary, not sufficient — register/control constraints remain).
+Author **independent, target-specific feasibility witnesses BEFORE** the scored CLI
+run; later widening needs evidence + an audit trail.
+
+**R6 [MINOR, D4 — ordering].** B2-before-B1 kept. → **Revised:** recapture the
+**complete recall+precision baseline at B2's real branch base** before the first
+edit (not the recall-only 63% spike).
+
+### Status after round 1
+Plan is **FIX-FIRST → revised, not yet re-reviewed**. The revisions expand B2
+beyond the original scope (real detector refactor + FP calibration; a precision+recall
+metric on multi-label truth; a frozen full-corpus manifest). A round-2 review (verify
+these fixes only) is owed **after** the user confirms the expanded B2 scope and the
+precision-metric definition — both are consequential product decisions gated before
+Phase 6.
