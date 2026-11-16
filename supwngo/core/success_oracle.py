@@ -72,6 +72,7 @@ __all__ = [
     "OracleResult",
     "check",
     "cleanup_marker",
+    "emit_flag_match_snippet",
     "is_flag_shaped_text",
     "is_flagish_bytes",
     "mint_marker",
@@ -320,6 +321,90 @@ def is_flagish_bytes(data: bytes) -> bool:
     ``exploit/walkthrough/facts.py``.
     """
     return bool(_REDACT_RE.search(data))
+
+
+# --------------------------------------------------------------------------
+# Emitted snippet for generated scripts (design 2.4, "Generated scripts (G)")
+#
+# A standalone script the operator runs later cannot import this module, so the
+# canonical oracle *emits* a self-contained snippet of source text that the
+# generators embed. The snippet carries the neutral shape (built from
+# :data:`NEUTRAL_FLAG_SHAPE`, never retyped, so it adds no new ``flag_shape``
+# scanner hit) and the SAME per-match anti-echo filter ``check()`` applies.
+
+
+def emit_flag_match_snippet(indent: str = "") -> str:
+    """Return source TEXT defining self-contained oracle helpers for a generated
+    script (pure stdlib; a generated script already imports ``os`` and ``re``).
+
+    Executed inside the operator's standalone script, the returned text defines:
+
+    * ``_oracle_flag_hits(output, sent=b"")`` -- every full match of the neutral
+      flag shape (``SUPWNGO_FLAG_RE`` overrides it, read once by exact value,
+      exactly as :func:`check`) as a latin-1 string, with each candidate that
+      also occurs in ``sent`` dropped (the per-match anti-echo filter);
+    * ``_oracle_shell_proven(output, sent=b"", token=None)`` -- ``True`` only on
+      an un-echoable shell answer (the arithmetic marker, ``token``'s strict
+      marker, or ``uid=``) that is absent from ``sent``; a reflected token never
+      counts.
+
+    The flag pattern is interpolated from :data:`NEUTRAL_FLAG_SHAPE` and the
+    shell markers from :data:`ARITH_MARK` / :func:`strict_marker`; none is
+    retyped as a fresh flag/platform literal, so emitting this creates no new
+    class-C scanner hit and trips no platform-token lint.
+    """
+    shape = repr(NEUTRAL_FLAG_SHAPE)
+    arith = repr(ARITH_MARK.encode("latin-1"))
+    lines = [
+        "def _oracle_norm(value):",
+        "    if value is None:",
+        "        return b''",
+        "    if isinstance(value, str):",
+        "        return value.encode('utf-8', 'surrogateescape')",
+        "    return bytes(value)",
+        "",
+        "",
+        "def _oracle_shape():",
+        f"    _env = os.environ.get({FLAG_RE_ENV!r})",
+        f"    _pat = _env if _env else {shape}",
+        "    if isinstance(_pat, str):",
+        "        _pat = _pat.encode('latin-1')",
+        "    try:",
+        "        return re.compile(_pat)",
+        "    except re.error:",
+        f"        return re.compile(({shape}).encode('latin-1'))",
+        "",
+        "",
+        "def _oracle_flag_hits(output, sent=b''):",
+        "    _out = _oracle_norm(output)",
+        "    _sent = _oracle_norm(sent)",
+        "    _hits = []",
+        "    _seen = set()",
+        "    for _m in _oracle_shape().finditer(_out):",
+        "        _v = _m.group(0)",
+        "        if not _v or _v in _seen:",
+        "            continue",
+        "        _seen.add(_v)",
+        "        if _v in _sent:",
+        "            continue",
+        "        _hits.append(_v.decode('latin-1'))",
+        "    return _hits",
+        "",
+        "",
+        "def _oracle_shell_proven(output, sent=b'', token=None):",
+        "    _out = _oracle_norm(output)",
+        "    _sent = _oracle_norm(sent)",
+        "    _marks = []",
+        f"    _marks.append({arith})",
+        "    if token is not None:",
+        "        _marks.append(_oracle_norm(token) + b'_STRICT')",
+        "    _marks.append(b'uid=')",
+        "    for _mk in _marks:",
+        "        if _mk and _mk in _out and _mk not in _sent:",
+        "            return True",
+        "    return False",
+    ]
+    return "\n".join(indent + line if line else line for line in lines)
 
 
 # --------------------------------------------------------------------------

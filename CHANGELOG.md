@@ -104,6 +104,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serialised; only the success credit is removed. Previously recorded
   receipts are not rewritten. Baseline entries W-0130..W-0139 are now
   `migrated`.
+- Route the five generated-script flag matchers through the success oracle
+  (directive W, phase W-3 step 3, batch 4). `success_oracle.py` gains
+  `emit_flag_match_snippet()`, which returns pure-standard-library source
+  defining `_oracle_flag_hits` / `_oracle_shell_proven` built from
+  `NEUTRAL_FLAG_SHAPE` (honouring `SUPWNGO_FLAG_RE`) with the same per-match
+  anti-echo filter. The `oob_index_read_exfil`, `weak_prng`, `path_traversal`,
+  `symlink_write` and `toctou` executors embed that snippet in the scripts they
+  generate instead of a hand-rolled platform `FLAG_RE`, so none of the five
+  files carries a flag-shape or platform literal. `weak_prng`'s echo-foolable
+  `TOKEN in out` shell check is replaced by a shell-proof probe (it now sends
+  `echo SH$((6*7))OK` by default and credits only the un-echoable `SH42OK`, the
+  token's `_STRICT` marker, or `uid=`); a reflected token no longer confirms a
+  shell. The `tictacpwn` kernel-exploit banner in `kernel/templates.py` is
+  parameterised on a caller-supplied `module_name` (default `ttp.ko`) and no
+  longer emits the `HackTheBox`/challenge literal. Baseline entries W-0106,
+  W-0108, W-0116, W-0118 and W-0124 close `migrated` (`phase: W-3`); no product
+  behaviour is weakened and no scanner exemption is added.
 - Route the two static flag classifiers through the success oracle (directive
   W, phase W-3 step 3, batch 5). `analysis/strings.py` flag detection and
   `exploit/walkthrough/facts.py` prompt redaction now call platform-neutral
