@@ -601,12 +601,17 @@ def test_w2_the_42_open_entries_still_match_live_hits_not_stale(hits, baseline):
 
 
 def test_w2_nothing_is_migrated_and_other_classes_are_untouched(baseline):
+    # W-3 batch 1 closed exactly W-0130..W-0139 (class C); W-2 itself still
+    # migrates nothing, and every other non-B entry stays open.
+    w3_closed = {f"W-{n:04d}" for n in range(130, 140)}
     statuses = [e["status"] for e in baseline["entries"]]
-    assert statuses.count("migrated") == 0
+    assert statuses.count("migrated") == len(w3_closed)
     assert statuses.count("allowed") == 27
-    assert statuses.count(OPEN) == len(statuses) - 27
+    assert statuses.count(OPEN) == len(statuses) - 27 - len(w3_closed)
     for entry in baseline["entries"]:
-        if entry["class"] != "B":
+        if entry["id"] in w3_closed:
+            assert entry["status"] == "migrated" and entry["phase"] == "W-3"
+        elif entry["class"] != "B":
             assert entry["status"] == OPEN, entry["id"]
 
 

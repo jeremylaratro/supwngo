@@ -260,6 +260,9 @@ for line in sys.stdin:
     )
     assert receipt.shell_proven is False
     assert receipt.echo_ambiguous is True
+    # W-3 R1: the echo stays a recorded diagnostic but is no longer a solve.
+    assert receipt.success is False
+    assert receipt.level.name == "NONE"
 
 
 def test_oracle_marks_a_genuinely_obtained_shell_as_proven():

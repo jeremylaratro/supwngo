@@ -88,6 +88,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Route verification and tester success detection through the success oracle
+  (directive W, phase W-3 batch 1). `ExploitVerifier.FLAG_PATTERNS` /
+  `SUCCESS_PATTERNS` are removed; `verify_output` (now taking an optional
+  `sent=` transcript for anti-echo), `PipelineVerifier.verify_script` and
+  `ExploitTester._evaluate_output` decide success via `check()`. Flags are matched
+  by the neutral `word{body}` shape (or `SUPWNGO_FLAG_RE`), not by platform
+  names; `TestConfig.flag_pattern` is kept, defaulting to that shape, with
+  precedence instance > `SUPWNGO_FLAG_RE` > default. Bare success words
+  ("welcome", "success", ...) no longer count as success.
+  **Behaviour change (R1):** a `verify_script` run in which only the receipt token
+  came back (a target that merely echoes its input) is now level `NONE` /
+  `success=False` instead of `SHELL_ACCESS`. `shell_confirmed=True`,
+  `echo_ambiguous=True` and an explanatory note are still recorded and
+  serialised; only the success credit is removed. Previously recorded
+  receipts are not rewritten. Baseline entries W-0130..W-0139 are now
+  `migrated`.
 - Construct production FSOP plans with the locally resolved glibc release
   instead of `DEFAULT_LIBC_VERSION`, so glibc 2.34+ no longer selects removed
   malloc/free hook routes. Inconclusive libc/layout measurements are reported
