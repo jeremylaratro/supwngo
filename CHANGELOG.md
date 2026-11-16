@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add `supwngo.core.success_oracle`, a pure-standard-library success oracle
+  (directive W, phase W-3 step 1). One `check()` ranks PLANTED > SHELL-PROVEN >
+  SHAPE evidence with per-match anti-echo against everything sent to the
+  target; bare banner words are diagnostics only; the neutral shape is
+  overridable via `SUPWNGO_FLAG_RE` (invalid values warn and fall back
+  visibly). The audit scanner exempts exactly that one constant
+  (`SCANNER_VERSION` 1 -> 2); the frozen baseline is unchanged. No consumer is
+  migrated yet.
 - Add per-candidate required-argument extraction to the payoff report
   (directive W, phase W-2). Each candidate now carries `required_args`,
   `args_status` and `args_reason`, produced by a Ghidra P-code args pass in

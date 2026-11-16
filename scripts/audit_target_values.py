@@ -100,7 +100,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = "supwngo"
 BASELINE_PATH = REPO_ROOT / "tests" / "data" / "target_values_baseline.json"
 
-SCANNER_VERSION = 1
+# v2 (W-3 step 1): exact-literal exemption for the single canonical oracle
+# neutral-shape constant (see ORACLE_* below). Not a frozen baseline field.
+SCANNER_VERSION = 2
 CLASSES = ("A", "A'", "B", "C")
 STATUSES = ("open", "migrated", "allowed")
 # kind -> class: the pinned classification of each search (see the module
@@ -318,6 +320,15 @@ UNIVERSAL_PREFIXES = ("__", "_IO_", "_dl_", "pthread_", "_ITM_")
 TOOL_PREFIXES = ("sub_", "fun_", "loc_", "func_", "j_", "_", "0x", "@", ".")
 
 ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# The one sanctioned neutral flag shape (W-3 design section 2.2). Exempt from
+# ``flag_shape`` only when this exact literal is bound to exactly this symbol in
+# exactly this module; any other occurrence of the pattern is still a hit. The
+# literal is duplicated here on purpose (the scanner imports nothing from the
+# product); a test pins it equal to the constant imported from the module.
+ORACLE_MODULE_PATH = "supwngo/core/success_oracle.py"
+ORACLE_SYMBOL = "NEUTRAL_FLAG_SHAPE"
+ORACLE_NEUTRAL_SHAPE = r"([A-Za-z0-9_]+)\{[^}\s]{4,}\}"
 
 # ``prefix{`` where the prefix is a word (``htb{``, ``flag\{`` in a regex) or a
 # closing group, optionally followed by a ``\s`` class (``(flag|ctf)\s*\{``).
@@ -1047,11 +1058,31 @@ class _Module:
     def search_strings(self) -> None:
         for node in self.strings:
             fstring = isinstance(node, ast.JoinedStr)
+            if self._is_oracle_constant(node):
+                continue
             for number, text in self._segment(node):
                 literal = _mask_fields(text) if fstring else text
                 if _is_flag_shape(literal):
                     self.add(number, "C", "flag_shape")
                 self._template(number, text)
+
+    def _is_oracle_constant(self, node: ast.AST) -> bool:
+        """Is ``node`` the canonical oracle shape bound to its canonical symbol?"""
+        if self.path != ORACLE_MODULE_PATH or _const_str(node) != ORACLE_NEUTRAL_SHAPE:
+            return False
+        parent = self.parents.get(id(node))
+        if isinstance(parent, ast.Assign):
+            targets = parent.targets
+        elif isinstance(parent, ast.AnnAssign):
+            targets = [parent.target]
+        else:
+            return False
+        return (
+            parent.value is node
+            and len(targets) == 1
+            and isinstance(targets[0], ast.Name)
+            and targets[0].id == ORACLE_SYMBOL
+        )
 
     def _template(self, number: int, text: str) -> None:
         symbol = False
