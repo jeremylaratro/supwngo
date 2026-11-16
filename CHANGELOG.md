@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   visibly). The audit scanner exempts exactly that one constant
   (`SCANNER_VERSION` 1 -> 2); the frozen baseline is unchanged. No consumer is
   migrated yet.
+- Add `scripts/check_platform_tokens.py`, an AST lint that flags platform
+  tokens (`htb`, `hackthebox`, `picoctf`, `csaw`, word-bounded `asis`, and
+  `flag{`/`ctf{`/`htb{` brace shapes, plain or `\\{` raw) in str/bytes
+  constants including f-string segments, excluding only docstrings. Added with
+  fixture-level self-tests only (directive W, phase W-3 step 2); no tree-wide
+  gate is enabled yet.
 - Add per-candidate required-argument extraction to the payoff report
   (directive W, phase W-2). Each candidate now carries `required_args`,
   `args_status` and `args_reason`, produced by a Ghidra P-code args pass in
