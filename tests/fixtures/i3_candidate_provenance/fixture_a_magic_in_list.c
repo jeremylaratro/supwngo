@@ -32,7 +32,7 @@ int main(void) {
     unsigned int gate = 0;
     read(0, buf, 256);
     if (gate == 0xcafebabe) {
-        printf("you win\n");
+        printf("you win: win{cafe0001}\n");
     } else {
         printf("nope\n");
     }

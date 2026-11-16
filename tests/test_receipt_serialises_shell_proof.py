@@ -48,10 +48,21 @@ def _receipt(**kw) -> VerificationReceipt:
 
 
 def test_an_echo_ambiguous_receipt_says_so_after_serialisation() -> None:
-    """The case that matters: a credited shell that nothing proved was a shell."""
-    d = _receipt(shell_confirmed=True, shell_proven=False, echo_ambiguous=True).to_dict()
+    """The case that matters: a token that came back, with nothing proving a shell.
 
-    assert d["shell_confirmed"] is True, "precondition: this receipt credits a shell"
+    W-3 (R1) reclassification: such a receipt is now level NONE / ``success`` False
+    -- the echo is a DIAGNOSTIC, no longer a credited solve -- but ``shell_confirmed``
+    and ``echo_ambiguous`` must STILL survive serialisation, or a report goes silent
+    about the doubt again (the `I-27` defect).
+    """
+    d = _receipt(
+        level=VerificationLevel.NONE,
+        shell_confirmed=True, shell_proven=False, echo_ambiguous=True,
+    ).to_dict()
+
+    assert d["success"] is False, "R1: an echoed-token-only receipt is not a success"
+    assert d["level"] == "NONE"
+    assert d["shell_confirmed"] is True, "precondition: the token did appear"
     assert d["echo_ambiguous"] is True, (
         "a receipt whose shell was never distinguished from an echo must carry that "
         "through to_dict() -- otherwise a report can credit the solve and stay silent "

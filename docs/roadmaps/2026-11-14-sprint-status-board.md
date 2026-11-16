@@ -53,8 +53,8 @@ Legend: ✅ merged · 🚧 in flight · ⬜ not started · 🔒 frozen (directiv
 | directive-W plan | Retire hardcoded target values (SP-04b breakdown) | ✅ | PR #35 | Plan ACCEPTED (Daybreak Blue r4) |
 | **W-0** | Inventory manifest, payoff corpus v0 + truth, reusable sandboxed runner, twin harness, `check_htb_rescore.py` | ✅ | PR #38; exec log in W-plan §10 (`a0f5fc9` etc.) | Met: inventory red-gates live; corpus 32 pos + 32 twins + 8 neg + 8 PE |
 | **W-1** | Static payoff evidence, ranking, cache (`payoff.py` + Ghidra script) | ✅ | PR #39 (`a1cae7f` … `ed38d8e`) | Met at merge; re-confirm top-1 on corpus under PENDING-M |
-| **W-2** | Required-args / constants from the binary (class B) | 🚧 | `feat/w2-required-args` @ `2979bb0` (pushed); design **Rev 11 ACCEPTED**; steps 1–6 committed | Step 7 docs done; full gate handed off to wks0 (net0srv too loaded); merge after gate |
-| **W-3** | Success detection (class C); planted-marker oracle; platform-token lint | ⬜ | — | Not started |
+| **W-2** | Required-args / constants from the binary (class B) | ✅ | PR #41 (merged `67a496c`) | Met: 27 class-B entries `allowed`; full gate at parity with main on wks0 |
+| **W-3** | Success detection (class C); planted-marker oracle; platform-token lint | ✅ | `feat/w3-success-oracle` (5-batch integration); OUTBRIEF-W3-15NOV2026 | Met: 54 class-C entries `migrated`; neutral/shell-proof/planted oracle with anti-echo; tree-wide platform-token lint gated; ret2win success path validated e2e through the oracle; no new gate failures vs main |
 | **W-4** | Dynamic confirmation (gdb-in-sandbox receipts) | ⬜ | — | Not started |
 | **W-5** | Migrate class A/A′ consumers to `payoff.py`; delete the name lists; scripts take payoff as input | ⬜ | — | Not started — **this is where W-1/W-2 reach the scored CLI surfaces** |
 | **W-6** | Regression gate (held set, `check_htb_rescore` 7/7 21/21, passcard S0 delta) | ⬜ | — | Not started |
@@ -78,8 +78,8 @@ AMD-19 pulls SP-04b forward and expands its one-line §5 scope ("payoff tiers; t
 |---|---|---|
 | Seeded payoff corpus + dev/held split; reusable sandboxed runner; evidence cache + budgets; inventory denominator | **W-0** ✅ | Inventory red on any unclassified hit / stale `open`; corpus 32+32+8+8 with truth |
 | Static payoff evidence, ranking, cache (the "payoff tiers") | **W-1** ✅ | top-1 = truth RVA on 32/32 pos, 16/16 rename, 16/16 strip, **no abstention**; decoys 0/32; neg 8/8 no candidate; PE 8/8; 2nd call 0 Ghidra |
-| Guessed comparison constants → required-args from the binary (class B) | **W-2** 🚧 | `required_args` = truth on 16/16 arg-checked pos w/ parameter-slice provenance; decoys `args: unknown` 32/32; class-B entries all `migrated`/`allowed` |
-| Success-detection markers (class C) | **W-3** ⬜ | class-C entries `migrated`/`allowed`; marker oracle pos-pass / echo-decoy-fail; platform-token lint clean |
+| Guessed comparison constants → required-args from the binary (class B) | **W-2** ✅ | `required_args` = truth on 16/16 arg-checked pos w/ parameter-slice provenance; decoys `args: unknown` 32/32; class-B entries all `migrated`/`allowed` |
+| Success-detection markers (class C) | **W-3** ✅ | 54 class-C entries `migrated`; marker/shell-proof/neutral-shape oracle with anti-echo (pos-pass / echo-decoy-fail); platform-token lint clean tree-wide |
 | Dynamic confirmation tier for payoff functions (absorbed from SP-07) | **W-4** ⬜ | receipts 32/32 runnable pos; 0 on decoys (0/96) + neg (0/8); 0 survivors / 0 stray writes |
 | Migrate class A/A′ consumers; delete lists; scripts require payoff as input | **W-5** ⬜ | class-A/A′ entries `migrated`, scan clean; per-consumer seam test; 4/4 planted name-lookup mutants killed; `pwn`/`solve`/`template`/`explain` give truth RVA on 16 rename-twins |
 | Regression gate | **W-6** ⬜ | held top-1 ≥ 15/16; `check_htb_rescore` 7/7 21/21 0-timeout within budget; full suite no new genuine failures; passcard S0 delta reported |

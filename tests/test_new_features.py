@@ -296,7 +296,11 @@ class TestExploitTester:
         config = TestConfig()
         assert config.timeout == 30
         assert config.environment == TestEnvironment.LOCAL
-        assert "flag{" in config.success_indicators
+        # W-3: platform/flag-shape entries are gone from the weak indicators
+        # (a flag is matched by the oracle's neutral shape instead).
+        assert "flag{" not in config.success_indicators
+        assert "CTF{" not in config.success_indicators
+        assert "uid=0" in config.success_indicators
 
     def test_exploit_test_result_dataclass(self):
         """Test ExploitTestResult dataclass."""

@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add `supwngo.core.success_oracle`, a pure-standard-library success oracle
+  (directive W, phase W-3 step 1). One `check()` ranks PLANTED > SHELL-PROVEN >
+  SHAPE evidence with per-match anti-echo against everything sent to the
+  target; bare banner words are diagnostics only; the neutral shape is
+  overridable via `SUPWNGO_FLAG_RE` (invalid values warn and fall back
+  visibly). The audit scanner exempts exactly that one constant
+  (`SCANNER_VERSION` 1 -> 2); the frozen baseline is unchanged. No consumer is
+  migrated yet.
+- Add `scripts/check_platform_tokens.py`, an AST lint that flags platform
+  tokens (`htb`, `hackthebox`, `picoctf`, `csaw`, word-bounded `asis`, and
+  `flag{`/`ctf{`/`htb{` brace shapes, plain or `\\{` raw) in str/bytes
+  constants including f-string segments, excluding only docstrings. Added with
+  fixture-level self-tests only (directive W, phase W-3 step 2); no tree-wide
+  gate is enabled yet.
 - Add per-candidate required-argument extraction to the payoff report
   (directive W, phase W-2). Each candidate now carries `required_args`,
   `args_status` and `args_reason`, produced by a Ghidra P-code args pass in
@@ -74,6 +88,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Close directive W phase W-3 (class C): every class-C success/flag-pattern
+  entry is `migrated` to the success oracle, and the tree-wide platform-token
+  lint (`scripts/check_platform_tokens.py`) is now a test gate over all of
+  `supwngo/`. A new `test_w3_inventory_closure` pins the 54-entry disposition,
+  and a lingering generated-script comment token (`heap_strlen_ofb1`) is
+  neutralised so no platform name appears in any non-comment product string.
+- Route verification and tester success detection through the success oracle
+  (directive W, phase W-3 batch 1). `ExploitVerifier.FLAG_PATTERNS` /
+  `SUCCESS_PATTERNS` are removed; `verify_output` (now taking an optional
+  `sent=` transcript for anti-echo), `PipelineVerifier.verify_script` and
+  `ExploitTester._evaluate_output` decide success via `check()`. Flags are matched
+  by the neutral `word{body}` shape (or `SUPWNGO_FLAG_RE`), not by platform
+  names; `TestConfig.flag_pattern` is kept, defaulting to that shape, with
+  precedence instance > `SUPWNGO_FLAG_RE` > default. Bare success words
+  ("welcome", "success", ...) no longer count as success.
+  **Behaviour change (R1):** a `verify_script` run in which only the receipt token
+  came back (a target that merely echoes its input) is now level `NONE` /
+  `success=False` instead of `SHELL_ACCESS`. `shell_confirmed=True`,
+  `echo_ambiguous=True` and an explanatory note are still recorded and
+  serialised; only the success credit is removed. Previously recorded
+  receipts are not rewritten. Baseline entries W-0130..W-0139 are now
+  `migrated`.
+- Route the five generated-script flag matchers through the success oracle
+  (directive W, phase W-3 step 3, batch 4). `success_oracle.py` gains
+  `emit_flag_match_snippet()`, which returns pure-standard-library source
+  defining `_oracle_flag_hits` / `_oracle_shell_proven` built from
+  `NEUTRAL_FLAG_SHAPE` (honouring `SUPWNGO_FLAG_RE`) with the same per-match
+  anti-echo filter. The `oob_index_read_exfil`, `weak_prng`, `path_traversal`,
+  `symlink_write` and `toctou` executors embed that snippet in the scripts they
+  generate instead of a hand-rolled platform `FLAG_RE`, so none of the five
+  files carries a flag-shape or platform literal. `weak_prng`'s echo-foolable
+  `TOKEN in out` shell check is replaced by a shell-proof probe (it now sends
+  `echo SH$((6*7))OK` by default and credits only the un-echoable `SH42OK`, the
+  token's `_STRICT` marker, or `uid=`); a reflected token no longer confirms a
+  shell. The `tictacpwn` kernel-exploit banner in `kernel/templates.py` is
+  parameterised on a caller-supplied `module_name` (default `ttp.ko`) and no
+  longer emits the `HackTheBox`/challenge literal. Baseline entries W-0106,
+  W-0108, W-0116, W-0118 and W-0124 close `migrated` (`phase: W-3`); no product
+  behaviour is weakened and no scanner exemption is added.
+- Route the two static flag classifiers through the success oracle (directive
+  W, phase W-3 step 3, batch 5). `analysis/strings.py` flag detection and
+  `exploit/walkthrough/facts.py` prompt redaction now call platform-neutral
+  helpers `success_oracle.is_flag_shaped_text` / `is_flagish_bytes` instead of
+  hardcoded `flag{`/`CTF{`/`HTB{`/`picoCTF{`/`CSAW{`/`ASIS{` patterns; the
+  redaction stays truncation-tolerant (`<word>{` with no closing brace) and
+  prefixless (`{<4+ word-chars>}`), now for any word rather than only named
+  platforms. Baseline entries W-0001..W-0006 and W-0141 close `migrated`
+  (`phase: W-3`); no product behaviour is weakened and no scanner exemption is
+  added.
+- Route the auto-family in-process success checks through the success oracle
+  (directive W, phase W-3 batch 2). The platform flag/word literals in
+  `AutoExploiter` (UAF, scanf-canary, manual format-string, integer-overflow,
+  double-free and the generic exploit test), `EnhancedAutoExploiter`'s
+  negative-size test, the `WinFunctionFinder` bruteforce/exploit verifiers in
+  `offset_finder`, and the heap/bypass executors (`_test_scanf_bypass`,
+  `_execute_uaf_exploit`, `_try_double_free_tcache`) are deleted; each now
+  decides success via `success_oracle.check(output, sent)` with the full
+  transmitted transcript as the anti-echo reference. **Echo-foolable fix
+  (W-0018):** the ret2libc shell test's bare `echo PWNED` / `PWNED in output`
+  is replaced by the shell-proof probe set (strict marker, shell arithmetic,
+  `id`); success is credited only for the oracle's SHELL tier, so a target that
+  merely reflects the probe bytes is no longer counted as a shell. Bare success
+  words no longer count as success (B3). Baseline entries W-0012, W-0013,
+  W-0018..W-0022, W-0027..W-0033, W-0046, W-0047, W-0051, W-0055 and
+  W-0074..W-0079 are now `migrated`.
+- Route the executor flag pre-screens and the remote shell test through the
+  success oracle (directive W, phase W-3 batch 3). The platform-literal flag
+  regexes in `canary_leak_techniques`, `fmtstr_techniques`,
+  `heapuafread_techniques` (module-level `FLAG_RE` removed),
+  `input_shape_techniques` and `loop_counter_techniques` are replaced by the
+  neutral `word{body}` shape via `check()` (with anti-echo against the bytes
+  delivered, where in scope) or the exported `NEUTRAL_FLAG_SHAPE` for the
+  declared `loop_counter` pre-screen. `input_shape`'s bare win phrases
+  ("congratulations"/"you win"/"access granted") no longer count as success
+  (§2.1/B3). **Behaviour change (W-0153):** `RemoteInteraction.get_shell`'s
+  echo-foolable `echo PWNED` / `"PWNED" in response` test is replaced by the
+  oracle shell-proof probes (strict marker + `SH$((6*7))OK` + `id`); a shell
+  is proven only on an un-echoed `SHELL-PROVEN` result, so a reflected token
+  or literal `PWNED` no longer counts. Baseline entries W-0069, W-0071,
+  W-0084, W-0085, W-0090, W-0091, W-0095 and W-0153 are now `migrated`.
 - Construct production FSOP plans with the locally resolved glibc release
   instead of `DEFAULT_LIBC_VERSION`, so glibc 2.34+ no longer selects removed
   malloc/free hook routes. Inconclusive libc/layout measurements are reported

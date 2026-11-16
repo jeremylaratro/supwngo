@@ -270,29 +270,56 @@ class RemoteInteraction:
 
     def get_shell(self) -> bool:
         """
-        Check if we got a shell.
+        Check whether the tube is backed by a real shell.
+
+        Uses the success oracle's shell-proof probes (design W-3 §2.4): a
+        strict marker whose quotes the shell strips, POSIX arithmetic
+        expansion, and ``id``. None of their answers can be produced by a
+        target that merely reflects the bytes we send, so an echoed probe --
+        including a reflected token or a literal ``PWNED`` -- is rejected.
+        Success requires a SHELL-PROVEN tier result, not a reflected string.
 
         Returns:
-            True if shell obtained
+            True if a shell was proven
         """
         if not self._tube:
             return False
 
+        import secrets
+
+        from supwngo.core.success_oracle import (
+            ARITH_PROBE,
+            TIER_SHELL,
+            check,
+            strict_probe,
+        )
+
+        token = secrets.token_hex(8)
+        probes = [
+            b"id",
+            strict_probe(token).encode(),
+            f"echo {ARITH_PROBE}".encode(),
+        ]
+
         try:
-            # Send command and check response
-            self.sendline(b"id")
-            response = self.recvline(timeout=2)
+            sent = bytearray()
+            for probe in probes:
+                self.sendline(probe)
+                sent += probe + b"\n"
 
-            if b"uid=" in response:
-                logger.info("Shell obtained!")
-                return True
+            response = bytearray()
+            for _ in range(len(probes) + 4):
+                try:
+                    chunk = self.recv(timeout=2)
+                except Exception:
+                    break
+                if not chunk:
+                    break
+                response += chunk
 
-            # Try echo test
-            self.sendline(b"echo PWNED")
-            response = self.recvline(timeout=2)
-
-            if b"PWNED" in response:
-                logger.info("Shell obtained!")
+            result = check(bytes(response), bytes(sent), token=token)
+            if result.primary_tier == TIER_SHELL:
+                logger.info("Shell proven (%s)", result.matched_value)
                 return True
 
         except Exception:

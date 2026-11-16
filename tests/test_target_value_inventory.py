@@ -601,13 +601,20 @@ def test_w2_the_42_open_entries_still_match_live_hits_not_stale(hits, baseline):
 
 
 def test_w2_nothing_is_migrated_and_other_classes_are_untouched(baseline):
+    # W-2 closed exactly the 27 class-B ABI constants as `allowed` and migrated
+    # nothing. That disposition is still pinned here. W-3 (class C) then migrates
+    # success/flag-pattern entries, so the only non-W-2 movement allowed is a
+    # class-C entry going `migrated` with `phase: W-3`; class A/A'/B are untouched.
     statuses = [e["status"] for e in baseline["entries"]]
-    assert statuses.count("migrated") == 0
     assert statuses.count("allowed") == 27
-    assert statuses.count(OPEN) == len(statuses) - 27
     for entry in baseline["entries"]:
-        if entry["class"] != "B":
+        if entry["status"] == "migrated":
+            assert entry["class"] == "C", entry["id"]
+            assert entry.get("phase") == "W-3", entry["id"]
+        elif entry["class"] != "B":
             assert entry["status"] == OPEN, entry["id"]
+    # W-2 itself migrated nothing: no class-B entry is `migrated`.
+    assert not [e for e in baseline["entries"] if e["class"] == "B" and e["status"] == "migrated"]
 
 
 def test_w2_lifecycle_rule_accepts_exactly_this_closure(baseline):
@@ -619,3 +626,48 @@ def test_w2_lifecycle_rule_accepts_exactly_this_closure(baseline):
         copy["status"] = OPEN
         reopened.append(copy)
     assert check_lifecycle({"entries": reopened}, baseline) == []
+
+
+def test_w3_inventory_closure(baseline):
+    """Directive W, phase W-3 closure gate.
+
+    The design (``docs/plans/2026-11-15-w3-success-detection-design.md`` section
+    3) retires every class-C success/flag-pattern entry: all of them become
+    ``migrated`` (``phase: W-3``) and none is left ``open`` or closed as
+    ``allowed``. This pins that disposition so a later reopened or un-migrated
+    class-C site fails loudly.
+    """
+    class_c = [e for e in baseline["entries"] if e["class"] == "C"]
+    assert len(class_c) == 54, f"expected 54 class-C entries, found {len(class_c)}"
+    migrated = [e for e in class_c if e["status"] == "migrated"]
+    assert len(migrated) == 54, (
+        "W-3 closes every class-C entry as `migrated`; still open: "
+        + ", ".join(e["id"] for e in class_c if e["status"] == OPEN)
+    )
+    assert all(e.get("phase") == "W-3" for e in migrated), (
+        "every migrated class-C entry carries `phase: W-3`: "
+        + ", ".join(e["id"] for e in migrated if e.get("phase") != "W-3")
+    )
+    # The design closes 0 class-C entries as `allowed`: each one is migrated to
+    # the oracle, never exempted in place.
+    assert not [e for e in class_c if e["status"] == "allowed"], (
+        "W-3 closes no class-C entry as `allowed`"
+    )
+
+
+def test_w3_no_class_c_hit_resolves_to_an_open_entry(hits, baseline):
+    """Live-scan complement to the closure: no current class-C scan hit maps to
+    an ``open`` baseline entry. Any surviving class-C literal in product code is
+    a migrated tombstone (routed through the oracle), never a live dependence."""
+    open_c = [e for e in baseline["entries"] if e["class"] == "C" and e["status"] == OPEN]
+    assert not open_c, (
+        "class-C sites still open after W-3: "
+        + ", ".join(f"{e['id']} {e['path']}:{e['line']}" for e in open_c)
+    )
+    # Defensive: no live hit is class C and unmatched (that would be an
+    # un-baselined platform literal); the companion ratchet also covers this.
+    unmatched, _ = match_hits(hits, baseline["entries"])
+    assert not [h for h in unmatched if h.get("class") == "C"], (
+        "un-baselined class-C hit(s): "
+        + "\n  ".join(_site(h) for h in unmatched if h.get("class") == "C")
+    )
